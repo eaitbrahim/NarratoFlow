@@ -19,3 +19,8 @@ models/
 *.safetensors
 *.onnx
 .DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example

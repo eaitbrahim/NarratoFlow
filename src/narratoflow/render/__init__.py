@@ -1,0 +1,1 @@
+"""Frame rendering and encoding."""

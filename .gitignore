@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+# Pipeline outputs & caches
+out/
+.cache/
+*.mp4
+*.mp3
+*.wav
+# Model weights
+models/
+*.safetensors
+*.onnx
+.DS_Store

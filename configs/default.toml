@@ -1,0 +1,26 @@
+[tts]
+engine = "edge"          # edge | piper
+fallback = "piper"
+voice_ar = "ar-SA-HamedNeural"
+voice_en = "en-US-GuyNeural"
+
+[tashkeel]
+engine = "mishkal"
+verify_skeleton = true
+
+[llm]
+provider = "ollama"
+model = "qwen3:8b"       # any local model; never hard-coded
+base_url = "http://localhost:11434"
+
+[visuals]
+default_source = "icon"  # icon | diffusion | image_to_sketch | text_card
+seed = 42
+
+[render]
+fps = 30
+outputs = ["16:9"]
+workers = 4
+
+[audio]
+loudness_lufs = -14

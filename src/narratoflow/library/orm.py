@@ -3,7 +3,8 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, TypeDecorator, UniqueConstraint
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from narratoflow.library.schemas import SketchOrigin, SketchStatus
@@ -17,6 +18,25 @@ def _enum_values(enum_cls: type[SketchOrigin] | type[SketchStatus]) -> list[str]
     return [member.value for member in enum_cls]
 
 
+class UTCDateTime(TypeDecorator[datetime]):
+    """Timezone-aware UTC datetimes; SQLite drops tzinfo, so restore it on read."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("naive datetime not allowed; use timezone-aware UTC")
+        return value.astimezone(UTC)
+
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -26,7 +46,7 @@ class Channel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)
 
 
 class StyleVersion(Base):
@@ -38,7 +58,7 @@ class StyleVersion(Base):
         ForeignKey("channel.id", ondelete="CASCADE"), index=True, nullable=False
     )
     fingerprint: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)
 
 
 class Sketch(Base):
@@ -70,4 +90,4 @@ class Sketch(Base):
     status_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     mirror_safe: Mapped[bool] = mapped_column(nullable=False)
     provenance: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)

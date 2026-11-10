@@ -37,11 +37,16 @@ class SketchLibrary:
         self._blobs = blobs
 
     def ensure_style_version(self, channel_slug: str, fingerprint: str) -> int:
-        try:
-            return self._ensure_style_version(channel_slug, fingerprint)
-        except IntegrityError:
-            # Another writer created the same row concurrently; it exists now.
-            return self._ensure_style_version(channel_slug, fingerprint)
+        last_error: IntegrityError | None = None
+        for _ in range(3):
+            try:
+                return self._ensure_style_version(channel_slug, fingerprint)
+            except IntegrityError as e:
+                # Another writer created the same row concurrently; retry the lookup.
+                last_error = e
+        raise LibraryError(
+            f"could not ensure style version for {channel_slug!r}/{fingerprint!r}"
+        ) from last_error
 
     def _ensure_style_version(self, channel_slug: str, fingerprint: str) -> int:
         with Session(self._engine) as s:
@@ -78,6 +83,11 @@ class SketchLibrary:
         *,
         description: str = "",
     ) -> SketchRecord:
+        """Store a sketch, deduplicated on (style version, idea key, blob hash).
+
+        Returns the existing record if present; its status is authoritative and may be FAILED.
+        Re-adding identical content never un-quarantines it.
+        """
         blob_hash = self._blobs.put(data, suffix)
         with Session(self._engine) as s:
             existing = self._find_existing(s, style_version_id, idea_key, blob_hash)
@@ -171,6 +181,10 @@ class SketchLibrary:
             s.commit()
 
     def copy_to(self, sketch_id: int, target_style_version_id: int) -> SketchRecord:
+        """Copy a non-failed sketch into another style version.
+
+        Returns the existing record if present; its status is authoritative and may be FAILED.
+        """
         with Session(self._engine) as s:
             src = s.get(Sketch, sketch_id)
             if src is None:

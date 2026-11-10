@@ -1,7 +1,7 @@
 """Content-addressed blob storage for sketch files."""
 
 import hashlib
-import os
+import uuid
 from pathlib import Path
 
 from narratoflow.errors import LibraryError
@@ -21,7 +21,7 @@ class BlobStore:
         target = self._location(blob_hash, suffix)
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+            tmp = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
             tmp.write_bytes(data)
             tmp.replace(target)
         return blob_hash

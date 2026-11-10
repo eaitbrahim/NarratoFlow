@@ -3,10 +3,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from narratoflow.errors import LibraryError
 from narratoflow.library.blobs import BlobStore
 from narratoflow.library.db import open_library
+from narratoflow.library.orm import Sketch
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
 from narratoflow.settings import Settings
@@ -149,3 +152,101 @@ def test_default_library_uses_data_dir(tmp_path: Path) -> None:
     _add(lib, v, "k", b"A")
     assert (tmp_path / "data" / "library.db").is_file()
     assert len(list((tmp_path / "data" / "blobs").rglob("*.png"))) == 1
+
+
+def test_readd_quarantined_stays_failed(library: SketchLibrary) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    a = _add(library, v, "k", b"A")
+    library.quarantine(a.id, "bad")
+    again = _add(library, v, "k", b"A")
+    assert again.id == a.id and again.status is SketchStatus.FAILED
+    assert library.find_reusable(v, "k") == []
+
+
+def test_copy_onto_existing_failed_returns_failed(library: SketchLibrary) -> None:
+    v1 = library.ensure_style_version("history", "fp1")
+    v2 = library.ensure_style_version("tech", "fpX")
+    src = _add(library, v1, "k", b"A")
+    dst = library.copy_to(src.id, v2)
+    library.quarantine(dst.id, "bad")
+    again = library.copy_to(src.id, v2)
+    assert again.id == dst.id and again.status is SketchStatus.FAILED
+
+
+def _blind_once(monkeypatch: pytest.MonkeyPatch, times: int) -> None:
+    real = SketchLibrary._find_existing
+    calls = {"n": 0}
+
+    def fake(s: Session, v: int, k: str, h: str) -> Sketch | None:
+        calls["n"] += 1
+        return None if calls["n"] <= times else real(s, v, k, h)
+
+    monkeypatch.setattr(SketchLibrary, "_find_existing", staticmethod(fake))
+
+
+def test_add_race_returns_existing(library: SketchLibrary, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    a = _add(library, v, "k", b"A")
+    _blind_once(monkeypatch, 1)
+    assert _add(library, v, "k", b"A").id == a.id
+
+
+def test_add_race_unresolvable_raises(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    _add(library, v, "k", b"A")
+    _blind_once(monkeypatch, 99)
+    with pytest.raises(LibraryError):
+        _add(library, v, "k", b"A")
+
+
+def test_copy_race_returns_existing(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v1 = library.ensure_style_version("history", "fp1")
+    v2 = library.ensure_style_version("tech", "fpX")
+    src = _add(library, v1, "k", b"A")
+    dst = library.copy_to(src.id, v2)
+    _blind_once(monkeypatch, 1)
+    assert library.copy_to(src.id, v2).id == dst.id
+
+
+def test_copy_race_unresolvable_raises(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v1 = library.ensure_style_version("history", "fp1")
+    v2 = library.ensure_style_version("tech", "fpX")
+    src = _add(library, v1, "k", b"A")
+    library.copy_to(src.id, v2)
+    _blind_once(monkeypatch, 99)
+    with pytest.raises(LibraryError):
+        library.copy_to(src.id, v2)
+
+
+def _boom(n: int) -> object:
+    real = SketchLibrary._ensure_style_version
+    calls = {"n": 0}
+
+    def fake(self: SketchLibrary, slug: str, fp: str) -> int:
+        calls["n"] += 1
+        if calls["n"] <= n:
+            raise IntegrityError("stmt", {}, Exception("dup"))
+        return real(self, slug, fp)
+
+    return fake
+
+
+def test_ensure_style_version_retries_then_succeeds(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(SketchLibrary, "_ensure_style_version", _boom(1))
+    assert library.ensure_style_version("history", "fp1") > 0
+
+
+def test_ensure_style_version_bounded(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(SketchLibrary, "_ensure_style_version", _boom(99))
+    with pytest.raises(LibraryError):
+        library.ensure_style_version("history", "fp1")

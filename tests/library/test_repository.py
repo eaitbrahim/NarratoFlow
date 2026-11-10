@@ -1,4 +1,3 @@
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -8,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from narratoflow.errors import LibraryError
 from narratoflow.library.blobs import BlobStore
-from narratoflow.library.db import open_library
 from narratoflow.library.orm import Sketch
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
@@ -17,15 +15,6 @@ from narratoflow.settings import Settings
 
 def prov() -> Provenance:
     return Provenance(source="test", license="CC0", created_at=datetime(2026, 1, 1, tzinfo=UTC))
-
-
-@pytest.fixture
-def library(tmp_path: Path) -> Iterator[SketchLibrary]:
-    engine = open_library(tmp_path / "library.db")
-    try:
-        yield SketchLibrary(engine, BlobStore(tmp_path / "blobs"))
-    finally:
-        engine.dispose()
 
 
 def _add(

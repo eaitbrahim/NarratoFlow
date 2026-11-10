@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from narratoflow.library.blobs import BlobStore
+from narratoflow.library.db import open_library
+from narratoflow.library.repository import SketchLibrary
 from narratoflow.settings import get_settings
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -39,3 +42,12 @@ def channel_file(tmp_path: Path) -> Path:
     shutil.copy(FIXTURES / "channels" / "history.toml", target)
     Image.new("RGB", (4, 4), "white").save(work / "ref.png")
     return target
+
+
+@pytest.fixture
+def library(tmp_path: Path) -> Iterator[SketchLibrary]:
+    engine = open_library(tmp_path / "library.db")
+    try:
+        yield SketchLibrary(engine, BlobStore(tmp_path / "blobs"))
+    finally:
+        engine.dispose()

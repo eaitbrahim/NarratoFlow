@@ -1,0 +1,4 @@
+# Bundled free icons, usable only for generic idea keys ("object|generic").
+# Each entry: [icons."eye|generic"] file = "...", license = "...", source = "https://..."
+# Icon packs arrive in Plan 3.
+[icons]

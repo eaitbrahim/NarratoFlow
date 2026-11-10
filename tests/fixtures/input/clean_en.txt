@@ -1,0 +1,16 @@
+The coordination gap - and why AI matters
+Shein’s automated supply chain and Stripe’s frictionless payments operate
+like clockwork because they function within well-defined arenas, where
+players follow shared rules and work with clean, structured information,
+leaving little room for ambiguity. Shein’s algorithmic coordination works
+because product trends can be precisely quantified and because the factories
+it works with agree to follow standardized procedures. It identifies what
+people want to wear and sends small batches of clothes to factories that
+already know how to make them. Coordination is made possible because all
+participants operate within a shared framework.
+This logic mirrors the success of containerization. The shipping container
+worked because ports, shipping lines, and customs authorities all agreed to
+adopt a shared standard. Once the format of the box and the rules for
+handling it were fixed, every player could plug into the system and perform
+reliably. Consensus, structure, and predictability made global coordination
+scalable.

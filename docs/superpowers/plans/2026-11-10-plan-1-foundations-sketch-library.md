@@ -123,7 +123,15 @@ NARRATOFLOW_LOG_LEVEL=INFO
   - `uv sync --locked --group dev`.
   - Steps in this order: `uv run ruff check --no-cache .`, `uv run ruff format --check .`, `uv run mypy`, `uv run coverage run -m pytest`, `uv run coverage report`.
 - [ ] **Step 6: Delete the three stub files listed above.** Fix any test whose type annotations mypy now flags under `files = ["src","tests"]`.
-- [ ] **Step 7: Run the gate locally.** Run `python3 ~/.claude/super-engineer/bin/quality_gate.py .` and `python3 ~/.claude/super-engineer/bin/audit_project.py .`. Expected: 0 failures, and no PRJ081 warnings.
+- [ ] **Step 7: Run the gate locally.** Run:
+  ```bash
+  uv run ruff check --no-cache .
+  uv run ruff format --check .
+  uv run mypy
+  uv run coverage run -m pytest
+  uv run coverage report
+  ```
+  Expected: 0 failures, 100% pass.
 - [ ] **Step 8: Commit.** `git commit -m "build: harden tooling per python-best-practices (py3.12, ruff S/G/ASYNC, strict mypy on tests, coverage, locked CI)"`
 
 ---
@@ -209,7 +217,7 @@ def test_all_project_errors_share_base() -> None:
     - `background_music: bool = False`;
     - `part_min_s: int = 60`, `part_max_s: int = 90`, with a validator enforcing `part_min_s < part_max_s`;
     - `riwaya: str = "hafs"`.
-  - `load_channel(path: Path) -> ChannelConfig`. It reads with `tomllib`, resolves `reference_sketch` relative to the TOML file's directory, and wraps `OSError`, `TOMLDecodeError` and `ValidationError` in `ChannelConfigError` with the path in the message (`raise … from e`).
+  - `load_channel(path: Path) -> ChannelConfig`. It reads with `tomllib`, resolves `reference_sketch` to an absolute path relative to the TOML file's directory (`(path.parent / ref_path).resolve()`), and wraps `OSError`, `TOMLDecodeError` and `ValidationError` in `ChannelConfigError` with the path in the message (`raise … from e`).
   - `style_fingerprint(style: StyleConfig) -> str`. It returns the sha256 hex, first 16 characters, of the JSON (`sort_keys`) of `{instructions, image_provider, image_model, line_weight_px, ink, reference_sha256}`, where `reference_sha256` is the hash of the reference file's bytes.
   - `channels/keys.py`:
     - `class ProviderKind(StrEnum): IMAGE="image"; VOICE="voice"; LLM="llm"`;
@@ -222,7 +230,7 @@ def test_all_project_errors_share_base() -> None:
 ```python
 def test_load_resolves_reference_relative(channel_file: Path) -> None:
     ch = load_channel(channel_file)
-    assert ch.style.reference_sketch == channel_file.parent / "ref.png"
+    assert ch.style.reference_sketch == (channel_file.parent / "ref.png").resolve()
     assert ch.outputs == [AspectRatio.PORTRAIT]
     assert ch.background_music is False and ch.riwaya == "hafs"
 
@@ -282,11 +290,11 @@ def test_present_key_passes(channel_file: Path, monkeypatch: pytest.MonkeyPatch)
     - `class SketchOrigin(StrEnum): GENERATED="generated"; BUNDLED="bundled"; COPIED="copied"`;
     - `class SketchStatus(StrEnum): PASSED="passed"; UNCHECKED="unchecked"; FAILED="failed"`;
     - `class Provenance(BaseModel)`: `source: str`, `license: str`, `provider: str | None = None`, `model: str | None = None`, `created_at: datetime`, `usage_terms: str | None = None`, `copied_from_sketch_id: int | None = None`;
-    - `class SketchRecord(BaseModel)`: `id: int`, `style_version_id: int`, `idea_key: str`, `blob_hash: str`, `suffix: str`, `origin: SketchOrigin`, `status: SketchStatus`, `status_reason: str | None`, `mirror_safe: bool`, `provenance: Provenance`, `created_at: datetime`.
+    - `class SketchRecord(BaseModel)`: `id: int`, `style_version_id: int`, `idea_key: str`, `idea_description: str`, `blob_hash: str`, `suffix: str`, `origin: SketchOrigin`, `status: SketchStatus`, `status_reason: str | None`, `mirror_safe: bool`, `provenance: Provenance`, `created_at: datetime`.
   - `orm.py`: a SQLAlchemy 2.0 `DeclarativeBase` with typed `Mapped[...]`, and these tables:
     - `channel(id, slug UNIQUE NOT NULL, created_at)`;
     - `style_version(id, channel_id FK→channel ON DELETE CASCADE INDEX, fingerprint NOT NULL, created_at, UNIQUE(channel_id, fingerprint))`;
-    - `sketch(id, style_version_id FK→style_version INDEX, idea_key NOT NULL INDEX, blob_hash NOT NULL, suffix NOT NULL, origin, status NOT NULL, status_reason NULL, mirror_safe NOT NULL, provenance JSON NOT NULL, created_at, UNIQUE(style_version_id, idea_key, blob_hash))`.
+    - `sketch(id, style_version_id FK→style_version INDEX, idea_key NOT NULL INDEX, idea_description NOT NULL DEFAULT '', blob_hash NOT NULL, suffix NOT NULL, origin, status NOT NULL, status_reason NULL, mirror_safe NOT NULL, provenance JSON NOT NULL, created_at, UNIQUE(style_version_id, idea_key, blob_hash))`.
 
     Enums are stored as their string values. Timestamps use `DateTime(timezone=True)` with `default=lambda: datetime.now(UTC)`.
   - `db.py`: `open_library(db_path: Path) -> Engine`. It:
@@ -338,9 +346,10 @@ def test_migrations_match_models(tmp_path: Path) -> None:
     - `path(blob_hash: str, suffix: str) -> Path`, which raises `LibraryError` if the file is missing.
   - `SketchLibrary(engine: Engine, blobs: BlobStore)`. Each method uses its own `with Session(engine) as s:` unit of work:
     - `ensure_style_version(channel_slug: str, fingerprint: str) -> int`. Creates the channel and/or version if missing and returns the version id. Idempotent.
-    - `add_sketch(style_version_id: int, idea_key: str, data: bytes, suffix: str, origin: SketchOrigin, status: SketchStatus, mirror_safe: bool, provenance: Provenance, status_reason: str | None = None) -> SketchRecord`. If the same (version, key, hash) already exists, it returns the existing record and does not raise.
+    - `add_sketch(style_version_id: int, idea_key: str, data: bytes, suffix: str, origin: SketchOrigin, status: SketchStatus, mirror_safe: bool, provenance: Provenance, status_reason: str | None = None, *, description: str = "") -> SketchRecord`. `description` is the short English idea description used for retrieval (design §2.2). Plans 2 and 3 must always pass it; it's empty only for legacy or test rows. If the same (version, key, hash) already exists, it returns the existing record and does not raise.
     - `find_reusable(style_version_id: int, idea_key: str) -> list[SketchRecord]`. Returns status `PASSED` or `UNCHECKED` only, ordered by id.
-    - `idea_keys(style_version_id: int) -> list[str]`. Distinct keys of reusable sketches, sorted. This list goes to the planner in Plan 2.
+    - `idea_keys(style_version_id: int) -> list[str]`. Distinct keys of reusable sketches, sorted.
+    - `idea_catalog(style_version_id: int) -> list[tuple[str, str]]`. `(key, description)` pairs for the same keys, using the most recent non-empty description per key. This catalog goes to the planner in Plan 2, in full up to 300 keys and via embeddings above that.
     - `quarantine(sketch_id: int, reason: str) -> None`. Sets status `FAILED` and the reason. Raises `LibraryError` for an unknown id.
     - `copy_to(sketch_id: int, target_style_version_id: int) -> SketchRecord`. Origin `COPIED`, the same blob, provenance copied with `copied_from_sketch_id` set, and status carried over. Copying a `FAILED` sketch raises `LibraryError`.
   - `default_library(settings: Settings) -> SketchLibrary`. Opens `settings.data_dir / "library.db"` with blobs in `settings.data_dir / "blobs"`.
@@ -383,6 +392,7 @@ def test_copy_keeps_provenance_and_blob(library: SketchLibrary) -> None:
 def test_copy_failed_rejected(library: SketchLibrary) -> None: ...   # quarantine then copy_to -> LibraryError
 def test_quarantine_unknown_id(library: SketchLibrary) -> None: ...  # -> LibraryError
 def test_idea_keys_lists_only_reusable(library: SketchLibrary) -> None: ...  # failed-only key absent; sorted
+def test_idea_catalog_returns_latest_description(library: SketchLibrary) -> None: ...  # two sketches same key, descriptions "a" then "b" -> [(key, "b")]
 ```
 
 - [ ] **Step 2: Run.** `uv run pytest tests/library/test_repository.py -v`. Expected: FAIL.
@@ -469,14 +479,14 @@ def test_choose_variant_deterministic_and_varies() -> None:
 - Consumes: `Language`, `CorruptInputError`.
 - Produces:
   - `class IssueKind(StrEnum)`, with these values:
-    - `STRETCHED_LETTERS`: any Arabic letter repeated 3 or more times in a row, or a Latin letter 4 or more times;
+    - `STRETCHED_LETTERS`: any Arabic letter repeated 3 or more times in a row (after harakat are stripped), or a Latin letter 4 or more times. Tatweel is **not** an issue; `normalize_input` removes it;
     - `PAGE_NUMBER`: a line that is only digits, Arabic-Indic digits or punctuation;
     - `FRAGMENTED_LINES`: more than 20% of non-empty lines are 3 characters or fewer, reported once;
     - `REPLACEMENT_CHAR`: U+FFFD or a private-use codepoint.
   - `@dataclass(frozen=True) class QualityIssue: kind: IssueKind; line: int; excerpt: str`, where `line` is 1-based and the excerpt is at most 40 characters.
   - `@dataclass(frozen=True) class QualityReport: issues: tuple[QualityIssue, ...]`, with a property `ok: bool`.
-  - `normalize_input(text: str) -> str`. It strips the BOM, converts CRLF to LF, applies NFC, and removes U+200E, U+200F and U+061C. It **does not** touch letters or diacritics.
-  - `check_input(text: str, language: Language) -> QualityReport`, which runs on `normalize_input(text)`.
+  - `normalize_input(text: str) -> str`. It strips the BOM, converts CRLF to LF, applies NFC, and removes U+200E, U+200F, U+061C and **tatweel U+0640**. Tatweel is visual justification only and changes no word; the skeleton guard already ignores it. It **does not** touch letters or harakat.
+  - `check_input(text: str, language: Language) -> QualityReport`, which runs on `normalize_input(text)`. For Arabic letter stretching, **only harakat** (U+064B–U+065F, U+0670) are stripped in memory before matching, so harakat-interleaved repetitions (e.g. `يَيَيَ`) are caught. **Do not reuse `strip_diacritics` from `verify.py`**: it also removes tatweel and Qur'anic marks. Line numbers refer to the original text.
   - `require_clean(text: str, language: Language) -> str`. It returns the normalized text, or raises `CorruptInputError` whose message lists up to 10 issues as `line N: KIND «excerpt»`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -494,8 +504,15 @@ def test_corrupt_arabic_flagged_with_locations() -> None:
     assert IssueKind.STRETCHED_LETTERS in kinds and IssueKind.PAGE_NUMBER in kinds
     assert all(i.line >= 1 for i in report.issues)
 
+def test_tatweel_is_normalized_not_flagged() -> None:
+    assert normalize_input("يــــــــوحنا") == "يوحنا"
+    assert check_input("الحمــــد لله", Language.ARABIC).ok
+
+def test_vowel_interleaved_stretching_flagged() -> None:
+    assert not check_input("يَيَيَ المعمدان", Language.ARABIC).ok
+
 def test_bom_crlf_and_bidi_marks_not_flagged() -> None:          # Review Focus 4
-    text = "﻿" + read("clean_ar.txt").replace("\n", "\r\n").replace(" ", " ‏", 5)
+    text = "\ufeff" + read("clean_ar.txt").replace("\n", "\r\n").replace(" ", " \u200f", 5)
     assert check_input(text, Language.ARABIC).ok
 
 def test_normalize_keeps_diacritics() -> None:
@@ -511,7 +528,7 @@ def test_require_clean_raises_with_line_numbers() -> None:
 ```
 
 - [ ] **Step 2: Run.** `uv run pytest tests/text/test_quality.py -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** per the Interfaces block. Use the regex `([ء-ي])\1{2,}` for Arabic stretching and `([A-Za-z])\1{3,}` for Latin.
+- [ ] **Step 3: Implement** per the Interfaces block. Use the regex `([\u0621-\u063A\u0641-\u064A])\1{2,}` (Arabic letters excluding tatweel; write it with `\u` escapes in code) on the harakat-stripped line for Arabic stretching and `([A-Za-z])\1{3,}` for Latin.
 - [ ] **Step 4: Run.** Expected: PASS. Then run the full gate. Expected: green.
 - [ ] **Step 5: Commit.** `git commit -m "feat: input quality gate rejecting PDF copy-paste corruption before any spend"`
 
@@ -547,7 +564,15 @@ def test_library_keys_empty(channel_file, monkeypatch) -> None: ...   # exit 0, 
   For the error paths, run through `main` (wrap the runner invocation with `standalone_mode=False`, or call `main` via `subprocess` and `uv run`).
 - [ ] **Step 2: Run.** `uv run pytest tests/test_cli.py -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** the commands and the `main()` wrapper. Remove the old `init` / `validate` / `strip` / `render` commands only if no test references them. Keep `validate`, since `test_models` uses `Project`.
-- [ ] **Step 4: Run** the full gate, then the audit and code-scan scripts: `python3 ~/.claude/super-engineer/bin/check_code.py src tests` and `audit_project.py .`. Expected: 0 failures.
+- [ ] **Step 4: Run the full gate:**
+  ```bash
+  uv run ruff check --no-cache .
+  uv run ruff format --check .
+  uv run mypy
+  uv run coverage run -m pytest
+  uv run coverage report
+  ```
+  Expected: 0 failures, 100% pass across all tests.
 - [ ] **Step 5: Update the README** "Quick start" with `channel check`, `library keys` and `check-input`, plus `.env.example` usage.
 - [ ] **Step 6: Commit.** `git commit -m "feat: CLI for channel check, library keys/copy, and input check"`
 
@@ -555,7 +580,7 @@ def test_library_keys_empty(channel_file, monkeypatch) -> None: ...   # exit 0, 
 
 ## Done when
 
-- The gate is green in CI on `main`, and `audit_project.py` reports 0 failures and 0 warnings.
+- The gate is green in CI on `main` (ruff, mypy strict, pytest branch coverage).
 - `uv run narratoflow check-input` rejects reference script 2 and accepts scripts 1 and 3.
 - `uv run narratoflow channel check` fails fast, naming the missing env var, for a paid provider without a key.
 - The library survives reopen, never reuses a quarantined sketch, never serves a bundled icon for a non-generic key, and starts a new style version whenever the image model or reference sketch changes.

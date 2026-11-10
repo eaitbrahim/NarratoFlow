@@ -60,6 +60,16 @@ An **idea** is the thing a scene shows. Ideas are matched **specifically, not lo
 - The planner first picks a concrete, drawable metaphor, then keys it.
 - Most ideas in reflective or literary scripts end up `|generic`, which is good for reuse.
 
+**Matching & scale [owner]:** to prevent key drift (`scroll|roman` vs `scroll|ancient-rome`) and prompt bloat as the library grows, matching uses a **two-tier lookup**:
+1. *Candidate keys in the prompt:*
+   - **Up to 300 keys:** the planner gets the channel's full key catalog.
+   - **Above 300 keys:** it gets the **top-5 candidates per scene**, retrieved by embedding similarity.
+2. *Exact DB verification:* the chosen key must match an existing library entry exactly. Otherwise it is marked as a new idea.
+
+Retrieval details:
+- Every key is stored with a short **English description** (e.g. `road|two-horizons` → "a road running between two horizons"). The **description** is what gets embedded, not the bare key, so Arabic and English scenes both retrieve correctly. **The embedding model must be multilingual.**
+- The embedding model follows the provider pattern (§4.1): paid by default, with a local free option. It needs its own key and its own line in the cost estimate.
+
 ### 2.2a People are always drawn indirectly [owner]
 Prophets, famous historical figures and any real person are **never drawn as a likeness**. Instead they appear **indirectly**, as one of these (silhouettes are excluded by §2.2c):
 - a symbol (a crown, a sword, a pen, a ship);
@@ -78,12 +88,22 @@ How this is enforced:
 - a team → connected nodes;
 - a parent and child → two separated paths.
 
+**Allowed body parts [owner]:**
+- the **drawing-hand sprite** that animates every sketch;
+- **isolated** hands, eyes and footprints used as symbols, e.g. a hand holding a pen or a balance, `eye|generic`.
+
+**Never allowed:** faces, heads, torsos, stick figures, silhouettes, or any recognisable likeness. The vision check (§6.3) enforces exactly this list.
+
 Because of this, the silhouette option in §2.2a is removed. Prophets and famous people are shown **only as a name card or a non-figurative symbol**.
 
 ### 2.2d Narration is the author's exact words [owner]
 - The narration is the script **verbatim**. The planner splits it and picks visuals, but **never rewrites, condenses or adds words**.
 - Hooks, "Part N of M", recaps and teasers (§2.2b) are **on-screen text only**, never spoken.
 - Diacritization adds harakat only, and the skeleton guard enforces that.
+- **No dead air at the start [owner]:** short-form retention drops sharply if the first 2–3 s are silent.
+  - Narration (or the recitation) **starts at 0 s**, with the on-screen hook text shown at the same time.
+  - If a part has to open without speech, the only allowed sound is **marker-stroke SFX**. No rising cue or other music-like sound, because background music is off by default.
+  - **Precedence:** if a part opens with a Qur'anic verse, the recitation is the opening audio and **no SFX** plays (§2.2e).
 
 ### 2.2e Qur'anic verses [owner: real reciter, Hafs by default]
 - Verses are **recited by a real reciter's recording**, never by the AI voice. The riwaya is **Hafs 'an 'Asim** by default and is configurable per channel.
@@ -91,9 +111,13 @@ Because of this, the silhouette option in §2.2a is removed. Prophets and famous
   - The text is matched against a verified Qur'an corpus (Tanzil), not only by looking for ﴿…﴾. The reference scripts quote verses inside "…" or with no marks at all.
   - Each match is identified as surah:ayah (or a partial ayah range).
   - Uncertain matches are shown in the approval list for confirmation.
-- *[design call]* **On screen:** the verified Uthmani text from the corpus, never the pasted text.
+- *[design call]* **On screen:** the verified Uthmani text from the corpus, never the pasted text. The verse is **font-rendered exactly** (never converted to strokes or redrawn, since that would distort joins, harakat and Uthmani marks and break the exact-text FAIL rule). It is **revealed word by word, right to left**, timed to the recitation:
+- using per-ayah word-segment timing data for the chosen reciter;
+- that timing data's licence is recorded like the audio's.
+
+If no timing data is available, the whole ayah is revealed at the start of its recitation.
 - *[design call]* **Recitation audio** comes from per-ayah recordings with a recorded licence and source. **Unlicensed recitation is a FAIL.** Recitations are a common source of YouTube Content ID claims, so only reciters on an allow-list with clear reuse terms are used.
-- Narration pauses during a verse. There is no marker SFX and no music under verses.
+- Narration pauses during a verse. There is no marker SFX and no music under verses. *[owner]* Splicing between TTS narration and reciter audio includes acoustic smoothing (LUFS loudness match and 300–500 ms buffer pauses) to eliminate jarring transitions.
 
 ### 2.2b Series [owner]
 The target is **short vertical videos for YouTube Shorts and TikTok**. A long script is **split into a series of short videos**.
@@ -168,6 +192,10 @@ Each provider sits behind an adapter that implements the existing Protocols in `
 
 ### 4.3 Turning any image into strokes
 Every sketch, whatever its source (paid AI, local model or bundled icon), goes through the same process: clean line art → centerline skeleton → ordered strokes (issue #15). This is what lets the hand draw it, and it is also the main tool for consistency.
+- **Negative prompt & binarization guard [owner]:** generative prompts strictly forbid shading, solid fills, gradients, drop shadows, and 3D textures (`shading, fills, grayscale, textures, double lines, gradients, hatching, 3d`). Where a provider has no negative-prompt parameter, the **provider adapter** puts these as explicit "no …" instructions in the positive prompt.
+- **Density check [owner]:** after binarization (Otsu global thresholding; the builder may switch to adaptive Gaussian if the calibration set shows it's better) and morphological thinning, sketches whose skeleton graph exhibits excessive branch points or stroke density (signs of filled silhouettes or crosshatching) are flagged before storage.
+  - It runs **before** the paid vision check, so rejects cost nothing.
+  - The thresholds are left to the builder, calibrated on a labelled sample set.
 
 ### 4.4 Consistency (the top quality bar) [design call]
 - **One locked style per channel.** The same style instructions and reference sketch go into every paid request.
@@ -239,6 +267,7 @@ Every asset (generated sketch, bundled icon, sound effect, font, music) records 
 
 **How generation-time checks run [design call]:**
 - The likeness, logo and outlier checks use a vision-capable model. In paid mode this is a paid call that is **included in the estimate and the spending limit**. In free mode a local vision model is used. If none is configured, the check is a WARN saying "not checked", never a silent PASS.
+- **Likeness check prompt calibration [owner]:** matches §2.2c. To avoid false-positive rejections on valid abstract symbols, the vision check explicitly permits standalone symbolic organs/limbs (e.g. `eye|generic`, a stylized hand holding a pen or balance, footprints/paths), while strictly rejecting faces, recognizable likenesses, torsos, heads, stick figures, and full-body silhouettes.
 - **A sketch that fails is quarantined.** It is stored with status `failed` and **never reused** (an exception to §2.3, which applies only to sketches that passed). The scene isn't regenerated automatically. The creator chooses between regenerating it (a paid call), swapping the idea, or using a text card, so no money is spent without being asked.
 - There is **no override of a FAIL [design call based on the owner's "block the export on fail"]**. A FAIL is resolved by fixing the scene, not by accepting it.
 
@@ -291,6 +320,12 @@ The SRD v1.1 must adopt these. Each one names the failure it prevents.
 
 ## 8. First version (v1) [owner]
 - **Output: 9:16 short videos only** (YouTube Shorts + TikTok). 16:9 comes later.
+  - *[owner]* **Vertical composition zones & safe zones:**
+    - **Top 20%:** series title, part indicator ("Part N of M") and topic badge. Kept below the platforms' top tab bar, roughly the top 8%.
+    - **Middle 50%:** the active drawing stage. A virtual camera pans and zooms to follow the hand and keep sketches legible on mobile screens without crowding.
+    - **Bottom 30%:** narration captions, placed in the **upper part** of the band (roughly 65–78% of the height). The very bottom is left clear for the username and description.
+    - **Right edge:** about 12–15% of the width, across the lower ~60% of the screen, is kept clear of sketches and captions because the like, comment, share and sound buttons sit there.
+    - These percentages are approximate. Pin exact 1080×1920 pixel values in Plan 5, verified against the official TikTok and YouTube Shorts safe-zone templates.
 - **Long scripts become a series** (§2.2b).
 - **Languages: Classical Arabic and English, both in v1 [owner].**
 - **Input: pasted text only [owner].** No OCR in v1. For scanned or PDF books, the owner turns screenshots into text with Claude outside NarratoFlow, then pastes the result.

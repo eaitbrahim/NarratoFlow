@@ -30,7 +30,7 @@ ui = ["gradio>=5.0"]
 all = ["narratoflow[arabic,tts-edge,tts-local,align,diffusion,ui]"]
 
 [project.scripts]
-narratoflow = "narratoflow.cli:app"
+narratoflow = "narratoflow.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.2", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11", "coverage>=7.6"]

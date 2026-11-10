@@ -1,4 +1,5 @@
 import os
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,3 +26,16 @@ def data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     path = tmp_path / "data"
     monkeypatch.setenv("NARRATOFLOW_DATA_DIR", str(path))
     return path
+
+
+@pytest.fixture
+def channel_file(tmp_path: Path) -> Path:
+    """A copy of the history channel TOML with a generated reference image."""
+    from PIL import Image
+
+    work = tmp_path / "channel"
+    work.mkdir()
+    target = work / "history.toml"
+    shutil.copy(FIXTURES / "channels" / "history.toml", target)
+    Image.new("RGB", (4, 4), "white").save(work / "ref.png")
+    return target

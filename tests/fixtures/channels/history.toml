@@ -1,0 +1,17 @@
+name = "History"
+slug = "history"
+language = "ar"
+
+[style]
+reference_sketch = "ref.png"
+instructions = "Black ink whiteboard sketch, minimal, no shading."
+image_provider = "openai"
+image_model = "gpt-image-1"
+
+[voice]
+provider = "edge"
+voice_id = "ar-SA-HamedNeural"
+
+[llm]
+provider = "ollama"
+model = "qwen2.5"

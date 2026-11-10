@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from conftest import FIXTURES
 
@@ -32,8 +34,8 @@ def test_corrupt_arabic_flagged_with_locations() -> None:
 
 
 def test_tatweel_is_normalized_not_flagged() -> None:
-    assert normalize_input("يــــــــوحنا") == "يوحنا"
-    assert check_input("الحمــــد لله", Language.ARABIC).ok
+    assert normalize_input("ي\u0640\u0640\u0640\u0640\u0640\u0640\u0640\u0640وحنا") == "يوحنا"  # noqa: RUF001
+    assert check_input("الحم\u0640\u0640\u0640\u0640د لله", Language.ARABIC).ok
 
 
 def test_vowel_interleaved_stretching_flagged() -> None:
@@ -41,7 +43,7 @@ def test_vowel_interleaved_stretching_flagged() -> None:
 
 
 def test_bom_crlf_and_bidi_marks_not_flagged() -> None:
-    text = "﻿" + read("clean_ar.txt").replace("\n", "\r\n").replace(" ", " ‏", 5)
+    text = "\ufeff" + read("clean_ar.txt").replace("\n", "\r\n").replace(" ", " \u200f", 5)
     assert check_input(text, Language.ARABIC).ok
 
 
@@ -67,7 +69,7 @@ def test_require_clean_returns_normalized() -> None:
 
 
 def test_latin_stretching_and_replacement_char() -> None:
-    report = check_input("fine\nheeeello\nbad � char\nprivate ", Language.ENGLISH)
+    report = check_input("fine\nheeeello\nbad \ufffd char\nprivate \ue000", Language.ENGLISH)
     assert [(i.kind, i.line) for i in report.issues] == [
         (IssueKind.STRETCHED_LETTERS, 2),
         (IssueKind.REPLACEMENT_CHAR, 3),
@@ -98,3 +100,10 @@ def test_require_clean_caps_message_at_ten_issues() -> None:
         require_clean(text, Language.ENGLISH)
     assert str(exc.value).count("line ") >= 10
     assert str(exc.value).count("STRETCHED_LETTERS") == 10
+
+
+def test_quality_source_is_ascii() -> None:
+    import narratoflow.text.quality as module
+
+    assert module.__file__ is not None
+    assert Path(module.__file__).read_text(encoding="utf-8").isascii()

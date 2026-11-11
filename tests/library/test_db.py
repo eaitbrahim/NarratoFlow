@@ -195,3 +195,174 @@ def test_unknown_revision_wrapped(tmp_path: Path) -> None:
         conn.execute("UPDATE alembic_version SET version_num = 'deadbeef0000'")
     with pytest.raises(LibraryError, match="newer"):
         open_library(p)
+
+
+def _alembic(db_path: Path, action: str, revision: str) -> None:
+    """Run an Alembic upgrade/downgrade the way ``open_library`` does."""
+    from importlib import resources
+
+    from alembic.config import Config
+    from sqlalchemy import create_engine, event
+
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"isolation_level": None})
+    event.listen(engine, "connect", db._set_pragmas)
+    event.listen(engine, "begin", db._begin_immediate)
+    config = Config()
+    location = resources.files("narratoflow.library") / "migrations"
+    try:
+        with resources.as_file(location) as path:
+            config.set_main_option("script_location", str(path))
+            with engine.begin() as connection:
+                config.attributes["connection"] = connection
+                getattr(alembic_command, action)(config, revision)
+    finally:
+        engine.dispose()
+
+
+_SKETCH_INSERT = (
+    "INSERT INTO sketch (style_version_id, idea_key, idea_description, blob_hash, suffix, "
+    "origin, status, status_reason, mirror_safe, provenance, created_at) "
+    "VALUES (?, ?, '', ?, '.png', ?, ?, NULL, 1, '{}', '2026-01-01 00:00:00')"
+)
+
+
+def _seed_0001(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO channel (id, slug, created_at) VALUES (1, 'history', '2026-01-01 00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO style_version (id, channel_id, fingerprint, created_at) "
+        "VALUES (1, 1, 'fp', '2026-01-01 00:00:00')"
+    )
+    conn.execute(_SKETCH_INSERT, (1, "object|lamp", "h1", "generated", "passed"))
+    conn.execute(_SKETCH_INSERT, (1, "object|cup", "h2", "bundled", "unchecked"))
+
+
+def _connect(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _assert_sketch_table_intact(path: Path) -> None:
+    """Rows, FK, unique dedupe constraint and indexes from 0001 all survive."""
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT idea_key, blob_hash, origin, status FROM sketch ORDER BY id"
+        ).fetchall()
+        assert rows == [
+            ("object|lamp", "h1", "generated", "passed"),
+            ("object|cup", "h2", "bundled", "unchecked"),
+        ]
+        fks = conn.execute("PRAGMA foreign_key_list(sketch)").fetchall()
+        assert [(fk[2], fk[3], fk[4]) for fk in fks] == [
+            ("style_version", "style_version_id", "id")
+        ]
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            conn.execute(_SKETCH_INSERT, (99, "object|x", "h9", "generated", "passed"))
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            conn.execute(_SKETCH_INSERT, (1, "object|lamp", "h1", "generated", "passed"))
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(sketch)").fetchall()}
+        assert {"ix_sketch_style_version_id", "ix_sketch_idea_key"} <= indexes
+    finally:
+        conn.close()
+
+
+def test_upgrade_from_0001_adds_checks_and_keeps_data(tmp_path: Path) -> None:
+    path = tmp_path / "library.db"
+    _alembic(path, "upgrade", "0001")
+    conn = _connect(path)
+    _seed_0001(conn)
+    conn.close()
+
+    _alembic(path, "upgrade", "head")
+    _assert_sketch_table_intact(path)
+    conn = _connect(path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="ck_sketch_status"):
+            conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", "generated", "bogus"))
+        with pytest.raises(sqlite3.IntegrityError, match="ck_sketch_origin"):
+            conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", "stolen", "passed"))
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "idea_embedding" in tables
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(idea_embedding)")}
+        assert "ix_idea_embedding_style_version_id" in indexes
+    finally:
+        conn.close()
+
+
+def test_downgrade_to_0001_drops_checks_and_keeps_data(tmp_path: Path) -> None:
+    path = tmp_path / "library.db"
+    _alembic(path, "upgrade", "0001")
+    conn = _connect(path)
+    _seed_0001(conn)
+    conn.close()
+    _alembic(path, "upgrade", "head")
+
+    _alembic(path, "downgrade", "0001")
+    _assert_sketch_table_intact(path)
+    conn = _connect(path)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "idea_embedding" not in tables
+        conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", "stolen", "bogus"))
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("origin", "status", "constraint"),
+    [("generated", "bogus", "ck_sketch_status"), ("stolen", "passed", "ck_sketch_origin")],
+)
+def test_fresh_db_rejects_bad_enum_values(
+    tmp_path: Path, origin: str, status: str, constraint: str
+) -> None:
+    path = tmp_path / "library.db"
+    open_library(path).dispose()
+    conn = _connect(path)
+    try:
+        _seed_0001(conn)
+        with pytest.raises(sqlite3.IntegrityError, match=constraint):
+            conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", origin, status))
+    finally:
+        conn.close()
+
+
+def test_idea_embedding_unique_and_fk(tmp_path: Path) -> None:
+    path = tmp_path / "library.db"
+    open_library(path).dispose()
+    conn = _connect(path)
+    insert = (
+        "INSERT INTO idea_embedding (style_version_id, idea_key, description, embed_model, "
+        "vector, created_at) VALUES (?, 'object|lamp', 'a lamp', 'm', x'00000000', "
+        "'2026-01-01 00:00:00')"
+    )
+    try:
+        _seed_0001(conn)
+        conn.execute(insert, (1,))
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+            conn.execute(insert, (1,))
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            conn.execute(insert, (42,))
+    finally:
+        conn.close()
+
+
+def test_orm_checks_mirror_migration_0002() -> None:
+    import importlib
+
+    from sqlalchemy import CheckConstraint
+
+    migration = importlib.import_module(
+        "narratoflow.library.migrations.versions.0002_embeddings_checks"
+    )
+    checks = {
+        c.name: str(c.sqltext)
+        for c in Base.metadata.tables["sketch"].constraints
+        if isinstance(c, CheckConstraint)
+    }
+    assert checks == {
+        "ck_sketch_status": migration._STATUS_CHECK,
+        "ck_sketch_origin": migration._ORIGIN_CHECK,
+    }

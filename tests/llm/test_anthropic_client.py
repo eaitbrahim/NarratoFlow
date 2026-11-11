@@ -268,3 +268,35 @@ def test_malformed_body_raises_provider_error() -> None:
     client = _make(handler)
     with pytest.raises(ProviderError, match="malformed"):
         client.complete_structured(system="s", user="u", output=Scene)
+
+
+def test_images_become_base64_blocks_before_the_text_block() -> None:
+    import base64
+
+    seen: list[httpx2.Request] = []
+    client = _make(_recording(_message([_text(SCENE_JSON)]), seen))
+
+    client.complete_structured(
+        system="s", user="look", output=Scene, images=[b"\x89PNGone", b"two"]
+    )
+
+    content = json.loads(seen[0].content)["messages"][0]["content"]
+    assert content == [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(b"\x89PNGone").decode(),
+            },
+        },
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(b"two").decode(),
+            },
+        },
+        {"type": "text", "text": "look"},
+    ]

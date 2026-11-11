@@ -11,7 +11,9 @@ Without `betas`/`fallbacks` the beta surface sends the same request as
 
 from __future__ import annotations
 
-from typing import Literal
+import base64
+from collections.abc import Sequence
+from typing import Any, Literal
 
 import anthropic
 from anthropic import APIResponse, Omit, omit
@@ -72,9 +74,14 @@ class AnthropicClient:
         return f"AnthropicClient(model={self.model!r}, effort={self.effort!r})"
 
     def complete_structured[T: BaseModel](
-        self, *, system: str, user: str, output: type[T]
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
-        raw = self._send(system=system, user=user, output=output)
+        raw = self._send(system=system, user=user, output=output, images=images)
         try:
             envelope = _Envelope.model_validate(raw.json())
         except ValueError as e:
@@ -106,8 +113,22 @@ class AnthropicClient:
         return StructuredResult(value=value, usage=usage, model=message.model)
 
     def _send[T: BaseModel](
-        self, *, system: str, user: str, output: type[T]
+        self, *, system: str, user: str, output: type[T], images: Sequence[bytes]
     ) -> APIResponse[ParsedBetaMessage[T]]:
+        content: Any = user
+        if images:
+            content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64.b64encode(png).decode("ascii"),
+                    },
+                }
+                for png in images
+            ]
+            content.append({"type": "text", "text": user})
         betas: list[AnthropicBetaParam] | Omit = omit
         fallbacks: Literal["default"] | Omit = omit
         if self.refusal_fallback:
@@ -117,7 +138,7 @@ class AnthropicClient:
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=[{"role": "user", "content": content}],
                 output_format=output,
                 output_config={"effort": self.effort},
                 betas=betas,

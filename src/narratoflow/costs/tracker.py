@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -182,7 +183,12 @@ class TrackedLLM:
         self._fallback_logged = False
 
     def complete_structured[T: BaseModel](
-        self, *, system: str, user: str, output: type[T]
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
         tokens = estimate_tokens(system + user)
         estimate = _llm_cost(
@@ -192,16 +198,24 @@ class TrackedLLM:
             tokens,
             max(1, math.ceil(tokens * _OUTPUT_FACTOR)),
         )
+        if images:
+            estimate += len(images) * self.prices.vision(self.provider, self.model)
         self.tracker.ensure_room(estimate, f"llm {self.provider}/{self.model}")
         try:
-            result = self.inner.complete_structured(system=system, user=user, output=output)
+            result = self.inner.complete_structured(
+                system=system, user=user, output=output, images=images
+            )
         except ProviderError as err:
             # A failed call is charged nothing: no usage was returned to bill.
             logger.warning("LLM call failed (%s/%s): %s", self.provider, self.model, err)
             raise
-        self.tracker.charge_llm(
-            self.provider, self._billed_model(result.model), result.usage, self.prices
-        )
+        billed = self._billed_model(result.model)
+        self.tracker.charge_llm(self.provider, billed, result.usage, self.prices)
+        if images:
+            self.tracker.charge(
+                len(images) * self.prices.vision(self.provider, billed),
+                f"vision {self.provider}/{billed}",
+            )
         return result
 
     def _billed_model(self, served: str) -> str:

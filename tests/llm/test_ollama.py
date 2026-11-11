@@ -149,3 +149,34 @@ def test_base_url_trailing_slash_is_tolerated() -> None:
     client = OllamaClient(base_url="http://ollama.test/", model="qwen2.5", http=http)
     client.complete_structured(system="s", user="u", output=Idea)
     assert seen == ["http://ollama.test/api/chat"]
+
+
+def test_images_are_sent_base64_on_the_user_message() -> None:
+    import base64
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _reply('{"key": "k", "weight": 1}')
+
+    client = _client(httpx.MockTransport(handler))
+    client.complete_structured(system="s", user="u", output=Idea, images=[b"\x89PNGa", b"bb"])
+
+    messages = json.loads(seen[0].content)["messages"]
+    assert messages[1]["images"] == [
+        base64.b64encode(b"\x89PNGa").decode(),
+        base64.b64encode(b"bb").decode(),
+    ]
+    assert "images" not in messages[0]
+
+
+def test_no_images_leaves_messages_unchanged() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _reply('{"key": "k", "weight": 1}')
+
+    _client(httpx.MockTransport(handler)).complete_structured(system="s", user="u", output=Idea)
+    assert all("images" not in m for m in json.loads(seen[0].content)["messages"])

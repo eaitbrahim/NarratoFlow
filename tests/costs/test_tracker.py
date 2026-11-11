@@ -264,3 +264,32 @@ def test_tracked_llm_same_model_charges_configured_without_log(
         llm.complete_structured(system="s", user="u", output=Out)
     assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
     assert "fallback" not in caplog.text
+
+
+def test_tracked_llm_forwards_images_and_charges_vision(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()])
+    t = SpendTracker(Decimal("10"))
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    llm.complete_structured(system="s", user="u", output=Out, images=[b"a", b"b"])
+    assert fake.images == [(b"a", b"b")]
+    tokens = (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
+    assert t.spent == tokens + 2 * Decimal("0.01")
+
+
+def test_tracked_llm_estimate_includes_vision_before_call(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()])
+    t = SpendTracker(Decimal("0.015"))  # room for one image check, not two
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    with pytest.raises(BudgetExceededError):
+        llm.complete_structured(system="s", user="u", output=Out, images=[b"a", b"b"])
+    assert fake.calls == []
+
+
+def test_tracked_llm_without_images_charges_no_vision(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()])
+    t = SpendTracker(Decimal("10"))
+    TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices).complete_structured(
+        system="s", user="u", output=Out
+    )
+    assert fake.images == [()]
+    assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000

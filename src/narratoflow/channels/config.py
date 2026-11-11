@@ -51,6 +51,13 @@ class EmbedConfig(BaseModel):
     model: str = "voyage-multilingual-2"
 
 
+class VisionConfig(BaseModel):
+    """Vision-check model; None means the channel's LLM provider and model."""
+
+    provider: str | None = None
+    model: str | None = None
+
+
 class ChannelConfig(BaseModel):
     name: str
     slug: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -59,6 +66,7 @@ class ChannelConfig(BaseModel):
     voice: VoiceConfig
     llm: LlmConfig
     embed: EmbedConfig = EmbedConfig()
+    vision: VisionConfig = VisionConfig()
     outputs: list[AspectRatio] = Field(default_factory=lambda: [AspectRatio.PORTRAIT])
     spending_limit_usd: Decimal | None = Field(None, gt=0)
     approval_list: bool = True

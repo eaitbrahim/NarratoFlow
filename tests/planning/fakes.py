@@ -58,7 +58,12 @@ class ScriptedLLM:
         return SegmentOut(scenes=[SegmentSpan(text=p, title=title) for p in parts])
 
     def complete_structured[T: BaseModel](
-        self, *, system: str, user: str, output: type[T]
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
         self.calls.append((system, user, output))
         value: BaseModel

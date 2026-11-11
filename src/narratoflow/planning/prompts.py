@@ -65,3 +65,25 @@ IDEAS_SYSTEM = (
     "set depicts_person or depicts_logo to true if the drawing would show a person or a "
     "logo."
 )
+
+VISION_SYSTEM = (
+    "You check one generated sketch for a whiteboard video. The sketch must be a simple "
+    "black-marker drawing of an object or symbol. Answer with the requested fields only.\n"
+    "Allowed (never flag these): standalone symbolic eyes, hands (including a hand holding "
+    "an object such as a pen or a balance), footprints and paths.\n"
+    "Rejected: faces, heads, torsos, stick figures, silhouettes, any recognizable "
+    "likeness, logos, trademarks, copyrighted characters and any written text.\n"
+    "human_figure: true for any torso, stick figure, silhouette or full-body or "
+    "partial-body person, even an anonymous or faceless one. A hand, an eye or footprints "
+    "on their own are not a human figure.\n"
+    "face: true for any face or head, or any recognizable likeness of a real person.\n"
+    "logo_or_text: true for any logo, trademark, copyrighted character, or any written "
+    "text, letters, digits or calligraphy.\n"
+    "style_outlier: true if the sketch uses shading, fills, colour, texture or excess "
+    "detail compared with the style instructions (and with the reference image when one "
+    "is given). A style outlier is a warning only.\n"
+    "mirror_safe: false for maps, anything containing text or symbols, and "
+    "direction-dependent objects whose meaning changes when flipped left to right; "
+    "otherwise true.\n"
+    "reason: one short sentence (under 200 characters) naming what you saw."
+)

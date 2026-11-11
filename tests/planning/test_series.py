@@ -121,7 +121,7 @@ def test_hook_fallback_skips_verse_scenes() -> None:
     verse = narr("alpha beta", kind=SceneKind.VERSE, sid="v")
     n = narr("x y z.", sid="n")
     parts = split_into_parts([verse, n], Language.ENGLISH, min_s=60, max_s=90)
-    assert parts[0].hook_text == "x y z.…"
+    assert parts[0].hook_text == "x y z\u2026"
 
 
 def test_unfinished_ending_flagged_from_file() -> None:
@@ -190,3 +190,43 @@ def test_only_last_part_checked() -> None:
 
 def test_sources_are_ascii() -> None:
     assert Path(series_module.__file__ or "").read_bytes().isascii()
+
+
+def test_scene_landing_exactly_on_max_stays() -> None:
+    # 24 English words = 24 / 150 * 60 + 0.4 = 10.0 s; nine scenes = 90 s.
+    scenes = [narr(words(24), title=f"t{i}", sid=f"s{i}") for i in range(9)]
+    parts = split_into_parts(scenes, Language.ENGLISH, min_s=60, max_s=90)
+    assert len(parts) == 1
+    assert len(parts[0].scenes) == 9
+
+
+def test_oversized_scene_in_middle_gets_own_part() -> None:
+    scenes = [narr(words(100), title="a", sid="a")]
+    scenes.append(narr(words(400), title="big", sid="big"))
+    scenes.append(narr(words(100), title="c", sid="c"))
+    parts = split_into_parts(scenes, Language.ENGLISH, min_s=60, max_s=90)
+    assert [[s.id for s in p.scenes] for p in parts] == [["a"], ["big"], ["c"]]
+    assert "over_max" in parts[1].flags
+    assert "over_max" not in parts[0].flags
+    assert "over_max" not in parts[2].flags
+
+
+def test_short_part_still_closes_when_next_does_not_fit() -> None:
+    # 40.4 s then 100 words (40.4 s) then 150 words (60.4 s): first part stays under min_s.
+    scenes = [
+        narr(words(100), title="a", sid="a"),
+        narr(words(200), title="b", sid="b"),
+        narr(words(100), title="c", sid="c"),
+    ]
+    parts = split_into_parts(scenes, Language.ENGLISH, min_s=60, max_s=90)
+    assert [s.id for s in parts[0].scenes] == ["a"]
+    assert parts[0].est_duration_s < 60
+
+
+def test_unfinished_ending_ignores_invisible_marks() -> None:
+    finished = "hello there.\u200f\u200b\ufeff"
+    parts = split_into_parts([narr(finished)], Language.ENGLISH, min_s=60, max_s=90)
+    assert "unfinished_ending" not in parts[-1].flags
+    unfinished = "hello there:\u200f\u2069"
+    parts = split_into_parts([narr(unfinished)], Language.ENGLISH, min_s=60, max_s=90)
+    assert "unfinished_ending" in parts[-1].flags

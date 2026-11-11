@@ -119,3 +119,13 @@ def test_small_dot_never_thinner_than_line() -> None:
     img = render_marker(dot, SIZE, line_weight_px=8.0, ink="#000000", seed=3)
     cols = np.flatnonzero(_ink(img).any(axis=0))
     assert cols.max() - cols.min() + 1 >= 7
+
+
+@pytest.mark.parametrize("seed", range(1, 21))
+def test_render_marker_upto_one_draws_every_stroke(seed: int) -> None:
+    # The final stroke of _set() is a dot that no line stroke overlaps.
+    full = _ink(render_marker(_set(), SIZE, line_weight_px=4.0, ink="#112233", seed=seed))
+    dot = StrokeSet(width=200, height=120, strokes=_set().strokes[-1:])
+    alone = _ink(render_marker(dot, SIZE, line_weight_px=4.0, ink="#112233", seed=seed))
+    # Same disc up to the sub-pixel wobble, which differs because the draws differ.
+    assert (full & alone).sum() >= 0.5 * alone.sum()

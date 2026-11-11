@@ -73,17 +73,20 @@ def render_marker(
     budget = upto * total
     if upto <= 0.0:
         return img
+    # At upto == 1 the float budget can fall an ulp short of the last stroke;
+    # every stroke is complete then, so the budget check is skipped.
+    complete = upto >= 1.0
 
     for pts, weight, dot in prepared:
         seg = length(pts, weight, dot)
         if dot:
-            if budget >= seg:
+            if complete or budget >= seg:
                 _disc(draw, pts[0], weight, rgb)
                 budget -= seg
                 continue
             break
         cut = pts
-        done = budget >= seg
+        done = complete or budget >= seg
         if not done:
             cut = [pts[0]]
             remaining = budget

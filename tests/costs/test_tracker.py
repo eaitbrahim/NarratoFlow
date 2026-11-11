@@ -7,7 +7,13 @@ import pytest
 from llm.fakes import FakeLLM
 from pydantic import BaseModel
 
-from narratoflow.channels.config import ChannelConfig, EmbedConfig, VisionConfig, load_channel
+from narratoflow.channels.config import (
+    ChannelConfig,
+    EmbedConfig,
+    VisionConfig,
+    load_channel,
+    vision_model,
+)
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import (
     SpendTracker,
@@ -21,8 +27,9 @@ from narratoflow.costs.tracker import (
 )
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.llm.base import Usage
-from narratoflow.models import Language, Narration, Part, Scene
+from narratoflow.models import Language, Narration, Part, Scene, SceneKind
 from narratoflow.settings import Settings
+from narratoflow.sketching.vision import estimate_check_cost
 
 
 class Out(BaseModel):
@@ -158,23 +165,60 @@ def test_estimate_part_cost(prices: PriceTable, channel_file: Path) -> None:
         }
     )
 
-    def scene(i: int, match: Literal["reused", "bundled", "new"]) -> Scene:
-        return Scene(id=f"s{i}", narration=Narration(source_text="x"), match=match)
+    def scene(i: int, match: Literal["reused", "bundled", "new"], key: str = "") -> Scene:
+        return Scene(
+            id=f"s{i}",
+            narration=Narration(source_text="x"),
+            match=match,
+            idea_key=key or f"thing-{i}|roman",
+        )
 
+    verse = Scene(
+        id="s9",
+        narration=Narration(source_text="v"),
+        kind=SceneKind.VERSE,
+        match="new",
+        idea_key="book|generic",
+    )
+    no_key = Scene(id="s8", narration=Narration(source_text="n"), match="new")
     part = Part(
         index=1,
         count=1,
         hook_text="h",
-        scenes=[scene(1, "new"), scene(2, "new"), scene(3, "reused")],
+        scenes=[
+            scene(1, "new"),
+            scene(2, "new"),
+            scene(3, "reused"),
+            scene(4, "bundled", "eye|generic"),
+            scene(5, "bundled", "eye|generic"),  # second use: reused, no check
+            verse,
+            no_key,
+        ],
     )
-    cost = estimate_part_cost(part, ch, prices, voice_chars=2000)
+    speech = Decimal("0.60")
+
+    def check(channel: ChannelConfig, key: str) -> Decimal:
+        # exactly what generate_one / the bundled first copy check before the call
+        provider, model = vision_model(channel)
+        return estimate_check_cost(channel.style, key, prices, provider, model, with_reference=True)
+
+    for vision in (None, VisionConfig(provider="anthropic", model="claude-haiku-5-5")):
+        c = ch.model_copy(update={"vision": vision or ch.vision})
+        cost = estimate_part_cost(part, c, prices, voice_chars=2000)
+        image = Decimal("0.04")
+        expected = (
+            image
+            + check(c, "thing-1|roman")
+            + image
+            + check(c, "thing-2|roman")
+            + check(c, "eye|generic")
+            + speech
+        )
+        assert cost == expected
     # each check sends the candidate and the reference sketch: two vision images
-    assert cost == 2 * (Decimal("0.04") + 2 * Decimal("0.01")) + Decimal("0.60")
-    haiku = ch.model_copy(
-        update={"vision": VisionConfig(provider="anthropic", model="claude-haiku-5-5")}
-    )
-    cost = estimate_part_cost(part, haiku, prices, voice_chars=2000)
-    assert cost == 2 * (Decimal("0.04") + 2 * Decimal("0.0003")) + Decimal("0.60")
+    # (opus 0.01 per image) on top of the prompt tokens
+    tokens_only = check(ch, "thing-1|roman") - 2 * Decimal("0.01")
+    assert tokens_only > 0
 
 
 def test_estimate_llm_call_matches_tracked_llm_check(prices: PriceTable) -> None:

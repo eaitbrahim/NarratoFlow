@@ -1,10 +1,11 @@
 """Turn an approved series into scenes with library sketches (spec 4.3, 6.3).
 
-Per narration scene, in order: reuse a stored sketch, copy a bundled icon into
-the channel library, or generate a new one. A new sketch passes the free density
-check before the paid vision check; a failure is stored FAILED (quarantined) and
-never attached to a scene. Every image and vision call is budget-checked on the
-part's own `SpendTracker`.
+Per narration scene, in order: keep the sketch already attached by an earlier
+run, reuse a stored sketch, copy a bundled icon into the channel library, or
+generate a new one. A new sketch (or a bundled icon on its first copy) passes the
+free density check before the paid vision check; a failure is stored FAILED
+(quarantined) and never attached to a scene. Every image and vision call is
+budget-checked on the part's own `SpendTracker`.
 """
 
 from __future__ import annotations
@@ -30,8 +31,8 @@ from narratoflow.channels.keys import check_provider_keys
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import SpendTracker, TrackedLLM, require_generation_prices
 from narratoflow.errors import (
-    BudgetExceededError,
     ChannelConfigError,
+    NarratoFlowError,
     PlanningError,
     SketchRejectedError,
 )
@@ -46,7 +47,7 @@ from narratoflow.llm.base import LLMClient
 from narratoflow.llm.factory import build_llm_client, vision_llm_config
 from narratoflow.models import Language, Scene, SceneKind, Series
 from narratoflow.settings import Settings
-from narratoflow.sketching.vision import NOT_CHECKED, check_sketch, estimate_check_cost
+from narratoflow.sketching.vision import check_sketch, estimate_check_cost
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons, default_bundled_icons
 from narratoflow.visuals.lineart import binarize, check_density
 from narratoflow.visuals.marker import marker_seed
@@ -72,28 +73,34 @@ _TERMS: dict[str, tuple[str, str]] = {
 
 @dataclass
 class GenerationResult:
+    """What happened in this run; every counter counts this run's attachments only."""
+
     generated: int = 0
     """New sketches attached to a scene (PASSED or UNCHECKED)."""
     reused: int = 0
+    """Scenes this run attached to an existing library sketch."""
     bundled: int = 0
+    """Scenes this run attached to a bundled icon copied into the channel library."""
+    kept: int = 0
+    """Scenes whose sketch, attached by an earlier run, is still usable (unchanged)."""
     quarantined: list[str] = field(default_factory=list)
-    """Scene ids left without a sketch because theirs FAILED."""
+    """Scene ids left without a sketch because theirs FAILED or the scene is flagged."""
     unchecked: list[str] = field(default_factory=list)
-    """Scene ids whose newly generated sketch is UNCHECKED (no vision check)."""
+    """Scene ids this run attached to a new or bundled UNCHECKED sketch (no vision)."""
     spent_usd: Decimal = Decimal(0)
 
 
-class GenerationInterruptedError(BudgetExceededError):
-    """The spending limit stopped generation; everything stored so far is kept.
+class GenerationInterruptedError(NarratoFlowError):
+    """A `NarratoFlowError` stopped generation; everything stored so far is kept.
 
+    Raised `from` the cause (`__cause__`, e.g. `BudgetExceededError` or a
+    `ProviderError`); the message is the cause's plus " (progress so far is kept)".
     `partial` is the series with the scenes updated so far, and the result so far.
     The caller saves `partial[0]` before reporting the error.
     """
 
-    def __init__(
-        self, cause: BudgetExceededError, partial: tuple[Series, GenerationResult]
-    ) -> None:
-        super().__init__(cause.estimate_usd, cause.limit_usd)
+    def __init__(self, cause: NarratoFlowError, partial: tuple[Series, GenerationResult]) -> None:
+        super().__init__(f"{cause} (progress so far is kept)")
         self.partial = partial
 
 
@@ -157,6 +164,12 @@ def _ensure_strokes(
     library.put_strokes(record.id, extract_strokes(ink, rtl=rtl))
 
 
+def _require_untracked(images: ImageProvider | None, vision: LLMClient | None) -> None:
+    """Injected clients are wrapped on the part's tracker; a tracked one would pay twice."""
+    if isinstance(images, TrackedImageProvider) or isinstance(vision, TrackedLLM):
+        raise TypeError("pass untracked image and vision clients; they are tracked here")
+
+
 def generate_one(
     scene: Scene,
     channel: ChannelConfig,
@@ -172,13 +185,47 @@ def generate_one(
 ) -> SketchRecord:
     """Generate, check and store one new sketch for `scene`; the caller checks `.status`.
 
-    `images` and `vision` are untracked clients: they are wrapped here so every call
-    is checked against and charged to `tracker` at the channel's configured prices.
-    The image seed is `marker_seed(video_id, scene.id)`, so a re-run asks for the same
-    image. A density reject is stored FAILED with `density: <reason>` and skips the
-    vision call. The returned record may be an existing one (dedupe), even FAILED.
-    A usable record (PASSED or UNCHECKED) has its strokes stored.
+    `images` and `vision` must be untracked clients (an already tracked one raises
+    `TypeError`): they are wrapped here so every call is checked against and charged
+    to `tracker` at the channel's configured prices. The image seed is
+    `marker_seed(video_id, scene.id)`, so a re-run asks for the same image. When the
+    image dedupes onto a stored record (same style version, key and bytes), that
+    record is returned as is, even FAILED, with no vision call. A density reject is
+    stored FAILED with `density: <reason>` and skips the vision call. A vision call
+    that raises stores the paid image FAILED with `vision: error (<type>)`, then the
+    error propagates. A usable record (PASSED or UNCHECKED) has its strokes stored.
     """
+    return _generate_one(
+        scene,
+        channel,
+        library=library,
+        style_version_id=style_version_id,
+        images=images,
+        vision=vision,
+        tracker=tracker,
+        reference_png=reference_png,
+        prices=prices,
+        video_id=video_id,
+        stored=[],
+    )
+
+
+def _generate_one(
+    scene: Scene,
+    channel: ChannelConfig,
+    *,
+    library: SketchLibrary,
+    style_version_id: int,
+    images: ImageProvider,
+    vision: LLMClient | None,
+    tracker: SpendTracker,
+    reference_png: bytes,
+    prices: PriceTable,
+    video_id: str,
+    stored: list[SketchRecord],
+) -> SketchRecord:
+    """`generate_one`; every record it stores is appended to `stored` as it is stored."""
+    _require_untracked(images, vision)
     if scene.idea_key is None:
         raise PlanningError(f"scene {scene.id} has no idea key")
     key = str(parse_idea_key(scene.idea_key))
@@ -210,7 +257,7 @@ def generate_one(
     provenance = _provenance(image)
 
     def store(status: SketchStatus, reason: str | None, mirror_safe: bool) -> SketchRecord:
-        return library.add_sketch(
+        record = library.add_sketch(
             style_version_id,
             key,
             image.png,
@@ -222,24 +269,39 @@ def generate_one(
             reason,
             description=scene.idea_description,
         )
+        stored.append(record)
+        return record
 
+    rtl = channel.language is Language.ARABIC
     try:
         ink = binarize(image.png)
     except SketchRejectedError as e:
         record = store(SketchStatus.FAILED, f"density: {e}", False)
         logger.info("sketch %s for scene %s: density reject", key, scene.id)
         return record
+    existing = library.find_by_content(style_version_id, key, image.png)
+    if existing is not None:
+        # already judged: its status is authoritative, no second vision call
+        if existing.status is not SketchStatus.FAILED:
+            _ensure_strokes(library, existing, rtl=rtl, ink=ink)
+        logger.info("sketch %s for scene %s: dedupe onto %d", key, scene.id, existing.id)
+        return existing
     report = check_density(ink, line_weight_px=style.line_weight_px)
     if not report.ok:
         record = store(SketchStatus.FAILED, f"density: {report.reason}", False)
         logger.info("sketch %s for scene %s: density reject", key, scene.id)
         return record
-    status, reason, mirror_safe, _ = check_sketch(
-        image.png, style, key, tracked_vision, reference_png=reference_png
-    )
+    try:
+        status, reason, mirror_safe, _ = check_sketch(
+            image.png, style, key, tracked_vision, reference_png=reference_png
+        )
+    except Exception as e:
+        # the image is paid for: keep it, quarantined, so a re-run does not pay again
+        store(SketchStatus.FAILED, f"vision: error ({type(e).__name__})", False)
+        raise
     record = store(status, reason, mirror_safe)
     if record.status is not SketchStatus.FAILED:
-        _ensure_strokes(library, record, rtl=channel.language is Language.ARABIC, ink=ink)
+        _ensure_strokes(library, record, rtl=rtl, ink=ink)
     logger.info("sketch %s for scene %s: %s", key, scene.id, record.status.value)
     return record
 
@@ -247,41 +309,55 @@ def generate_one(
 def _add_bundled(
     library: SketchLibrary,
     style_version_id: int,
+    scene: Scene,
     key: IdeaKey,
     icon: BundledIcon,
     channel: ChannelConfig,
+    *,
+    vision: TrackedLLM | None,
+    reference_png: bytes,
 ) -> SketchRecord:
     """Copy a bundled icon into the channel library; the caller checks `.status`.
 
-    Icons are curated free assets: they pass the free density check and are stored
-    UNCHECKED (no paid vision call that the approved estimate does not include).
+    The first copy passes the same gates as a generated sketch (spec 4.4): the free
+    density check, then the vision/outlier check with the reference sketch (paid,
+    budget-checked by `vision`; UNCHECKED without vision). It is stored with
+    origin BUNDLED and the icon's license and source. A vision error propagates and
+    stores nothing: the icon cost nothing, so it stays available for a re-run.
     """
     try:
         data = icon.file.read_bytes()
     except OSError as e:
         raise ChannelConfigError(f"cannot read bundled icon {icon.file}: {e}") from e
+    existing = library.find_by_content(style_version_id, key, data)
+    if existing is not None:
+        return existing
     ink: np.ndarray | None = None
+    status: SketchStatus
+    reason: str | None
+    mirror_safe = False
     try:
         ink = binarize(data)
-        report = check_density(ink, line_weight_px=channel.style.line_weight_px)
-        rejected = report.reason
+        rejected = check_density(ink, line_weight_px=channel.style.line_weight_px).reason
     except SketchRejectedError as e:
         rejected = str(e)
-    status, reason = (
-        (SketchStatus.UNCHECKED, NOT_CHECKED)
-        if rejected is None
-        else (SketchStatus.FAILED, f"density: {rejected}")
-    )
+    if rejected is not None:
+        status, reason = SketchStatus.FAILED, f"density: {rejected}"
+    else:
+        status, reason, mirror_safe, _ = check_sketch(
+            data, channel.style, str(key), vision, reference_png=reference_png
+        )
     record = library.add_sketch(
         style_version_id,
         key,
         data,
         icon.file.suffix.lower() or ".png",
-        SketchOrigin.COPIED,
+        SketchOrigin.BUNDLED,
         status,
-        False,
+        mirror_safe,
         Provenance(source=icon.source, license=icon.license, created_at=_now()),
         reason,
+        description=scene.idea_description,
     )
     if record.status is not SketchStatus.FAILED:
         _ensure_strokes(library, record, rtl=channel.language is Language.ARABIC, ink=ink)
@@ -310,12 +386,44 @@ class _Run:
     reference: bytes
     video_id: str
     result: GenerationResult
+    stored: list[SketchRecord] = field(default_factory=list)
+    """Records stored for the scene in progress (read when that scene raises)."""
+
+    def tracked_vision(self, tracker: SpendTracker) -> TrackedLLM | None:
+        if self.vision is None:
+            return None
+        provider, model = vision_model(self.channel)
+        return TrackedLLM(self.vision, tracker, provider, model, self.prices)
+
+    def interrupted(self, scene: Scene) -> Scene:
+        """The scene as it stands when its processing raised mid-way."""
+        if any(r.status is SketchStatus.FAILED for r in self.stored):
+            # a paid image whose vision call raised was stored FAILED
+            self.result.quarantined.append(scene.id)
+            return _quarantined(scene)
+        return scene
 
     def scene(self, scene: Scene, tracker: SpendTracker) -> Scene:
+        self.stored = []
         if scene.kind is SceneKind.VERSE or scene.idea_key is None:
+            return scene
+        if QUARANTINED_FLAG in scene.flags:
+            # the creator resolves a quarantined scene; nothing is attached or
+            # regenerated automatically (spec 6.3)
+            self.result.quarantined.append(scene.id)
             return scene
         rtl = self.channel.language is Language.ARABIC
         key = parse_idea_key(scene.idea_key)
+        current = self._attached_record(scene, key)
+        if current is not None:
+            if current.status is SketchStatus.FAILED:
+                # quarantined after it was attached: no regeneration, no spend
+                self.result.quarantined.append(scene.id)
+                return _quarantined(scene)
+            # stable re-runs: keep the sketch and the scene's match as they are
+            _ensure_strokes(self.library, current, rtl=rtl)
+            self.result.kept += 1
+            return scene
         found = match_idea(self.library, self.version, key, self.bundled)
         if found.kind is MatchKind.REUSED:
             passed = [r for r in found.candidates if r.status is SketchStatus.PASSED]
@@ -323,17 +431,25 @@ class _Run:
             _ensure_strokes(self.library, record, rtl=rtl)
             self.result.reused += 1
             return _attached(scene, record, "reused")
+        # `found.icon is not None` only narrows the type: match_idea sets it for BUNDLED
         if found.kind is MatchKind.BUNDLED and found.icon is not None:
-            record = _add_bundled(self.library, self.version, key, found.icon, self.channel)
+            record = _add_bundled(
+                self.library,
+                self.version,
+                scene,
+                key,
+                found.icon,
+                self.channel,
+                vision=self.tracked_vision(tracker),
+                reference_png=self.reference,
+            )
             if record.status is not SketchStatus.FAILED:
                 self.result.bundled += 1
+                if record.status is SketchStatus.UNCHECKED:
+                    self.result.unchecked.append(scene.id)
                 return _attached(scene, record, "reused")
             logger.info("bundled icon %s failed its check; generating instead", key)
-        if QUARANTINED_FLAG in scene.flags:
-            # a quarantined scene is never regenerated automatically (spec 6.3)
-            self.result.quarantined.append(scene.id)
-            return scene
-        record = generate_one(
+        record = _generate_one(
             scene,
             self.channel,
             library=self.library,
@@ -344,6 +460,7 @@ class _Run:
             reference_png=self.reference,
             prices=self.prices,
             video_id=self.video_id,
+            stored=self.stored,
         )
         if record.status is SketchStatus.FAILED:
             self.result.quarantined.append(scene.id)
@@ -352,6 +469,17 @@ class _Run:
         if record.status is SketchStatus.UNCHECKED:
             self.result.unchecked.append(scene.id)
         return _attached(scene, record, "new")
+
+    def _attached_record(self, scene: Scene, key: IdeaKey) -> SketchRecord | None:
+        """The record an earlier run attached, unless it is stale (unknown id, or
+        another style version or idea key), in which case the scene is matched again."""
+        if scene.sketch_id is None:
+            return None
+        record = self.library.get_sketch(scene.sketch_id)
+        if record is None or record.style_version_id != self.version or record.idea_key != str(key):
+            logger.info("scene %s: stale sketch id %d; matching again", scene.id, scene.sketch_id)
+            return None
+        return record
 
 
 def generate_missing(
@@ -366,16 +494,20 @@ def generate_missing(
 ) -> tuple[Series, GenerationResult]:
     """Attach a library sketch to every narration scene of an approved series.
 
-    `images` and `vision` are untracked clients (tests inject fakes); they are
-    charged at the channel's configured image and vision prices. `vision="auto"`
+    `images` and `vision` must be untracked clients (tests inject fakes; a tracked
+    one raises `TypeError`); they are charged at the channel's configured image and
+    vision prices. `vision="auto"`
     builds the vision model of `channel.vision` (else the channel LLM); `None`
     stores new sketches UNCHECKED. Keys, prices and the reference sketch are
-    checked before any spend. The spending limit applies per part; when it stops
-    a run, `GenerationInterruptedError` carries the partial series and result.
-    The input series is not mutated.
+    checked before any spend. The spending limit applies per part. A scene whose
+    attached sketch is still usable is kept as is; one quarantined since is
+    flagged again without spend. Any `NarratoFlowError` raised mid-run (budget,
+    provider, library) is re-raised as `GenerationInterruptedError` carrying the
+    partial series and result. The input series is not mutated.
     """
     if not series.approved:
         raise PlanningError("approve the series first")
+    _require_untracked(images, None if vision == "auto" else vision)
     check_provider_keys(channel, settings)
     prices = prices if prices is not None else default_prices(settings)
     require_generation_prices(channel, prices, vision=vision is not None)
@@ -415,15 +547,17 @@ def generate_missing(
         for i, scene in enumerate(part.scenes):
             try:
                 part.scenes[i] = run.scene(scene, tracker)
-            except BudgetExceededError as e:
+            except NarratoFlowError as e:
+                part.scenes[i] = run.interrupted(scene)
                 result.spent_usd = sum((t.spent for t in trackers), Decimal(0))
                 raise GenerationInterruptedError(e, (out.model_copy(deep=True), result)) from e
     result.spent_usd = sum((t.spent for t in trackers), Decimal(0))
     logger.info(
-        "sketches: %d generated, %d reused, %d bundled, %d quarantined",
+        "sketches: %d generated, %d reused, %d bundled, %d kept, %d quarantined",
         result.generated,
         result.reused,
         result.bundled,
+        result.kept,
         len(result.quarantined),
     )
     return out, result

@@ -18,8 +18,9 @@ from pydantic import BaseModel
 from narratoflow.channels.config import ChannelConfig, vision_model
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
+from narratoflow.library.keys import parse_idea_key
 from narratoflow.llm.base import LLMClient, StructuredResult, Usage
-from narratoflow.models import Language, Part
+from narratoflow.models import Language, Part, SceneKind
 
 logger = logging.getLogger(__name__)
 
@@ -181,19 +182,43 @@ def require_generation_prices(channel: ChannelConfig, prices: PriceTable, *, vis
 def estimate_part_cost(
     part: Part, channel: ChannelConfig, prices: PriceTable, *, voice_chars: int
 ) -> Decimal:
-    """New sketches x (image + vision check) plus voice characters x per-kchar price.
+    """What sketch generation may spend on `part`, plus voice characters x per-kchar price.
 
-    A vision check sends `VISION_IMAGES_PER_CHECK` images (candidate and reference)
-    to the vision model (`channel.vision`, else the channel LLM).
+    Mirrors the pre-call budget checks of sketch generation, so the approval
+    estimate is never below what the spending limit enforces:
+    - a "new" scene: image price + the vision check estimate (`estimate_check_cost`:
+      prompt tokens plus `VISION_IMAGES_PER_CHECK` images, candidate and reference);
+    - a "bundled" scene, on the first use of its key in the part: the vision check
+      of the copied icon (later uses reuse that copy);
+    - verse scenes and scenes without an idea key are never generated: zero.
+    The vision model is `channel.vision`, else the channel LLM.
     """
-    new = sum(1 for scene in part.scenes if scene.match == "new")
+    # imported here: sketching.vision imports this module for `estimate_llm_call`
+    from narratoflow.sketching.vision import estimate_check_cost
+
     style, voice = channel.style, channel.voice
     vision_provider, vision_name = vision_model(channel)
-    per_sketch = prices.image(
-        style.image_provider, style.image_model
-    ) + VISION_IMAGES_PER_CHECK * prices.vision(vision_provider, vision_name)
+    image = prices.image(style.image_provider, style.image_model)
+
+    def check(key: str) -> Decimal:
+        return estimate_check_cost(
+            style, key, prices, vision_provider, vision_name, with_reference=True
+        )
+
+    total = Decimal(0)
+    bundled_seen: set[str] = set()
+    for scene in part.scenes:
+        if scene.kind is SceneKind.VERSE or scene.idea_key is None:
+            continue
+        if scene.match == "new":
+            total += image + check(scene.idea_key)
+        elif scene.match == "bundled":
+            key = str(parse_idea_key(scene.idea_key))
+            if key not in bundled_seen:
+                bundled_seen.add(key)
+                total += check(key)
     speech = Decimal(voice_chars) / 1000 * prices.voice(voice.provider, voice.model)
-    return new * per_sketch + speech
+    return total + speech
 
 
 class TrackedLLM:

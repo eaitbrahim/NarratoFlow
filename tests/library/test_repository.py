@@ -338,3 +338,22 @@ def test_default_library_caches_engine_per_data_dir(tmp_path: Path) -> None:
     repository.clear_library_cache()
     assert default_library(Settings(data_dir=tmp_path / "a"))._engine is not one._engine
     repository.clear_library_cache()
+
+
+def test_get_sketch_by_id(library: SketchLibrary) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    rec = _add(library, v, "eye|generic", b"A")
+    assert library.get_sketch(rec.id) == rec
+    assert library.get_sketch(rec.id + 999) is None
+
+
+def test_find_by_content_matches_version_key_and_bytes(library: SketchLibrary) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    other = library.ensure_style_version("history", "fp2")
+    rec = _add(library, v, "eye|generic", b"A")
+    library.quarantine(rec.id, "face")
+    found = library.find_by_content(v, "Eye|Generic", b"A")
+    assert found is not None and found.id == rec.id and found.status is SketchStatus.FAILED
+    assert library.find_by_content(v, "eye|generic", b"B") is None
+    assert library.find_by_content(v, "lamp|generic", b"A") is None
+    assert library.find_by_content(other, "eye|generic", b"A") is None

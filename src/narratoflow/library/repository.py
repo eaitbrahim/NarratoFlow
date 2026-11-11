@@ -1,5 +1,6 @@
 """Repository for storing and reusing sketches per channel and style version."""
 
+import hashlib
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -131,6 +132,22 @@ class SketchLibrary:
                 Sketch.blob_hash == blob_hash,
             )
         ).first()
+
+    def get_sketch(self, sketch_id: int) -> SketchRecord | None:
+        """The record with this id, or None when there is none."""
+        with Session(self._engine) as s:
+            row = s.get(Sketch, sketch_id)
+            return None if row is None else _record(row)
+
+    def find_by_content(
+        self, style_version_id: int, idea_key: str | IdeaKey, data: bytes
+    ) -> SketchRecord | None:
+        """The record `add_sketch` would dedupe `data` onto (any status), without storing."""
+        key = _canonical_key(idea_key)
+        blob_hash = hashlib.sha256(data).hexdigest()  # the BlobStore content address
+        with Session(self._engine) as s:
+            existing = self._find_existing(s, style_version_id, key, blob_hash)
+            return None if existing is None else _record(existing)
 
     def find_reusable(self, style_version_id: int, idea_key: str | IdeaKey) -> list[SketchRecord]:
         key = _canonical_key(idea_key)

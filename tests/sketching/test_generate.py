@@ -13,8 +13,15 @@ from pydantic import BaseModel, SecretStr
 
 from narratoflow.channels.config import ChannelConfig, VisionConfig, load_channel
 from narratoflow.costs.prices import PriceTable
-from narratoflow.errors import BudgetExceededError, ChannelConfigError, PlanningError
+from narratoflow.costs.tracker import SpendTracker, TrackedLLM
+from narratoflow.errors import (
+    BudgetExceededError,
+    ChannelConfigError,
+    PlanningError,
+    ProviderError,
+)
 from narratoflow.images import GeneratedImage, ImageRequest
+from narratoflow.images.factory import TrackedImageProvider
 from narratoflow.images.prompt import build_prompt
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchStatus
@@ -265,8 +272,11 @@ def test_budget_for_exactly_two_stops_the_third_and_rerun_reuses(
     with pytest.raises(GenerationInterruptedError) as info:
         run(original, limited, settings, library, images, FakeLLM(clean(3)))
 
-    assert isinstance(info.value, BudgetExceededError)
-    assert info.value.limit_usd == 2 * PER_SKETCH
+    cause = info.value.__cause__
+    assert isinstance(cause, BudgetExceededError)
+    assert not isinstance(info.value, BudgetExceededError)
+    assert cause.limit_usd == 2 * PER_SKETCH
+    assert str(info.value) == f"{cause} (progress so far is kept)"
     assert len(images.requests) == 2
     partial, so_far = info.value.partial
     done = scenes_of(partial)
@@ -277,9 +287,11 @@ def test_budget_for_exactly_two_stops_the_third_and_rerun_reuses(
 
     again = FakeImages()
     out, result = run(partial, limited, settings, library, again, FakeLLM(clean(1)))
-    assert (result.reused, result.generated) == (2, 1)
+    # the two attached scenes are kept as they are (still "new"); only the third is paid
+    assert (result.kept, result.reused, result.generated) == (2, 0, 1)
     assert len(again.requests) == 1
     assert [sc.sketch_id for sc in scenes_of(out)][:2] == [sc.sketch_id for sc in done][:2]
+    assert [sc.match for sc in scenes_of(out)] == ["new"] * 3
 
 
 def test_limit_is_per_part(
@@ -308,20 +320,82 @@ def test_bundled_icon_is_copied_on_first_use_and_reused_after(
 ) -> None:
     _bundled(monkeypatch, tmp_path, img.scroll())
     s = series([scene(1, "eye|generic", match="bundled"), scene(2, "eye|generic")])
-    images, vision = FakeImages(), FakeLLM([])
+    images, vision = FakeImages(), FakeLLM([verdict(mirror_safe=False)])
     out, result = run(s, channel, settings, library, images, vision)
 
-    assert images.requests == [] and vision.calls == []
+    # the first copy gets the same vision/outlier check as a generated sketch
+    assert images.requests == [] and len(vision.calls) == 1
+    reference = channel.style.reference_sketch.read_bytes()
+    assert vision.images == [(img.scroll(), reference)]
     assert (result.bundled, result.reused, result.generated) == (1, 1, 0)
-    assert result.spent_usd == 0
+    assert result.spent_usd == 2 * Decimal("0.01")
     first, second = scenes_of(out)
     assert first.sketch_id is not None and first.sketch_id == second.sketch_id
     assert first.match == second.match == "reused"
     [record] = library.find_reusable(1, "eye|generic")
-    assert record.origin is SketchOrigin.COPIED
+    assert record.origin is SketchOrigin.BUNDLED
     assert (record.provenance.license, record.provenance.source) == ("CC0-1.0", "https://x")
-    assert record.status is SketchStatus.UNCHECKED
+    assert (record.status, record.status_reason) == (SketchStatus.PASSED, None)
+    assert record.mirror_safe is False
+    assert record.idea_description == "thing number 1"
     assert library.get_strokes(record.id) is not None
+
+
+def test_bundled_icon_failing_vision_is_treated_as_new(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _bundled(monkeypatch, tmp_path, img.scroll(width=4))
+    images = FakeImages()
+    vision = FakeLLM([verdict(logo_or_text=True, reason="a logo"), verdict()])
+    out, result = run(series([scene(1, "eye|generic")]), channel, settings, library, images, vision)
+    assert len(images.requests) == 1 and len(vision.calls) == 2
+    assert (result.bundled, result.generated) == (0, 1)
+    [sc] = scenes_of(out)
+    [record] = library.find_reusable(1, "eye|generic")
+    assert sc.sketch_id == record.id and record.origin is SketchOrigin.GENERATED
+
+
+def test_bundled_icon_style_warning_is_attached(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _bundled(monkeypatch, tmp_path, img.scroll())
+    vision = FakeLLM([verdict(style_outlier=True, reason="thin")])
+    out, result = run(
+        series([scene(1, "eye|generic")]), channel, settings, library, FakeImages(), vision
+    )
+    [sc] = scenes_of(out)
+    record = library.get_sketch(sc.sketch_id or 0)
+    assert record is not None and result.bundled == 1
+    assert (record.status, record.status_reason) == (
+        SketchStatus.PASSED,
+        "warn: style outlier; thin",
+    )
+
+
+def test_bundled_icon_without_vision_is_unchecked(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _bundled(monkeypatch, tmp_path, img.scroll())
+    out, result = run(
+        series([scene(1, "eye|generic")]), channel, settings, library, FakeImages(), None
+    )
+    [sc] = scenes_of(out)
+    record = library.get_sketch(sc.sketch_id or 0)
+    assert record is not None and record.origin is SketchOrigin.BUNDLED
+    assert (record.status, record.status_reason) == (SketchStatus.UNCHECKED, "vision: not checked")
+    assert result.bundled == 1 and result.unchecked == ["s001"] and result.spent_usd == 0
 
 
 def test_bundled_icon_failing_density_is_treated_as_new(
@@ -414,7 +488,7 @@ def test_reused_sketch_gets_missing_strokes_extracted(
         prov,
     )
     assert library.get_strokes(passed.id) is None
-    s = series([scene(1, "lamp|roman", flags=[QUARANTINED_FLAG])])
+    s = series([scene(1, "lamp|roman")])
     images = FakeImages()
     out, result = run(s, channel, settings, library, images, FakeLLM([]))
     [sc] = scenes_of(out)
@@ -427,15 +501,118 @@ def test_reused_sketch_gets_missing_strokes_extracted(
 def test_dedupe_onto_a_failed_record_quarantines(
     channel: ChannelConfig, settings: Settings, library: SketchLibrary
 ) -> None:
-    run(series([scene(1)]), channel, settings, library, FakeImages(), FakeLLM(clean(1)))
+    first, _ = run(series([scene(1)]), channel, settings, library, FakeImages(), FakeLLM(clean(1)))
     [record] = library.find_reusable(1, "thing-1|roman")
     library.quarantine(record.id, "creator rejected")
-    out, result = run(
-        series([scene(1)]), channel, settings, library, FakeImages(), FakeLLM(clean(1))
-    )
+    images, vision = FakeImages(), FakeLLM([])
+    out, result = run(first, channel, settings, library, images, vision)
+    # the attached sketch was quarantined after the fact: no regeneration, no spend
+    assert images.requests == [] and vision.calls == [] and result.spent_usd == 0
     [sc] = scenes_of(out)
     assert sc.sketch_id is None and QUARANTINED_FLAG in sc.flags
     assert result.quarantined == ["s001"] and result.generated == 0
+
+
+def test_content_dedupe_onto_a_failed_record_skips_the_vision_call(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    run(series([scene(1)]), channel, settings, library, FakeImages(), FakeLLM(clean(1)))
+    [record] = library.find_reusable(1, "thing-1|roman")
+    library.quarantine(record.id, "creator rejected")
+    # a fresh plan for the same key: the same image comes back and dedupes onto it
+    images, vision = FakeImages(), FakeLLM([])
+    out, result = run(series([scene(1)]), channel, settings, library, images, vision)
+    assert len(images.requests) == 1 and vision.calls == []
+    assert result.spent_usd == Decimal("0.04")
+    [sc] = scenes_of(out)
+    assert sc.sketch_id is None and QUARANTINED_FLAG in sc.flags
+    assert result.quarantined == ["s001"] and result.generated == 0
+
+
+def test_generate_one_returns_an_existing_record_without_a_vision_call(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    out, _ = run(series([scene(1)]), channel, settings, library, FakeImages(), None)
+    [sc] = scenes_of(out)
+    vision, tracker = FakeLLM([]), SpendTracker(None)
+    record = generate_module.generate_one(
+        scene(1),
+        channel,
+        library=library,
+        style_version_id=1,
+        images=FakeImages(),
+        vision=vision,
+        tracker=tracker,
+        reference_png=b"",
+        prices=PRICES,
+        video_id="v",
+    )
+    assert record.id == sc.sketch_id and record.status is SketchStatus.UNCHECKED
+    assert vision.calls == [] and tracker.spent == Decimal("0.04")
+
+
+def test_rerun_keeps_an_attached_sketch_and_its_match(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    first, _ = run(series([scene(1)]), channel, settings, library, FakeImages(), FakeLLM(clean(1)))
+    images, vision = FakeImages(), FakeLLM([])
+    out, result = run(first, channel, settings, library, images, vision)
+    assert images.requests == [] and vision.calls == [] and result.spent_usd == 0
+    assert scenes_of(out) == scenes_of(first)
+    assert scenes_of(out)[0].match == "new"
+    assert (result.kept, result.reused, result.generated, result.bundled) == (1, 0, 0, 0)
+
+
+def test_rerun_keeps_an_unchecked_sketch_and_stores_missing_strokes(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    from narratoflow.channels.config import style_fingerprint
+
+    version = library.ensure_style_version("history", style_fingerprint(channel.style))
+    prov = Provenance.model_validate(
+        {"source": "t", "license": "t", "created_at": "2026-01-01T00:00:00Z"}
+    )
+    other = library.add_sketch(
+        version,
+        "thing-1|roman",
+        img.line_drawing_scroll(),
+        ".png",
+        SketchOrigin.GENERATED,
+        SketchStatus.PASSED,
+        True,
+        prov,
+    )
+    mine = library.add_sketch(
+        version,
+        "thing-1|roman",
+        img.scroll(width=4),
+        ".png",
+        SketchOrigin.GENERATED,
+        SketchStatus.UNCHECKED,
+        False,
+        prov,
+    )
+    s = series([scene(1, sketch_id=mine.id)])
+    out, result = run(s, channel, settings, library, FakeImages(), FakeLLM([]))
+    [sc] = scenes_of(out)
+    assert sc.sketch_id == mine.id != other.id and result.kept == 1
+    assert library.get_strokes(mine.id) is not None
+
+
+@pytest.mark.parametrize("stale", ["unknown", "other-key"])
+def test_stale_sketch_id_is_matched_again(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary, stale: str
+) -> None:
+    first, _ = run(series([scene(1, "lamp|roman")]), channel, settings, library, FakeImages(), None)
+    lamp = scenes_of(first)[0].sketch_id or 0
+    sketch_id = lamp + 100 if stale == "unknown" else lamp
+    images = FakeImages()
+    out, result = run(
+        series([scene(2, sketch_id=sketch_id)]), channel, settings, library, images, None
+    )
+    [sc] = scenes_of(out)
+    assert result.kept == 0 and result.generated == 1 and len(images.requests) == 1
+    assert sc.sketch_id not in (None, lamp)
 
 
 def test_quarantined_scene_is_not_regenerated_automatically(
@@ -446,6 +623,94 @@ def test_quarantined_scene_is_not_regenerated_automatically(
     out, result = run(s, channel, settings, library, images, FakeLLM([]))
     assert images.requests == []
     assert scenes_of(out) == scenes_of(s) and result.quarantined == ["s001"]
+
+
+def test_quarantined_scene_is_not_auto_attached_to_a_reusable_or_bundled_sketch(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run(series([scene(1)]), channel, settings, library, FakeImages(), None)
+    _bundled(monkeypatch, tmp_path, img.scroll())
+    s = series(
+        [
+            scene(2, "thing-1|roman", flags=[QUARANTINED_FLAG]),
+            scene(3, "eye|generic", flags=[QUARANTINED_FLAG]),
+        ]
+    )
+    images, vision = FakeImages(), FakeLLM([])
+    out, result = run(s, channel, settings, library, images, vision)
+    assert images.requests == [] and vision.calls == [] and result.spent_usd == 0
+    assert scenes_of(out) == scenes_of(s)
+    assert result.quarantined == ["s002", "s003"]
+    assert (result.reused, result.bundled, result.kept) == (0, 0, 0)
+    assert library.find_reusable(1, "eye|generic") == []
+
+
+def test_vision_error_stores_the_paid_image_failed_and_keeps_progress(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    boom = ProviderError("vision down")
+    images = FakeImages([img.line_drawing_scroll(), img.scroll(width=4)])
+    with pytest.raises(GenerationInterruptedError) as info:
+        run(
+            series([scene(1), scene(2)]),
+            channel,
+            settings,
+            library,
+            images,
+            FakeLLM([verdict(), boom]),
+        )
+    assert info.value.__cause__ is boom
+    assert str(info.value) == "vision down (progress so far is kept)"
+    partial, so_far = info.value.partial
+    first, second = scenes_of(partial)
+    assert first.sketch_id is not None
+    assert second.sketch_id is None and second.flags == [QUARANTINED_FLAG]
+    assert so_far.quarantined == ["s002"] and so_far.generated == 1
+    assert so_far.spent_usd == PER_SKETCH + Decimal("0.04")
+    stored = library.find_by_content(1, "thing-2|roman", img.scroll(width=4))
+    assert stored is not None
+    assert (stored.status, stored.status_reason) == (
+        SketchStatus.FAILED,
+        "vision: error (ProviderError)",
+    )
+    assert library.get_strokes(stored.id) is None
+
+
+def test_image_error_keeps_progress(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    class Failing(FakeImages):
+        def generate(self, req: ImageRequest) -> GeneratedImage:
+            if self.requests:
+                raise ProviderError("image down")
+            return super().generate(req)
+
+    with pytest.raises(GenerationInterruptedError) as info:
+        run(
+            series([scene(1), scene(2)]),
+            channel,
+            settings,
+            library,
+            Failing(),
+            FakeLLM(clean(1)),
+        )
+    assert isinstance(info.value.__cause__, ProviderError)
+    partial, so_far = info.value.partial
+    assert [sc.sketch_id is not None for sc in scenes_of(partial)] == [True, False]
+    assert so_far.generated == 1 and so_far.quarantined == []
+    assert so_far.spent_usd == PER_SKETCH
+
+
+def test_errors_before_the_run_are_not_wrapped(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    with pytest.raises(PlanningError) as info:
+        run(series([scene(1)], approved=False), channel, settings, library, FakeImages(), None)
+    assert not isinstance(info.value, GenerationInterruptedError)
 
 
 def test_missing_reference_fails_before_spend(
@@ -570,8 +835,9 @@ def test_unreadable_bundled_icon_is_a_config_error(
 ) -> None:
     _bundled(monkeypatch, tmp_path, img.scroll())
     (tmp_path / "eye.png").unlink()
-    with pytest.raises(ChannelConfigError, match="bundled icon"):
+    with pytest.raises(GenerationInterruptedError, match="bundled icon") as info:
         run(series([scene(1, "eye|generic")]), channel, settings, library, FakeImages(), None)
+    assert isinstance(info.value.__cause__, ChannelConfigError)
 
 
 def test_image_provider_is_built_only_when_a_sketch_is_new(
@@ -610,6 +876,52 @@ def test_image_provider_is_built_only_when_a_sketch_is_new(
     assert len(provider.requests) == 2
 
 
+def _generate_one(
+    channel: ChannelConfig, library: SketchLibrary, images: object, vision: object
+) -> None:
+    generate_module.generate_one(
+        scene(1),
+        channel,
+        library=library,
+        style_version_id=1,
+        images=images,  # type: ignore[arg-type]
+        vision=vision,  # type: ignore[arg-type]
+        tracker=SpendTracker(None),
+        reference_png=b"",
+        prices=PRICES,
+        video_id="v",
+    )
+
+
+def test_generate_one_refuses_already_tracked_clients(
+    channel: ChannelConfig, library: SketchLibrary
+) -> None:
+    tracker = SpendTracker(None)
+    tracked_images = TrackedImageProvider(FakeImages(), tracker, PRICES, "openai", "gpt-image-1")
+    tracked_vision = TrackedLLM(FakeLLM([]), tracker, "anthropic", "claude-opus-5-5", PRICES)
+    with pytest.raises(TypeError, match="untracked"):
+        _generate_one(channel, library, tracked_images, None)
+    with pytest.raises(TypeError, match="untracked"):
+        _generate_one(channel, library, FakeImages(), tracked_vision)
+
+
+def test_generate_missing_refuses_already_tracked_clients(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    tracker = SpendTracker(None)
+    tracked = TrackedImageProvider(FakeImages(), tracker, PRICES, "openai", "gpt-image-1")
+    with pytest.raises(TypeError, match="untracked"):
+        generate_missing(
+            series([scene(1)]),
+            channel,
+            settings,
+            images=tracked,
+            vision=None,
+            library=library,
+            prices=PRICES,
+        )
+
+
 def test_generate_one_needs_an_idea_key(channel: ChannelConfig, library: SketchLibrary) -> None:
     from narratoflow.costs.tracker import SpendTracker
 
@@ -626,3 +938,90 @@ def test_generate_one_needs_an_idea_key(channel: ChannelConfig, library: SketchL
             prices=PRICES,
             video_id="v",
         )
+
+
+def test_a_limit_equal_to_the_part_estimate_lets_the_part_finish(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from narratoflow.costs.tracker import estimate_part_cost
+
+    priced = PriceTable._from_text(
+        """
+[llm."anthropic/claude-opus-5-5"]
+input_per_mtok = "5"
+output_per_mtok = "25"
+[image."openai/gpt-image-1"]
+per_image = "0.04"
+[vision."anthropic/claude-opus-5-5"]
+per_image_check = "0.01"
+""",
+        "test",
+    )
+    _bundled(monkeypatch, tmp_path, img.scroll())
+    s = series(
+        [
+            scene(1, match="new"),
+            scene(2, "eye|generic", match="bundled"),
+            scene(3, match="new"),
+        ]
+    )
+    limit = estimate_part_cost(s.parts[0], channel, priced, voice_chars=0)
+    limited = channel.model_copy(update={"spending_limit_usd": limit})
+    images = FakeImages([img.line_drawing_scroll(), img.scroll(width=4)])
+    _, result = generate_missing(
+        s,
+        limited,
+        settings,
+        images=images,
+        vision=FakeLLM(clean(3)),
+        library=library,
+        prices=priced,
+    )
+    assert (result.generated, result.bundled) == (2, 1)
+    assert result.spent_usd <= limit
+
+
+def test_a_failed_bundled_copy_is_not_checked_again(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _bundled(monkeypatch, tmp_path, img.scroll(width=4))
+    s = series([scene(1, "eye|generic", match="bundled")])
+    faces = FakeLLM([verdict(face=True), verdict(face=True)])
+    run(s, channel, settings, library, FakeImages(), faces)  # icon and fallback both fail
+    images, vision = FakeImages([img.scroll(width=5)]), FakeLLM([verdict()])
+    _, result = run(series([scene(2, "eye|generic")]), channel, settings, library, images, vision)
+    # the stored FAILED copy is authoritative: only the generated sketch is checked
+    assert len(images.requests) == 1 and len(vision.calls) == 1
+    assert vision.images[0][0] == img.scroll(width=5)
+    assert result.bundled == 0 and result.generated == 1
+
+
+def test_bundled_vision_error_stores_nothing(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _bundled(monkeypatch, tmp_path, img.scroll(width=4))
+    with pytest.raises(GenerationInterruptedError) as info:
+        run(
+            series([scene(1, "eye|generic")]),
+            channel,
+            settings,
+            library,
+            FakeImages(),
+            FakeLLM([ProviderError("down")]),
+        )
+    assert isinstance(info.value.__cause__, ProviderError)
+    [sc] = scenes_of(info.value.partial[0])
+    assert sc.sketch_id is None and sc.flags == []
+    assert library.find_by_content(1, "eye|generic", img.scroll(width=4)) is None

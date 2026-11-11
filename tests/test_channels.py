@@ -235,5 +235,16 @@ def test_unknown_nested_key_is_an_error(channel_file: Path, table: str, line: st
     assert f"{table}.{key}" in str(exc.value)
 
 
+def test_unknown_key_holding_a_secret_is_named_but_not_echoed(channel_file: Path) -> None:
+    channel_file.write_text(
+        channel_file.read_text().replace("[llm]", '[llm]\napi_key = "sk-ant-SECRET999"', 1)
+    )
+    with pytest.raises(ChannelConfigError) as exc:
+        load_channel(channel_file)
+    assert "llm.api_key" in str(exc.value)
+    assert "sk-ant-SECRET999" not in str(exc.value)
+    assert "sk-ant-SECRET999" not in str(exc.value.__cause__)
+
+
 def test_fixture_channel_still_loads(channel_file: Path) -> None:
     assert load_channel(channel_file).riwaya == "hafs"

@@ -74,6 +74,20 @@ def test_channel_check_missing_key_exit_1(
     assert "Traceback" not in captured.err
 
 
+def test_channel_check_never_prints_a_misplaced_secret(
+    channel_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    channel_file.write_text(
+        channel_file.read_text().replace("[llm]", '[llm]\napi_key = "sk-ant-SECRET999"', 1)
+    )
+    code = run_main(monkeypatch, "channel", "check", str(channel_file))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "llm.api_key" in captured.err
+    assert "sk-ant-SECRET999" not in captured.err
+    assert "sk-ant-SECRET999" not in captured.out
+
+
 def test_channel_check_ok(channel_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "secret")
     result = runner.invoke(cli.app, ["channel", "check", str(channel_file)])

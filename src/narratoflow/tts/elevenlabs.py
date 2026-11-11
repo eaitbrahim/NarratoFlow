@@ -33,6 +33,7 @@ from narratoflow.errors import (
 from narratoflow.tts import Speech, SpeechRequest
 
 BASE_URL = "https://api.elevenlabs.io/v1"
+QUOTA_EXCEEDED = "quota_exceeded"  # exhausted credits: an outage, not a bad key
 OUTPUT_FORMAT = "mp3_44100_128"
 TIMEOUT_S = 120.0
 MAX_SECONDS = 3600
@@ -63,22 +64,26 @@ class ElevenLabsProvider:
         secret = self._api_key.get_secret_value()
         return text.replace(secret, "***") if secret else text
 
-    def _http_error(self, response: httpx.Response) -> str:
-        status = response.status_code
-        if status in (401, 403):
-            return f"ElevenLabs rejected the API key (HTTP {status})"
-        if status == 429:
-            return f"ElevenLabs rate limit (HTTP {status})"
-        detail_status = ""
+    def _detail_status(self, response: httpx.Response) -> str:
         try:
             body: Any = response.json()
         except ValueError:
-            body = None
+            return ""
         detail = body.get("detail") if isinstance(body, dict) else None
         value = detail.get("status") if isinstance(detail, dict) else None
-        if isinstance(value, str) and value:
-            detail_status = f": {self._scrub(value)[:80]}"
-        return f"ElevenLabs returned HTTP {status} for model {self.model!r}{detail_status}"
+        return self._scrub(value)[:80] if isinstance(value, str) and value else ""
+
+    def _http_error(self, response: httpx.Response) -> str:
+        status = response.status_code
+        detail = self._detail_status(response)
+        suffix = f": {detail}" if detail else ""
+        if detail == QUOTA_EXCEEDED:
+            return f"ElevenLabs quota exceeded (HTTP {status})"
+        if status in (401, 403):
+            return f"ElevenLabs rejected the API key (HTTP {status}){suffix}"
+        if status == 429:
+            return f"ElevenLabs rate limit (HTTP {status})"
+        return f"ElevenLabs returned HTTP {status} for model {self.model!r}{suffix}"
 
     def synthesize(self, req: SpeechRequest) -> Speech:
         if not ELEVENLABS_VOICE_ID_RE.fullmatch(req.voice_id):
@@ -99,7 +104,8 @@ class ElevenLabsProvider:
         except httpx.HTTPError as e:
             raise ProviderError(f"Cannot reach ElevenLabs: {self._scrub(str(e))}") from e
         if not response.is_success:
-            if response.status_code in (401, 403, 404):
+            quota = self._detail_status(response) == QUOTA_EXCEEDED
+            if response.status_code in (401, 403, 404) and not quota:
                 # A rejected key or an unknown voice is a configuration error, not an
                 # outage: it must stop the build, never fall back to a free voice.
                 raise ProviderAuthError(self._http_error(response))

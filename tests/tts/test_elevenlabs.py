@@ -118,10 +118,25 @@ def test_rejected_key_is_a_config_error_without_the_key(status: int) -> None:
     h: Handler = lambda r: httpx.Response(status, json={"detail": {"status": KEY}})  # noqa: E731
     with pytest.raises(ProviderAuthError) as ei:
         provider(h).synthesize(req())
-    assert str(ei.value) == f"ElevenLabs rejected the API key (HTTP {status})"
+    assert str(ei.value) == f"ElevenLabs rejected the API key (HTTP {status}): ***"
     assert KEY not in str(ei.value)
     assert isinstance(ei.value, ChannelConfigError)
     assert not isinstance(ei.value, ProviderError)  # never a voice outage: no fallback
+
+
+def test_rejected_key_message_keeps_the_detail_status() -> None:
+    h: Handler = lambda r: httpx.Response(401, json={"detail": {"status": "invalid_api_key"}})  # noqa: E731
+    with pytest.raises(ProviderAuthError) as ei:
+        provider(h).synthesize(req())
+    assert str(ei.value) == "ElevenLabs rejected the API key (HTTP 401): invalid_api_key"
+
+
+def test_quota_exceeded_401_is_an_outage_that_falls_back() -> None:
+    h: Handler = lambda r: httpx.Response(401, json={"detail": {"status": "quota_exceeded"}})  # noqa: E731
+    with pytest.raises(ProviderError) as ei:
+        provider(h).synthesize(req())
+    assert not isinstance(ei.value, ProviderAuthError)
+    assert str(ei.value) == "ElevenLabs quota exceeded (HTTP 401)"
 
 
 def test_unknown_voice_404_is_a_config_error_with_a_scrubbed_message() -> None:

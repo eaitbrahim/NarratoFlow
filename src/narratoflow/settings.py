@@ -4,12 +4,19 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from narratoflow.errors import SettingsError
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="NARRATOFLOW_", env_file=".env")
+    model_config = SettingsConfigDict(
+        env_prefix="NARRATOFLOW_",
+        env_file=".env",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
 
     data_dir: Path = Path("~/.narratoflow")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -22,7 +29,16 @@ class Settings(BaseSettings):
     def _expand_data_dir(cls, value: Path) -> Path:
         return value.expanduser()
 
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _upper_log_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as e:
+        # hide_input_in_errors keeps raw values (possibly API keys) out of this message.
+        raise SettingsError(f"invalid NarratoFlow settings (environment or .env):\n{e}") from e

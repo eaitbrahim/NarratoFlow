@@ -132,3 +132,27 @@ def test_check_input_unreadable_file_exit_1(
     code = run_main(monkeypatch, "check-input", str(tmp_path / "missing.txt"))
     assert code == 1
     assert "cannot read" in capsys.readouterr().err
+
+
+def test_bad_dotenv_value_exit_1_without_leaking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".env").write_text("NARRATOFLOW_LOG_LEVEL=sk-SECRET123\n", encoding="utf-8")
+    code = run_main(monkeypatch, "check-input", str(INPUTS / "clean_en.txt"), "--language", "en")
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Traceback" not in captured.err
+    assert "sk-SECRET123" not in captured.out + captured.err
+    assert "settings" in captured.err.lower()
+
+
+def test_dotenv_typo_key_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".env").write_text(
+        "NARRATOFLOW_IMAGE_APIKEY=sk-SECRET123\nNARRATOFLOW_LOG_LEVEL=debug\n", encoding="utf-8"
+    )
+    code = run_main(monkeypatch, "check-input", str(INPUTS / "clean_en.txt"), "--language", "en")
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert "sk-SECRET123" not in captured.out + captured.err

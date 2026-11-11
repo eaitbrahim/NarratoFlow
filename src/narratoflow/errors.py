@@ -23,3 +23,7 @@ class LibraryError(NarratoFlowError):
 
 class CorruptInputError(NarratoFlowError):
     """An input file is corrupt or unreadable."""
+
+
+class SettingsError(NarratoFlowError):
+    """Application settings (environment or .env) are invalid."""

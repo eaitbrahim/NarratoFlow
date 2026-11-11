@@ -142,3 +142,138 @@ def label_map(*, seed: int = 7) -> bytes:
 
 def blank() -> bytes:
     return _png(Image.new("RGB", (SIZE, SIZE), "white"))
+
+
+# Legitimate single-direction rulings and pen dots (re-review round 2). Coordinates
+# are on a 512 grid and scaled to `size`; the stroke width scales too.
+
+
+def _canvas(size: int) -> tuple[Image.Image, ImageDraw.ImageDraw, float, int]:
+    image = Image.new("RGB", (size, size), "white")
+    k = size / SIZE
+    return image, ImageDraw.Draw(image), k, max(1, round(3 * k))
+
+
+def notebook(*, spacing: int, size: int = SIZE) -> bytes:
+    """A ruled notebook page with a margin line."""
+    image, draw, k, w = _canvas(size)
+    x0, y0, x1, y1 = int(76 * k), int(40 * k), int(436 * k), int(472 * k)
+    draw.rectangle((x0, y0, x1, y1), outline="black", width=w)
+    y = y0 + 3 * spacing * k
+    while y < y1 - spacing * k / 2:
+        draw.line((x0, int(y), x1, int(y)), fill="black", width=w)
+        y += spacing * k
+    draw.line((x0 + int(40 * k), y0, x0 + int(40 * k), y1), fill="black", width=w)
+    return _png(image)
+
+
+def scroll_text(*, spacing: int, size: int = SIZE) -> bytes:
+    """An unrolled scroll covered in wavy handwriting-like text lines."""
+    image, draw, k, w = _canvas(size)
+    x0, y0, x1, y1 = int(110 * k), int(70 * k), int(402 * k), int(442 * k)
+    draw.rectangle((x0, y0, x1, y1), outline="black", width=w)
+    for yc in (y0, y1):
+        box = (x0 - int(30 * k), yc - int(25 * k), x1 + int(30 * k), yc + int(25 * k))
+        draw.ellipse(box, outline="black", width=w)
+    rng = random.Random(3)  # noqa: S311 - deterministic fixture
+    y = y0 + 40 * k
+    while y < y1 - 30 * k:
+        x = x0 + 20 * k
+        while x < x1 - 30 * k:
+            length = rng.uniform(20, 60) * k
+            points = [(x + t, y + 2 * k * math.sin(t / (4 * k))) for t in range(0, int(length), 2)]
+            draw.line(points, fill="black", width=w)
+            x += length + 10 * k
+        y += spacing * k
+    return _png(image)
+
+
+def brick(*, brick_w: int, brick_h: int, size: int = SIZE) -> bytes:
+    """A running-bond brick wall with a window above it."""
+    image, draw, k, w = _canvas(size)
+    x0, y0, x1, y1 = int(56 * k), int(96 * k), int(456 * k), int(456 * k)
+    bw, bh = int(brick_w * k), int(brick_h * k)
+    draw.rectangle((x0, y0, x1, y1), outline="black", width=w)
+    for row, y in enumerate(range(y0, y1, bh)):
+        draw.line((x0, y, x1, y), fill="black", width=w)
+        for x in range(x0 + (bw // 2 if row % 2 else 0), x1, bw):
+            draw.line((x, y, x, min(y + bh, y1)), fill="black", width=w)
+    draw.rectangle((int(200 * k), int(40 * k), int(312 * k), int(96 * k)), outline="black", width=w)
+    return _png(image)
+
+
+def fence(*, gap: int, size: int = SIZE) -> bytes:
+    """A picket fence: pointed vertical pickets, two rails and the ground."""
+    image, draw, k, w = _canvas(size)
+    x = 40 * k
+    while x < 472 * k:
+        xi = int(x)
+        draw.line((xi, int(200 * k), xi, int(440 * k)), fill="black", width=w)
+        draw.line((xi, int(200 * k), xi + int(gap * k / 2), int(190 * k)), fill="black", width=w)
+        x += gap * k
+    for y in (250, 400):
+        draw.line((int(40 * k), int(y * k), int(472 * k), int(y * k)), fill="black", width=w)
+    draw.line((0, int(440 * k), size, int(440 * k)), fill="black", width=w)
+    return _png(image)
+
+
+def blinds(*, slat: int, size: int = SIZE) -> bytes:
+    """Window blinds: a frame of horizontal slats and a pull cord."""
+    image, draw, k, w = _canvas(size)
+    x0, y0, x1, y1 = int(110 * k), int(60 * k), int(402 * k), int(452 * k)
+    draw.rectangle((x0, y0, x1, y1), outline="black", width=w)
+    y = y0 + slat * k
+    while y < y1:
+        draw.line((x0, int(y), x1, int(y)), fill="black", width=w)
+        y += slat * k
+    draw.line((int(256 * k), y0, int(256 * k), y1), fill="black", width=1)
+    return _png(image)
+
+
+def ladder(*, rung: int, size: int = SIZE) -> bytes:
+    image, draw, k, w = _canvas(size)
+    for x in (200, 312):
+        draw.line((int(x * k), int(30 * k), int(x * k), int(490 * k)), fill="black", width=w)
+    y = 40 * k
+    while y < 490 * k:
+        draw.line((int(200 * k), int(y), int(312 * k), int(y)), fill="black", width=w)
+        y += rung * k
+    return _png(image)
+
+
+def stripes(*, period: int, size: int = SIZE) -> bytes:
+    """Barcode-like vertical stripes."""
+    image, draw, k, w = _canvas(size)
+    x = 100 * k
+    while x < 412 * k:
+        draw.line((int(x), int(150 * k), int(x), int(360 * k)), fill="black", width=w)
+        x += period * k
+    return _png(image)
+
+
+def scene_with_shadow() -> bytes:
+    """Outlined objects plus a 160 px crosshatched shadow (2 px lines every 7 px)."""
+    image, draw, _, w = _canvas(SIZE)
+    draw.rectangle((60, 60, 300, 300), outline="black", width=w)
+    draw.ellipse((320, 60, 470, 210), outline="black", width=w)
+    patch = Image.new("RGB", (160, 160), "white")
+    pd = ImageDraw.Draw(patch)
+    for o in range(-160, 321, 7):
+        pd.line((o, 0, o + 160, 160), fill="black", width=2)
+        pd.line((o + 160, 0, o, 160), fill="black", width=2)
+    image.paste(patch, (300, 300))
+    return _png(image)
+
+
+PEN_DOT_FACTORS = (1.0, 1.5, 2.0, 3.0)
+
+
+def pen_dots(*, size: int = SIZE) -> bytes:
+    """A frame plus solid dots of 1, 1.5, 2 and 3 line weights (i-dots, nuqta)."""
+    image, draw, _, w = _canvas(size)
+    draw.rectangle((size // 4, size // 4, 3 * size // 4, 3 * size // 4), outline="black", width=w)
+    for n, factor in enumerate(PEN_DOT_FACTORS):
+        diameter = int(w * factor)
+        x, y = size // 3 + n * size // 10, size // 2
+        draw.ellipse((x, y, x + diameter, y + diameter), fill="black")
+    return _png(image)

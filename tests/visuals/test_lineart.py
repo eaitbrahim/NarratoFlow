@@ -74,22 +74,55 @@ def test_thin_line_art_survives(width: int) -> None:
 
 _CROSS = (45, 135)
 _GRID = (0, 90)
-_MUST_REJECT_HATCH = (
-    [pytest.param(_CROSS, w, s, id=f"cross45-w{w}-s{s}") for w in (2, 3) for s in range(6, 11)]
-    + [pytest.param(_GRID, w, s, id=f"grid-w{w}-s{s}") for w in (2, 3) for s in range(6, 11)]
-    + [
-        pytest.param(angles, w, s, id=f"parallel{angles[0]}-w{w}-s{s}")
-        for angles in ((0,), (45,), (30,))
-        for w in (2, 3)
-        for s in (6, 7, 8)
-    ]
-)
+_MUST_REJECT_HATCH = [
+    pytest.param(_CROSS, w, s, id=f"cross45-w{w}-s{s}") for w in (2, 3) for s in range(6, 11)
+] + [pytest.param(_GRID, w, s, id=f"grid-w{w}-s{s}") for w in (2, 3) for s in range(6, 11)]
+# single-direction parallel hatching (0/45/30 deg, 2-3 px, spacing 6-8) is deliberately
+# left to the vision outlier check: no assertion either way (see the calibration table)
 
 
 @pytest.mark.parametrize(("angles", "width", "spacing"), _MUST_REJECT_HATCH)
 def test_sweep_hatching_rejected(angles: tuple[int, ...], width: int, spacing: int) -> None:
     report = check_density(binarize(images.hatch(spacing=spacing, width=width, angles=angles)))
     assert not report.ok, report
+    assert report.second_orientation_ratio >= lineart.MIN_SECOND_ORIENTATION
+
+
+def test_scene_with_crosshatched_shadow_rejected() -> None:
+    report = check_density(binarize(images.scene_with_shadow()))
+    assert report.reason is not None
+    assert report.reason.startswith("dense_tiles ")
+
+
+_RULINGS: dict[str, Callable[..., bytes]] = {
+    "notebook-8": partial(images.notebook, spacing=8),
+    "notebook-10": partial(images.notebook, spacing=10),
+    "scroll-text-10": partial(images.scroll_text, spacing=10),
+    "brick-20x10": partial(images.brick, brick_w=20, brick_h=10),
+    "brick-24x12": partial(images.brick, brick_w=24, brick_h=12),
+    "fence-8": partial(images.fence, gap=8),
+    "fence-10": partial(images.fence, gap=10),
+    "blinds-8": partial(images.blinds, slat=8),
+    "blinds-10": partial(images.blinds, slat=10),
+    "ladder-10": partial(images.ladder, rung=10),
+    "stripes-8": partial(images.stripes, period=8),
+}
+
+
+@pytest.mark.parametrize("size", [512, 1024])
+@pytest.mark.parametrize("name", list(_RULINGS))
+def test_single_direction_rulings_pass(name: str, size: int) -> None:
+    # ruled pages, fences, blinds, brick: one dominant orientation, not crosshatch
+    report = check_density(binarize(_RULINGS[name](size=size)))
+    assert report.ok, report
+    assert report.second_orientation_ratio < 0.6 * lineart.MIN_SECOND_ORIENTATION
+
+
+@pytest.mark.parametrize("size", [512, 1024, 2048])
+def test_pen_dots_survive_speck_removal(size: int) -> None:
+    ink = binarize(images.pen_dots(size=size))
+    count = cv2.connectedComponents(ink.astype(np.uint8), connectivity=8)[0] - 1
+    assert count == 1 + len(images.PEN_DOT_FACTORS)  # frame + every dot
 
 
 _SPARSE_PATTERNS = [
@@ -226,3 +259,12 @@ def test_sources_are_ascii() -> None:
     root = Path(__file__).parents[2] / "src" / "narratoflow"
     for path in (root / "visuals" / "lineart.py", root / "errors.py"):
         assert path.read_bytes().isascii()
+
+
+def test_tiny_image_has_no_hatch_frequencies() -> None:
+    # at 16 px the period limit is under a pixel, so no bin is a hatch frequency
+    y, x = np.indices((16, 16))
+    report = check_density((y + x) % 2 == 1)
+    assert report.dense_tiles == 64
+    assert report.block_periodicity > 0.0
+    assert report.second_orientation_ratio == 0.0

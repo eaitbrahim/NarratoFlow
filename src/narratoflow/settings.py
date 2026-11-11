@@ -25,11 +25,22 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     embed_api_key: SecretStr | None = None
     ollama_url: str = "http://localhost:11434"
+    ffmpeg: Path | None = None
 
     @field_validator("data_dir")
     @classmethod
     def _expand_data_dir(cls, value: Path) -> Path:
         return value.expanduser()
+
+    @field_validator("ffmpeg", mode="before")
+    @classmethod
+    def _blank_ffmpeg_is_unset(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("ffmpeg")
+    @classmethod
+    def _expand_ffmpeg(cls, value: Path | None) -> Path | None:
+        return value.expanduser() if value is not None else None
 
     @field_validator("log_level", mode="before")
     @classmethod

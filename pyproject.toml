@@ -19,6 +19,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.20.1",
     "anthropic>=2.8",
+    "fonttools>=4.53",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +53,8 @@ build-backend = "hatchling.build"
 packages = ["src/narratoflow"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"assets/fonts" = "narratoflow/assets/fonts"
+"assets/hands" = "narratoflow/assets/hands"
 "assets/icons" = "narratoflow/assets/icons"
 "assets/reciters" = "narratoflow/assets/reciters"
 "assets/sfx" = "narratoflow/assets/sfx"
@@ -86,6 +89,7 @@ module = [
     "ctc_forced_aligner.*",
     "onnxruntime.*",
     "unidecode.*",
+    "fontTools.*",
 ]
 ignore_missing_imports = true
 

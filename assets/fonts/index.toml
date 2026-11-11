@@ -1,0 +1,39 @@
+[fonts.amiri-regular]
+file = "Amiri-Regular.ttf"
+family = "Amiri"
+license = "OFL-1.1"
+license_file = "OFL-Amiri.txt"
+source = "https://github.com/aliftype/amiri/releases/download/1.003/Amiri-1.003.zip#Amiri-1.003/Amiri-Regular.ttf"
+sha256 = "cd2550c0f4c05eb341bf97958211aaa39382bca96577ba3a67d4a3b4912c43c0"
+
+[fonts.amiri-bold]
+file = "Amiri-Bold.ttf"
+family = "Amiri"
+license = "OFL-1.1"
+license_file = "OFL-Amiri.txt"
+source = "https://github.com/aliftype/amiri/releases/download/1.003/Amiri-1.003.zip#Amiri-1.003/Amiri-Bold.ttf"
+sha256 = "8cfed49b66de57e360ac61631d882dddfa23095d3ddb39fc2133eaf93892e79a"
+
+[fonts.amiri-quran]
+file = "AmiriQuran.ttf"
+family = "Amiri Quran"
+license = "OFL-1.1"
+license_file = "OFL-Amiri.txt"
+source = "https://github.com/aliftype/amiri/releases/download/1.003/Amiri-1.003.zip#Amiri-1.003/AmiriQuran.ttf"
+sha256 = "e2a47644762d16bdfb6d33e0d8db8c6ff30beae84150ef5a705316bbd829455c"
+
+[fonts.notosans-regular]
+file = "NotoSans-Regular.ttf"
+family = "Noto Sans"
+license = "OFL-1.1"
+license_file = "OFL-NotoSans.txt"
+source = "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip#NotoSans/hinted/ttf/NotoSans-Regular.ttf"
+sha256 = "478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823"
+
+[fonts.notosans-bold]
+file = "NotoSans-Bold.ttf"
+family = "Noto Sans"
+license = "OFL-1.1"
+license_file = "OFL-NotoSans.txt"
+source = "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip#NotoSans/hinted/ttf/NotoSans-Bold.ttf"
+sha256 = "1df075a380fc7cb898acf64c1f7b3b4dd780de3caa860178bf929de35817a913"

@@ -3,6 +3,7 @@ import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1134,3 +1135,204 @@ def test_audio_build_unknown_part_exits_1(
     assert "no part 9" in capsys.readouterr().err
     assert path.read_text(encoding="utf-8") == before
     assert not (tmp_path / "audio").exists()
+
+
+def test_resolve_text_card_with_card_text(channel_file: Path, tmp_path: Path) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    out = _resolve(channel_file, path, "--text-card", "--card-text", "Patience")
+    assert out.exit_code == 0, out.output
+    assert Series.load(path).parts[0].scenes[0].card_text == "Patience"
+
+
+def test_resolve_card_text_again_updates_an_existing_card(
+    channel_file: Path, tmp_path: Path
+) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    assert _resolve(channel_file, path, "--text-card", "--card-text", "One").exit_code == 0
+    out = _resolve(channel_file, path, "--text-card", "--card-text", "Two")
+    assert out.exit_code == 0, out.output
+    scene = Series.load(path).parts[0].scenes[0]
+    assert scene.card_text == "Two" and scene.visual.source is VisualSource.TEXT_CARD
+
+
+def test_card_text_requires_text_card(channel_file: Path, tmp_path: Path) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    out = _resolve(channel_file, path, "--regenerate", "--card-text", "x")
+    assert out.exit_code == 2
+
+
+def _render_part(part: int, count: int, warnings: list[str]) -> Any:
+    from narratoflow.render.build import PartVideo
+
+    report = SimpleNamespace(
+        part_index=part,
+        part_count=count,
+        duration_ms=61500,
+        frames=1845,
+        width=1080,
+        height=1920,
+        fps=30,
+        warnings=warnings,
+    )
+    return PartVideo(
+        index=part,
+        video_path=Path(f"/o/part-{part:02d}.mp4"),
+        report_path=Path(f"/o/part-{part:02d}.render.json"),
+        report=report,  # type: ignore[arg-type]
+    )
+
+
+def _patch_render(
+    monkeypatch: pytest.MonkeyPatch, result: Any = None, raises: BaseException | None = None
+) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+
+    def fake(series: Series, channel: ChannelConfig, settings: Settings, **kw: Any) -> Any:
+        seen.append(kw)
+        if raises is not None:
+            raise raises
+        return result
+
+    monkeypatch.setattr(cli, "build_render", fake)
+    return seen
+
+
+def _render_args(path: Path, channel_file: Path, *extra: str) -> list[str]:
+    return ["render", str(path), "--channel", str(channel_file), *extra]
+
+
+def test_render_prints_part_lines_and_warnings(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.render.build import RenderResult
+
+    path = _approved_series(tmp_path)
+    result = RenderResult(parts=[_render_part(1, 2, ["drift 3 ms"]), _render_part(2, 2, [])])
+    _patch_render(monkeypatch, result)
+    out = runner.invoke(cli.app, _render_args(path, channel_file))
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    assert "part 1/2: 61.5 s, 1845 frames, 1080x1920 @ 30 fps -> /o/part-01.mp4" in text
+    assert "report: /o/part-01.render.json" in text
+    assert "warning: part 1: drift 3 ms" in text
+    assert "part 2/2" in text and "part 2:" not in text
+
+
+def test_render_default_audio_and_out_dirs_and_part_filter(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.render.build import RenderResult
+
+    path = _approved_series(tmp_path)
+    seen = _patch_render(monkeypatch, RenderResult())
+    out = runner.invoke(
+        cli.app, _render_args(path, channel_file, "--part", "2", "--part", "3", "--workers", "2")
+    )
+    assert out.exit_code == 0, out.output
+    assert seen[0]["audio_dir"] == tmp_path / "audio" == seen[0]["out_dir"]
+    assert seen[0]["parts"] == [2, 3] and seen[0]["workers"] == 2
+    runner.invoke(
+        cli.app,
+        _render_args(
+            path, channel_file, "--audio", str(tmp_path / "a"), "--out", str(tmp_path / "o")
+        ),
+    )
+    assert seen[1]["audio_dir"] == tmp_path / "a" and seen[1]["out_dir"] == tmp_path / "o"
+    assert seen[1]["parts"] is None and seen[1]["workers"] is None
+    runner.invoke(cli.app, _render_args(path, channel_file, "--audio", str(tmp_path / "a")))
+    assert seen[2]["out_dir"] == tmp_path / "a"
+
+
+def test_render_stale_timeline_exits_1_with_message(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.render import build as build_module
+
+    monkeypatch.setattr(build_module, "find_render_tools", lambda settings: object())
+    path = _approved_series(tmp_path)
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "audio build" in err and "Traceback" not in err
+
+
+def test_render_workers_below_one_is_a_usage_error(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _approved_series(tmp_path)
+    seen = _patch_render(monkeypatch)
+    for bad in ("0", "-3"):
+        out = runner.invoke(cli.app, _render_args(path, channel_file, "--workers", bad))
+        assert out.exit_code == 2 and "Traceback" not in out.output
+    assert seen == []
+
+
+def test_render_interrupt_exits_nonzero_without_traceback(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    _patch_render(monkeypatch, raises=KeyboardInterrupt())
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    err = capsys.readouterr().err
+    assert code != 0
+    assert "interrupted" in err and "Traceback" not in err
+
+
+def _patch_render_failing_after_part_one(
+    monkeypatch: pytest.MonkeyPatch, raises: BaseException
+) -> None:
+    def fake(series: Series, channel: ChannelConfig, settings: Settings, **kw: Any) -> Any:
+        kw["on_part"](_render_part(1, 3, []))
+        raise raises
+
+    monkeypatch.setattr(cli, "build_render", fake)
+
+
+def test_render_interrupt_lists_finished_parts(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    _patch_render_failing_after_part_one(monkeypatch, KeyboardInterrupt())
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    err = " ".join(capsys.readouterr().err.split())
+    assert code == 130
+    assert "finished parts: 1" in err and "/o/part-01.mp4" in err
+
+
+def test_render_failure_lists_finished_parts(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.errors import RenderError
+
+    path = _approved_series(tmp_path)
+    _patch_render_failing_after_part_one(monkeypatch, RenderError("scene s9: boom"))
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    err = " ".join(capsys.readouterr().err.split())
+    assert code == 1
+    assert "finished parts: 1" in err and "/o/part-01.mp4" in err
+    assert "scene s9: boom" in err and "Traceback" not in err
+
+
+def test_render_interrupt_before_any_part(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    _patch_render(monkeypatch, raises=KeyboardInterrupt())
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    assert code == 130
+    assert "no part finished" in capsys.readouterr().err

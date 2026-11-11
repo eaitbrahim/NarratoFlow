@@ -25,7 +25,7 @@ SFX_GAIN_DB = -12.0
 SFX_FADE_MS = 15
 
 _FIELDS = frozenset({"file", "license", "source", "attribution"})
-_LICENSES = frozenset({"CC0-1.0", "MIT", "ISC", "Apache-2.0", "CC-BY-4.0"})
+ASSET_LICENSES = frozenset({"CC0-1.0", "MIT", "ISC", "Apache-2.0", "CC-BY-4.0"})
 
 
 class SfxAsset(BaseModel):
@@ -55,7 +55,7 @@ def _build(sid: str, entry: object, index_path: Path) -> SfxAsset:
     license_ = _text(where, entry, "license")
     source = _text(where, entry, "source")
     attribution = _text(where, entry, "attribution", required=False)
-    if license_ not in _LICENSES:
+    if license_ not in ASSET_LICENSES:
         raise ChannelConfigError(f"{where}: license {license_!r} is not allowed")
     if license_ == "CC-BY-4.0" and not attribution.strip():
         raise ChannelConfigError(f"{where}: CC-BY-4.0 requires an attribution")

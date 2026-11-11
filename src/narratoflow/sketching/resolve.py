@@ -28,15 +28,22 @@ from narratoflow.sketching.generate import (
 )
 
 
-def _resolved(series: Series, scene_id: str, change: Callable[[Scene], dict[str, Any]]) -> Series:
+def _resolved(
+    series: Series,
+    scene_id: str,
+    change: Callable[[Scene], dict[str, Any]],
+    *,
+    settled: Callable[[Scene], bool] = lambda _: False,
+) -> Series:
     """A copy of `series` whose quarantined scene `scene_id` is updated by `change`
-    (the quarantine flag is always cleared)."""
+    (the quarantine flag is always cleared). An unflagged scene is refused unless
+    `settled` accepts it."""
     out = series.model_copy(deep=True)
     for part in out.parts:
         for i, scene in enumerate(part.scenes):
             if scene.id != scene_id:
                 continue
-            if QUARANTINED_FLAG not in scene.flags:
+            if QUARANTINED_FLAG not in scene.flags and not settled(scene):
                 raise PlanningError(f"scene {scene_id} is not quarantined")
             flags = [f for f in scene.flags if f != QUARANTINED_FLAG]
             part.scenes[i] = scene.model_copy(update={**change(scene), "flags": flags})
@@ -157,13 +164,21 @@ def swap_idea(series: Series, scene_id: str, new_key: str, description: str) -> 
     return _resolved(series, scene_id, change)
 
 
-def use_text_card(series: Series, scene_id: str) -> Series:
-    """Show a text card instead of a sketch (the card is drawn in Plan 5)."""
+def use_text_card(series: Series, scene_id: str, card_text: str | None = None) -> Series:
+    """Show a text card instead of a sketch; `card_text` is what the card says.
+
+    A scene already resolved as a text card accepts a new `card_text` (its text is
+    replaced); without one it is refused like any other unquarantined scene.
+    """
 
     def change(scene: Scene) -> dict[str, Any]:
         return {
             "sketch_id": None,
+            "card_text": card_text or "",
             "visual": scene.visual.model_copy(update={"source": VisualSource.TEXT_CARD}),
         }
 
-    return _resolved(series, scene_id, change)
+    def is_card(scene: Scene) -> bool:
+        return card_text is not None and scene.visual.source is VisualSource.TEXT_CARD
+
+    return _resolved(series, scene_id, change, settled=is_card)

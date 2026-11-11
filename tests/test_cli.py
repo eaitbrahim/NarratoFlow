@@ -419,7 +419,7 @@ def test_cli_budget_error_exit_1(
     code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file))
     captured = capsys.readouterr()
     assert code == 1
-    assert "exceeds limit" in captured.err
+    assert "exceeds the remaining" in captured.err
     assert "Traceback" not in captured.err
     assert not (script.parent / "series.json").exists()
 

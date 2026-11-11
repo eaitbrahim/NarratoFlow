@@ -116,9 +116,12 @@ def resample(samples: Samples, rate: int) -> Samples:
 
 
 def encode_flac(samples: Samples, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    os.close(fd)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        os.close(fd)
+    except OSError as exc:
+        raise AudioError(f"cannot write {path}: {exc}") from exc
     tmp = Path(tmp_name)
     try:
         out, _ = _run(
@@ -146,6 +149,8 @@ def encode_flac(samples: Samples, path: Path) -> None:
         tmp.write_bytes(out)
         tmp.chmod(0o644)
         os.replace(tmp, path)
+    except OSError as exc:
+        raise AudioError(f"cannot write {path}: {exc}") from exc
     finally:
         tmp.unlink(missing_ok=True)
 

@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 KEY_ENV_VAR = "NARRATOFLOW_VOICE_API_KEY"
 PIPER_VOICE_ID = "piper"
 
+# provider -> terms id recorded in each part's timeline (spec 6.2)
+_VOICE_TERMS: dict[str, str] = {
+    "elevenlabs": "elevenlabs-terms",
+    "edge": "edge-tts-terms",
+    "piper": "piper-model-license",
+}
+
+
+def voice_terms(provider: str) -> str:
+    """The terms id of a voice provider; `<provider>-terms` for one not in the table."""
+    name = provider.strip().lower()
+    return _VOICE_TERMS.get(name, f"{name}-terms")
+
 
 class TrackedSpeechProvider:
     """Wraps a provider: checks the budget before each call, charges once after success.

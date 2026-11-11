@@ -34,14 +34,12 @@ from narratoflow.audio.sfx import SfxPack, default_sfx
 from narratoflow.audio.timeline import AssetUse, PartTimeline, RecitationUsed
 from narratoflow.audio.words import tokens
 from narratoflow.channels.config import ChannelConfig
-from narratoflow.channels.keys import ProviderKind, required_key_env_vars
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import SpendTracker, estimate_speech_cost
 from narratoflow.errors import (
     AudioError,
     ChannelConfigError,
     LibraryError,
-    MissingApiKeyError,
     NarratoFlowError,
     PlanningError,
 )
@@ -101,14 +99,6 @@ class _Plan:
     strokes: dict[str, StrokeSet]
     reciter: Reciter | None
     corpus: QuranCorpus | None
-
-
-def _require_voice_key(channel: ChannelConfig, settings: Settings) -> None:
-    """Only the voice key: audio spends nothing on image, LLM or embed providers."""
-    var = required_key_env_vars(channel).get(ProviderKind.VOICE)
-    key = settings.voice_api_key
-    if var is not None and (key is None or not key.get_secret_value()):
-        raise MissingApiKeyError(f"Missing API key environment variable(s): {var}")
 
 
 def _selected(series: Series, parts: Sequence[int] | None) -> list[Part]:
@@ -203,7 +193,6 @@ def _preflight(
     if channel.background_music:
         raise ChannelConfigError("no licensed music pack is bundled; set background_music = false")
     require_ffmpeg()
-    _require_voice_key(channel, settings)
     prices = prices if prices is not None else default_prices(settings)
     prices.voice(channel.voice.provider, channel.voice.model)
     chain = voices if voices is not None else build_voice_chain(channel, settings)
@@ -258,6 +247,7 @@ def _recitations(reciter: Reciter | None, verses: list[Scene]) -> list[Recitatio
             license_url=reciter.license_url,
             source=reciter.source,
             segments_source=reciter.segments_source,
+            checked=reciter.checked,
             ayat=ayat,
         )
     ]
@@ -303,10 +293,9 @@ class _Run:
         primary = plan.chain[0]
         name, model = primary.provider.name, primary.provider.model
         chars = uncached_chars(part, primary, self.cache)
-        tracker.ensure_room(
-            estimate_speech_cost(plan.prices, name, model, chars),
-            f"voice {name}/{model} part {part.index}",
-        )
+        estimate = estimate_speech_cost(plan.prices, name, model, chars)
+        if estimate > 0:  # verse-only, fully cached or free: nothing to refuse
+            tracker.ensure_room(estimate, f"voice {name}/{model} part {part.index}")
         narration = narrate_part(
             part,
             plan.chain,

@@ -54,6 +54,7 @@ from narratoflow.models import (
     Visual,
     VisualSource,
 )
+from narratoflow.money import format_usd
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.reciters import Reciter, ReciterIndex
 from narratoflow.settings import Settings
@@ -67,6 +68,7 @@ PRICES = PriceTable({"voice": {"paid/m1": (PER_KCHAR,), "other/m2": (Decimal("0.
 CORPUS = QuranCorpus.from_files(
     FIXTURES / "quran/quran-simple-clean.txt", FIXTURES / "quran/quran-uthmani.txt"
 )
+PRICES_WITH_ELEVEN = PriceTable({"voice": {"elevenlabs/eleven_multilingual_v2": (PER_KCHAR,)}})
 RECITATION = to_wav_bytes(speechlike(5, seed=7))
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -523,6 +525,11 @@ def test_limit_spans_stages(
     cause = info.value.__cause__
     assert isinstance(cause, BudgetExceededError)
     assert str(info.value) == f"{cause} (progress so far is kept)"
+    assert str(cause) == (
+        f"voice paid/m1 part 2: estimated cost {format_usd(cost('gamma delta'))} exceeds the "
+        "remaining $0.0010 (spent $0.0990 of the $0.10 per-part limit; "
+        "raise spending_limit_usd in the channel file)"
+    )
     assert [r.text for r in voice.requests] == ["alpha beta"]  # part 2 never voiced
     partial, so_far = info.value.partial
     assert [p.index for p in so_far.parts] == [1]
@@ -595,11 +602,21 @@ def test_only_voice_key_required(
             )
         }
     )
-    again = FakeVoice()
     with pytest.raises(MissingApiKeyError, match="NARRATOFLOW_VOICE_API_KEY") as info:
-        run(s, paid, settings, tmp_path, voices=[again], library=library, pack=pack)
+        build_audio(
+            s,
+            paid,
+            settings,
+            out_dir=tmp_path / "out2",
+            cache_root=tmp_path / "series" / ".cache",
+            library=library,
+            sfx=pack,
+            prices=PRICES_WITH_ELEVEN,
+            reciters=ReciterIndex([]),
+            corpus=CORPUS,
+            aligner=None,
+        )
     assert "IMAGE" not in str(info.value)
-    assert again.requests == []
 
 
 def test_unpriced_voice_refused_before_spend(
@@ -833,3 +850,46 @@ def test_empty_voice_chain_refused(
             library=library,
             pack=pack,
         )
+
+
+def test_cached_part_is_not_refused_when_the_limit_was_lowered(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    s = make_series([narr("s1", "alpha beta gamma")])
+    out, first = run(
+        s, channel, settings, tmp_path, voices=[FakeVoice()], library=library, pack=pack
+    )
+    assert first.spent_usd > 0
+    lowered = channel.model_copy(update={"spending_limit_usd": Decimal("0.0001")})
+    again = FakeVoice()
+    _, rerun = run(out, lowered, settings, tmp_path, voices=[again], library=library, pack=pack)
+    assert again.requests == [] and rerun.spent_usd == 0
+
+
+def test_timeline_records_voice_terms_and_reciter_check_date(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    sid = _sketch(library)
+    s = make_series([verse("v1"), narr("s1", "alpha beta gamma", sketch=sid)])
+    _, result = run(
+        s,
+        channel,
+        settings,
+        tmp_path,
+        voices=[FakeVoice()],
+        library=library,
+        pack=pack,
+        reciters=ReciterIndex([files_reciter()]),
+        http=reciter_server([]),
+    )
+    timeline = PartTimeline.load(result.parts[0].timeline_path)
+    assert timeline.voice is not None and timeline.voice.terms == "paid-terms"
+    assert timeline.recitations[0].checked == date(2026, 11, 11)

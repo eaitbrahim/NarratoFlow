@@ -57,6 +57,19 @@ def test_ensure_room_accounts_for_spent_and_boundary() -> None:
         t.ensure_room(Decimal("0.51"), "b")
 
 
+def test_budget_refusal_names_what_spent_and_remaining() -> None:
+    t = SpendTracker(Decimal("0.08"), spent=Decimal("0.08"))
+    with pytest.raises(BudgetExceededError) as info:
+        t.ensure_room(Decimal("0.04"), "voice elevenlabs/eleven_multilingual_v2 part 2")
+    assert str(info.value) == (
+        "voice elevenlabs/eleven_multilingual_v2 part 2: estimated cost $0.04 exceeds the "
+        "remaining $0.00 (spent $0.08 of the $0.08 per-part limit; "
+        "raise spending_limit_usd in the channel file)"
+    )
+    assert info.value.spent_usd == Decimal("0.08")
+    assert info.value.what == "voice elevenlabs/eleven_multilingual_v2 part 2"
+
+
 def test_no_limit_never_blocks() -> None:
     t = SpendTracker(None)
     t.ensure_room(Decimal("1000000"), "x")

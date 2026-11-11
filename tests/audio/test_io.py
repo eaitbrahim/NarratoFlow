@@ -4,6 +4,7 @@ import dataclasses
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -163,3 +164,14 @@ def test_resample_to_16k_length(ffmpeg_bin: str) -> None:
 def test_resample_rejects_bad_rate() -> None:
     with pytest.raises(AudioError, match="sample rate"):
         aio.resample(tone(10), 0)
+
+
+def test_encode_flac_oserror_becomes_audio_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def boom(**_: object) -> tuple[int, str]:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tempfile, "mkstemp", boom)
+    with pytest.raises(AudioError, match="disk full"):
+        aio.encode_flac(tone(100), tmp_path / "a.flac")

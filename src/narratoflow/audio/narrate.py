@@ -36,7 +36,7 @@ from narratoflow.errors import (
 from narratoflow.models import Language, Part, Scene, SceneKind, WordTiming
 from narratoflow.pipeline.cache import StageCache, cache_key
 from narratoflow.tts import SpeechRequest, VoiceChoice
-from narratoflow.tts.factory import TrackedSpeechProvider
+from narratoflow.tts.factory import TrackedSpeechProvider, voice_terms
 from narratoflow.tts.piper import PiperProvider
 
 ADAPTER_VERSION = "1"
@@ -357,6 +357,7 @@ def narrate_part(
             provider=choice.provider.name,
             model=choice.provider.model,
             voice_id=choice.voice_id,
+            terms=voice_terms(choice.provider.name),
             fallback_from=_label(chain[0]) if index > 0 else None,
             fallback_reasons=reasons,
         )

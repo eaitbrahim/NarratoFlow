@@ -53,7 +53,7 @@ class SpendTracker:
     def ensure_room(self, estimate: Decimal, what: str) -> None:
         """Raise `BudgetExceededError` if `spent + estimate` would pass the limit."""
         if self.limit_usd is not None and self.spent + estimate > self.limit_usd:
-            raise BudgetExceededError(self.spent + estimate, self.limit_usd)
+            raise BudgetExceededError(estimate, self.limit_usd, spent_usd=self.spent, what=what)
         logger.debug("budget ok for %s", what)
 
     def charge(self, amount: Decimal, what: str) -> None:

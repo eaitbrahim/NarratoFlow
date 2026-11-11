@@ -69,7 +69,12 @@ def base() -> dict[str, Any]:
                 "gain_db": -6.0,
             }
         ],
-        "voice": {"provider": "elevenlabs", "model": "m", "voice_id": "v"},
+        "voice": {
+            "provider": "elevenlabs",
+            "model": "m",
+            "voice_id": "v",
+            "terms": "elevenlabs-terms",
+        },
         "recitations": [
             {
                 "reciter_id": "r1",
@@ -79,6 +84,7 @@ def base() -> dict[str, Any]:
                 "license_url": "https://example.invalid/l",
                 "source": "https://example.invalid/s",
                 "segments_source": None,
+                "checked": "2026-11-11",
                 "ayat": ["31:33"],
             }
         ],
@@ -464,3 +470,14 @@ def test_saved_file_is_world_readable(tmp_path: Path) -> None:
     path = tmp_path / "t.json"
     make(base()).save(path)
     assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_provenance_fields_are_required() -> None:
+    data = base()
+    del data["voice"]["terms"]
+    with pytest.raises(ValidationError):
+        make(data)
+    data = base()
+    del data["recitations"][0]["checked"]
+    with pytest.raises(ValidationError):
+        make(data)

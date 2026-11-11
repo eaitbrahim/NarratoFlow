@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 from collections.abc import Sequence
+from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -171,6 +172,7 @@ class VoiceUsed(BaseModel):
     provider: str
     model: str
     voice_id: str
+    terms: str  # provider terms id, e.g. "elevenlabs-terms"
     fallback_from: str | None = None
     fallback_reasons: list[str] = Field(default_factory=list)
 
@@ -185,6 +187,7 @@ class RecitationUsed(BaseModel):
     license_url: str
     source: str
     segments_source: str | None
+    checked: date  # when the licence was last checked
     ayat: list[str]  # "31:33"
 
 

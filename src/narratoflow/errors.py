@@ -60,12 +60,35 @@ class ProviderRefusalError(ProviderError):
 class BudgetExceededError(NarratoFlowError):
     """An estimate exceeds the configured spending limit."""
 
-    def __init__(self, estimate_usd: Decimal, limit_usd: Decimal) -> None:
+    def __init__(
+        self,
+        estimate_usd: Decimal,
+        limit_usd: Decimal,
+        *,
+        spent_usd: Decimal | None = None,
+        what: str | None = None,
+    ) -> None:
+        """With `spent_usd`, `estimate_usd` is the call's own estimate and the message
+        names the remaining room; without it, `estimate_usd` is the projected total.
+        """
         self.estimate_usd = estimate_usd
         self.limit_usd = limit_usd
-        super().__init__(
-            f"estimated cost {format_usd(estimate_usd)} exceeds limit {format_usd(limit_usd)}"
-        )
+        self.spent_usd = spent_usd
+        self.what = what
+        if spent_usd is None:
+            message = (
+                f"estimated cost {format_usd(estimate_usd)} exceeds limit {format_usd(limit_usd)}"
+            )
+        else:
+            remaining = max(Decimal(0), limit_usd - spent_usd)
+            prefix = f"{what}: " if what else ""
+            message = (
+                f"{prefix}estimated cost {format_usd(estimate_usd)} exceeds the remaining "
+                f"{format_usd(remaining)} (spent {format_usd(spent_usd)} of the "
+                f"{format_usd(limit_usd)} per-part limit; "
+                "raise spending_limit_usd in the channel file)"
+            )
+        super().__init__(message)
 
 
 class SegmentationError(NarratoFlowError):

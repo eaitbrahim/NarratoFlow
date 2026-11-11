@@ -26,3 +26,12 @@ Verse scenes therefore FAIL until a licensed reciter is added.
 
 | Reciter id | Riwaya | Source | License | License URL | Segments | Checked |
 |---|---|---|---|---|---|---|
+
+## SFX
+
+| Pack | Path | Source | License | Attribution |
+|---|---|---|---|---|
+| Marker squeaks (4) | assets/sfx/ | scripts/make_sfx.py (synthesized noise, NarratoFlow's own work) | Apache-2.0 | — |
+
+Regenerate with `uv run python scripts/make_sfx.py` (needs ffmpeg); output is committed.
+Index licences must be one of CC0-1.0, MIT, ISC, Apache-2.0, CC-BY-4.0 (the last with attribution).

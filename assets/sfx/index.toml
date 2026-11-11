@@ -1,0 +1,19 @@
+[sfx.marker-1]
+file = "marker-1.flac"
+license = "Apache-2.0"
+source = "scripts/make_sfx.py"
+
+[sfx.marker-2]
+file = "marker-2.flac"
+license = "Apache-2.0"
+source = "scripts/make_sfx.py"
+
+[sfx.marker-3]
+file = "marker-3.flac"
+license = "Apache-2.0"
+source = "scripts/make_sfx.py"
+
+[sfx.marker-4]
+file = "marker-4.flac"
+license = "Apache-2.0"
+source = "scripts/make_sfx.py"

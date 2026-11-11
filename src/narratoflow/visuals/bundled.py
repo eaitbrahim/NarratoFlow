@@ -36,7 +36,6 @@ class BundledIcons:
     @staticmethod
     def _parse(index_path: Path) -> dict[str, BundledIcon]:
         data = tomllib.loads(index_path.read_text(encoding="utf-8"))
-        root = index_path.parent.resolve()
         icons: dict[str, BundledIcon] = {}
         for raw_key, entry in data.get("icons", {}).items():
             try:
@@ -51,7 +50,7 @@ class BundledIcons:
                 raise ChannelConfigError(
                     f"bundled icon index entry {raw_key!r}: duplicate key {str(key)!r}"
                 )
-            icons[str(key)] = _build(raw_key, key, entry, index_path, root)
+            icons[str(key)] = _build(raw_key, key, entry, index_path)
         return icons
 
     def get(self, key: IdeaKey) -> BundledIcon | None:
@@ -65,7 +64,25 @@ def _text(raw_key: str, entry: object, field: str) -> str:
     return value
 
 
-def _build(raw_key: str, key: IdeaKey, entry: object, index_path: Path, root: Path) -> BundledIcon:
+def confined_file(where: str, rel: Path, index_path: Path, suffix: str) -> Path:
+    """The existing `suffix` file `rel` names, which must stay inside the index directory.
+
+    `where` prefixes every error ("<where>: file must be ..."). Shared with the SFX pack.
+    """
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ChannelConfigError(f"{where}: file must be a relative path inside")
+    if rel.suffix.lower() != suffix:
+        raise ChannelConfigError(f"{where}: file must be a {suffix}")
+    path = index_path.parent / rel
+    resolved = path.resolve()
+    if not resolved.is_relative_to(index_path.parent.resolve()):
+        raise ChannelConfigError(f"{where}: file resolves outside the index")
+    if not resolved.is_file():
+        raise ChannelConfigError(f"{where}: file {str(rel)!r} does not exist")
+    return path
+
+
+def _build(raw_key: str, key: IdeaKey, entry: object, index_path: Path) -> BundledIcon:
     if not isinstance(entry, dict):
         raise ChannelConfigError(f"bundled icon index entry {raw_key!r}: entry must be a table")
     unknown = sorted(set(entry) - _FIELDS)
@@ -73,23 +90,12 @@ def _build(raw_key: str, key: IdeaKey, entry: object, index_path: Path, root: Pa
         raise ChannelConfigError(f"bundled icon index entry {raw_key!r}: unknown fields {unknown}")
     license_ = _text(raw_key, entry, "license")
     source = _text(raw_key, entry, "source")
-    rel = Path(_text(raw_key, entry, "file"))
-    if rel.is_absolute() or ".." in rel.parts:
-        raise ChannelConfigError(
-            f"bundled icon index entry {raw_key!r}: file must be a relative path inside"
-        )
-    if rel.suffix.lower() != ".png":
-        raise ChannelConfigError(f"bundled icon index entry {raw_key!r}: file must be a .png")
-    path = index_path.parent / rel
-    resolved = path.resolve()
-    if not resolved.is_relative_to(root):
-        raise ChannelConfigError(
-            f"bundled icon index entry {raw_key!r}: file resolves outside the index"
-        )
-    if not resolved.is_file():
-        raise ChannelConfigError(
-            f"bundled icon index entry {raw_key!r}: file {str(rel)!r} does not exist"
-        )
+    path = confined_file(
+        f"bundled icon index entry {raw_key!r}",
+        Path(_text(raw_key, entry, "file")),
+        index_path,
+        ".png",
+    )
     return BundledIcon(key=str(key), file=path, license=license_, source=source)
 
 

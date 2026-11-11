@@ -10,6 +10,7 @@ Open-source pipeline that turns Classical Arabic (الفصحى) or English text 
 uv sync --group dev              # core + dev tools
 uv sync --extra arabic --extra tts-edge   # add engines as needed
 uv run narratoflow --help
+# Prices: a packaged default table is used; copy it to $NARRATOFLOW_DATA_DIR/prices.toml to override.
 uv run pytest
 
 cp .env.example .env             # then fill in keys for any paid providers

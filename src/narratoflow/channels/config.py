@@ -7,11 +7,12 @@ import json
 import tomllib
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from narratoflow.errors import ChannelConfigError
+from narratoflow.llm.base import Effort
 from narratoflow.models import AspectRatio, Language
 
 
@@ -35,9 +36,6 @@ class VoiceConfig(BaseModel):
     provider: str
     model: str = ""
     voice_id: str
-
-
-Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class LlmConfig(BaseModel):

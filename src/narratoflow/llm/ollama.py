@@ -22,6 +22,7 @@ class OllamaClient:
         self.url = f"{base_url.rstrip('/')}/api/chat"
         self.model = model
         self.http = http if http is not None else httpx.Client(timeout=DEFAULT_TIMEOUT_S)
+        self.timeout_s = self.http.timeout.read or DEFAULT_TIMEOUT_S
 
     def complete_structured[T: BaseModel](
         self, *, system: str, user: str, output: type[T]
@@ -37,6 +38,8 @@ class OllamaClient:
         }
         try:
             response = self.http.post(self.url, json=payload)
+        except httpx.TimeoutException as e:
+            raise ProviderError(f"Ollama timed out after {self.timeout_s:g}s") from e
         except httpx.HTTPError as e:
             raise ProviderError(f"Cannot reach Ollama at {self.url}: {e}") from e
         if not response.is_success:
@@ -59,9 +62,23 @@ class OllamaClient:
                 f"Ollama output did not match {output.__name__}: {e.error_count()} error(s)"
             ) from e
         usage = Usage(
-            input_tokens=int(body.get("prompt_eval_count") or 0),
-            output_tokens=int(body.get("eval_count") or 0),
+            input_tokens=_count(body.get("prompt_eval_count")),
+            output_tokens=_count(body.get("eval_count")),
         )
         return StructuredResult(
             value=value, usage=usage, model=str(body.get("model") or self.model)
         )
+
+
+def _count(raw: object) -> int:
+    """A token count from the Ollama body; anything non-numeric counts as 0."""
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int | float):
+        return int(raw)
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            return 0
+    return 0

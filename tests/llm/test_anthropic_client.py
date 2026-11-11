@@ -160,12 +160,20 @@ def test_missing_parsed_output_raises_provider_error() -> None:
         client.complete_structured(system="s", user="u", output=Scene)
 
 
-def test_truncated_output_raises_provider_error_naming_stop_reason() -> None:
-    truncated = _message([_text('{"title": "The w')], stop_reason="max_tokens")
-    client = _make(_recording(truncated, []))
-    with pytest.raises(ProviderError, match="max_tokens") as info:
+@pytest.mark.parametrize("text", ['{"title": "The w', SCENE_JSON])
+def test_truncated_output_names_the_max_tokens_limit(text: str) -> None:
+    truncated = _message([_text(text)], stop_reason="max_tokens")
+    client = _make(_recording(truncated, []), max_tokens=9000)
+    with pytest.raises(ProviderError, match=r"truncated at max_tokens=9000") as info:
         client.complete_structured(system="s", user="u", output=Scene)
+    assert "llm.max_tokens" in str(info.value)
     assert not isinstance(info.value, ProviderRefusalError)
+
+
+def test_schema_mismatch_raises_provider_error() -> None:
+    client = _make(_recording(_message([_text('{"title": "x"}')]), []))
+    with pytest.raises(ProviderError, match="did not match Scene"):
+        client.complete_structured(system="s", user="u", output=Scene)
 
 
 def _error_body(kind: str, message: str) -> dict[str, Any]:

@@ -11,15 +11,16 @@ Without `betas`/`fallbacks` the beta surface sends the same request as
 
 from __future__ import annotations
 
+from typing import Literal
+
 import anthropic
-from anthropic import APIResponse
+from anthropic import APIResponse, Omit, omit
 from anthropic.types.anthropic_beta_param import AnthropicBetaParam
 from anthropic.types.beta.parsed_beta_message import ParsedBetaMessage
 from pydantic import BaseModel, SecretStr, ValidationError
 
-from narratoflow.channels.config import Effort
 from narratoflow.errors import ProviderError, ProviderRefusalError
-from narratoflow.llm.base import StructuredResult, Usage
+from narratoflow.llm.base import Effort, StructuredResult, Usage
 
 FALLBACK_BETA: AnthropicBetaParam = "server-side-fallback-2026-07-01"
 KEY_ENV_VAR = "NARRATOFLOW_LLM_API_KEY"
@@ -81,6 +82,11 @@ class AnthropicClient:
         if envelope.stop_reason == "refusal":
             details = envelope.stop_details
             raise ProviderRefusalError(details.category if details else None)
+        if envelope.stop_reason == "max_tokens":
+            raise ProviderError(
+                f"Anthropic output truncated at max_tokens={self.max_tokens}; "
+                "raise llm.max_tokens in the channel config"
+            )
         try:
             message = raw.parse()
         except ValidationError as e:
@@ -102,18 +108,11 @@ class AnthropicClient:
     def _send[T: BaseModel](
         self, *, system: str, user: str, output: type[T]
     ) -> APIResponse[ParsedBetaMessage[T]]:
+        betas: list[AnthropicBetaParam] | Omit = omit
+        fallbacks: Literal["default"] | Omit = omit
+        if self.refusal_fallback:
+            betas, fallbacks = [FALLBACK_BETA], "default"
         try:
-            if self.refusal_fallback:
-                return self.sdk.beta.messages.with_raw_response.parse(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": user}],
-                    output_format=output,
-                    output_config={"effort": self.effort},
-                    betas=[FALLBACK_BETA],
-                    fallbacks="default",
-                )
             return self.sdk.beta.messages.with_raw_response.parse(
                 model=self.model,
                 max_tokens=self.max_tokens,
@@ -121,6 +120,8 @@ class AnthropicClient:
                 messages=[{"role": "user", "content": user}],
                 output_format=output,
                 output_config={"effort": self.effort},
+                betas=betas,
+                fallbacks=fallbacks,
             )
         except anthropic.AuthenticationError as e:
             raise ProviderError(

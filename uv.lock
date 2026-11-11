@@ -1377,6 +1377,7 @@ ui = [
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "httpx2" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1415,6 +1416,7 @@ provides-extras = ["arabic", "tts-edge", "tts-local", "align", "diffusion", "ui"
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7.6" },
+    { name = "httpx2", specifier = "==2.16.0" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pytest", specifier = ">=8.2" },
     { name = "pytest-cov", specifier = ">=5.0" },

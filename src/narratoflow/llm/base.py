@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel
+
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class Usage(BaseModel):

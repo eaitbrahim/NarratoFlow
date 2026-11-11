@@ -100,6 +100,39 @@ def test_connection_error_raises_provider_error() -> None:
     assert isinstance(info.value.__cause__, httpx.ConnectError)
 
 
+def test_timeout_raises_provider_error_naming_the_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), timeout=45.0)
+    client = OllamaClient(base_url="http://ollama.test", model="qwen2.5", http=http)
+    with pytest.raises(ProviderError, match="Ollama timed out after 45s") as info:
+        client.complete_structured(system="s", user="u", output=Idea)
+    assert isinstance(info.value.__cause__, httpx.ReadTimeout)
+
+
+@pytest.mark.parametrize(
+    ("prompt_count", "eval_count", "expected"),
+    [
+        ("12", 7.0, Usage(input_tokens=12, output_tokens=7)),
+        ("lots", None, Usage(input_tokens=0, output_tokens=0)),
+        (True, {"n": 3}, Usage(input_tokens=0, output_tokens=0)),
+    ],
+)
+def test_non_numeric_usage_counts_fall_back_to_zero(
+    prompt_count: object, eval_count: object, expected: Usage
+) -> None:
+    body = {
+        "model": "qwen2.5",
+        "message": {"role": "assistant", "content": '{"key": "k", "weight": 1}'},
+        "prompt_eval_count": prompt_count,
+        "eval_count": eval_count,
+    }
+    client = _client(httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    result = client.complete_structured(system="s", user="u", output=Idea)
+    assert result.usage == expected
+
+
 def test_default_http_client_has_timeout() -> None:
     client = OllamaClient(base_url="http://localhost:11434", model="qwen2.5")
     assert client.http.timeout.read == 120.0

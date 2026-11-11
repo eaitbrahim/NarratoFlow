@@ -30,7 +30,7 @@
   - Any FAIL blocks that part's export. There is **no override**: no flag, no option, and no field anywhere that turns a FAIL into a pass.
   - WARNs go into the report and never block.
   - Blocking is **per part**, because each part is one video. `narratoflow publish` exits 1 when any selected part is blocked.
-- **Publish spends nothing and never touches the network.** It never builds an LLM client and never imports `narratoflow.llm.factory`. Only `narratoflow review` spends, via `TrackedLLM` and a `SpendTracker(channel.spending_limit_usd, spent=part.spent_usd)`. It writes `Part.spent_usd` and `Part.spend` back, as the sketch and audio stages do.
+- **Publish spends nothing and never touches the network.** It never calls `build_llm_client`/`make_llm` and builds no LLM client. (Other modules that publish imports already import `narratoflow.llm.factory` transitively, so the rule is about calls, not imports.) `publish/review.py` is the only publish module that names the factory. Only `narratoflow review` spends, via `TrackedLLM` and a `SpendTracker(channel.spending_limit_usd, spent=part.spent_usd)`. It writes `Part.spent_usd` and `Part.spend` back, as the sketch and audio stages do.
 - **Platform rules file values.** `src/narratoflow/data/platform_rules.toml`, `version = "2026-11-11.1"`, `checked = 2026-11-11`. None of these numbers is pinned by the spec except the 9:16 frame. Each is in the file with a `verify` note:
   - YouTube Shorts `max_duration_s = 180`. Source: <https://support.google.com/youtube/answer/15424877> (square or vertical uploads of up to 3 minutes are Shorts, since 2024-10-15; no minimum is published). **Verify.**
   - TikTok `max_duration_s = 600`. This is the in-app recording limit. Uploads are reportedly allowed up to 60 min, but only third-party guides say so; it was not checked on TikTok's help centre. **Verify** at <https://support.tiktok.com>.
@@ -50,7 +50,7 @@
   - `RULES_MAX_AGE_DAYS = 180` (a design call). A rules file checked more than 180 days before the run gives a WARN.
 - **Licence verdicts live in the rules file.**
   - A licence id missing from its table is a **FAIL** (spec §6.3: "a license that doesn't allow this use").
-  - Asset licences (`licences.assets`): `CC0-1.0`, `MIT`, `ISC`, `Apache-2.0` and `OFL-1.1` pass. `CC-BY-4.0` passes only with a recorded attribution. These are the same as `assets/LICENSES.md`.
+  - Asset licences (`licences.assets`): `CC0-1.0`, `MIT`, `ISC`, `Apache-2.0` and `OFL-1.1` pass. `CC-BY-4.0` passes only with a recorded attribution. This list is a subset of `assets/LICENSES.md` (which also allows CC-BY-SA with attribution; here that is a FAIL "not allowed").
   - Generated-image terms (`licences.generated`): `openai-terms` passes. `local-model-license` gives a WARN ("check the local model's licence allows commercial use of outputs").
   - Voice terms (`licences.voice`), all WARN with a note:
     - `elevenlabs-terms`: commercial use needs a paid plan;
@@ -119,6 +119,7 @@ src/narratoflow/
   audio/build.py             # MODIFY: add_spend into Part.spend
   audio/io.py                # MODIFY: parse_loudnorm (extracted from measure; output unchanged)
   render/ffmpeg.py           # MODIFY: run_tool_capture (stdout + stderr); run_tool delegates to it
+  render/build.py            # MODIFY: _visual becomes public visual_kind(scene); callers updated
   captions/ass.py            # MODIFY: ass_round_ms, parse_events
   planning/prompts.py        # MODIFY: CONTENT_REVIEW_SYSTEM
   data/platform_rules.toml   # NEW: dated, versioned rules
@@ -129,14 +130,16 @@ src/narratoflow/
   publish/consistency.py     # NEW: render_current_checks, sketch_checks
   publish/verse.py           # NEW: expected_verse_text, verse_checks
   publish/technical.py       # NEW: MediaFacts, inspect_video, measure_loudness, technical_checks
-  publish/content.py         # NEW: review_text, review_part, estimate_review, review_series, content_checks
+  publish/content.py         # NEW: review_text, review_prompt, content_checks (never names the LLM factory)
+  publish/review.py          # NEW: review_part, estimate_review, review_series, ReviewResult, ReviewInterruptedError (the only publish module that names build_llm_client)
   publish/disclosure.py      # NEW: disclosure_text, platform_labels, disclosure_checks
   publish/report.py          # NEW: PublishReport (+ save/load/to_markdown), SeriesSummary, build_report, build_summary
   publish/build.py           # NEW: build_publish, PublishResult
   cli.py                     # MODIFY: `review`, `publish`
 tests/conftest.py            # MODIFY: probe_tools fixture moves here from tests/render/test_build.py
-tests/fixtures/parts.py      # NEW: builders moved from tests/render/test_build.py (+ fake_render_report)
-tests/fixtures/publish.py    # NEW: make_inputs, write_rules
+tests/fixtures/parts.py      # NEW: builders moved from tests/render/test_build.py (+ fake_render_report, reciter, FakeVoice)
+tests/fixtures/publish.py    # NEW: make_inputs, write_rules (with a minimal TOML emitter)
+tests/publish/conftest.py    # NEW: channel and settings fixtures
 tests/publish/...            # NEW
 README.md                    # MODIFY: review / publish in Quick start
 ```
@@ -145,7 +148,7 @@ README.md                    # MODIFY: review / publish in Quick start
 
 ### Task 1: Check framework, errors and the dated platform rules file
 
-**Files:** Modify `errors.py`. Create `publish/__init__.py`, `publish/checks.py`, `publish/rules.py` and `data/platform_rules.toml`. Tests: `tests/publish/__init__.py`, `tests/publish/test_checks.py`, `tests/publish/test_rules.py`.
+**Files:** Modify `errors.py`. Create `publish/__init__.py`, `publish/checks.py`, `publish/rules.py` and `data/platform_rules.toml`. Tests: `tests/publish/__init__.py`, `tests/publish/test_checks.py`, `tests/publish/test_rules.py`. The tests that need a modified or broken rules file write TOML text inline to `tmp_path` (a small helper in `test_rules.py`); `write_rules` arrives only in Task 3.
 
 **Interfaces — Produces:**
 - `PublishError(NarratoFlowError)`, `PublishCheckFailedError(PublishError)`.
@@ -167,7 +170,7 @@ README.md                    # MODIFY: review / publish in Quick start
   - `PlatformRules: name: str; max_duration_s: int` (> 0)`; width: int; height: int; fps: int; video_codecs: list[str]; pix_fmts: list[str]; audio_codecs: list[str]; audio_rate: int; ai_label: str; sources: list[str]` (each `https://`)`; verify: str`.
   - `ContentCategory: description: str; max_severity: Literal["warn", "fail"]; policies: list[str]`.
   - `RulesFile: version: str; checked: date; loudness: LoudnessRules; platforms: dict[str, PlatformRules]` (min 1; keys match `^[a-z0-9]+(-[a-z0-9]+)*$`)`; licences: Licences; content: dict[str, ContentCategory]`. Validation: `religious_discussion` and `other` exist, and both have `max_severity == "warn"`.
-  - `@dataclass(frozen=True) class Rules: file: RulesFile; sha256: str; origin: str`.
+  - `@dataclass(frozen=True) class Rules: file: RulesFile; sha256: str; origin: str`. `origin` is `"packaged"` or the absolute path of the override file; the report shows it in its rules line next to the version and the sha256.
   - `load_rules(path: Path) -> Rules` reads the bytes, computes the sha256 of those bytes, and validates. Any TOML, OS or validation error raises `PublishError("platform rules <path> ...")`.
   - `default_rules(settings: Settings) -> Rules` uses `settings.data_dir / "platform_rules.toml"` when it is a file, else the packaged `narratoflow/data/platform_rules.toml` via `importlib.resources`.
   - `RULES_MAX_AGE_DAYS = 180`.
@@ -191,7 +194,7 @@ README.md                    # MODIFY: review / publish in Quick start
   - `test_every_platform_has_https_sources_and_verify_note`;
   - `test_religious_discussion_fail_rejected`: a rules file setting it to `"fail"` raises `PublishError`; so does one without `other`;
   - `test_rules_sha256_is_of_file_bytes`;
-  - `test_data_dir_override_wins` (via `Settings(data_dir=tmp_path)`);
+  - `test_data_dir_override_wins` (via `Settings(data_dir=tmp_path)`; `origin` is the absolute override path, and `"packaged"` for the packaged file);
   - `test_broken_rules_names_file` (bad TOML, a missing field, an unknown key);
   - `test_rules_age_warns_after_180_days` (`today = checked + 181 days` gives a WARN; `+ 180` gives a PASS).
 - [ ] **Step 2: Run** `uv run pytest tests/publish -v`. Expected: FAIL (modules missing).
@@ -223,32 +226,33 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 
 **Files:**
 - Create `publish/provenance.py`, `tests/fixtures/parts.py` and `tests/fixtures/publish.py`.
-- Modify `tests/conftest.py` (receives the `probe_tools` fixture) and `tests/render/test_build.py`. Move `_strokes`, `add_sketch`, `narr`, `verse`, `make_series`, `_words`, `_timing`, `write_timelines`, `render`, `CORPUS` and `SLOT_MS` to `tests/fixtures/parts.py` unchanged, and import them back. Two of them gain keyword arguments, with defaults that keep today's output:
+- Modify `tests/conftest.py` (receives the `probe_tools` fixture) and `tests/render/test_build.py`. Move `_strokes`, `add_sketch`, `narr`, `verse`, `make_series`, `_words`, `_timing`, `write_timelines`, `render`, `CORPUS`, `SLOT_MS`, `_reciter` (renamed `reciter()`) and `FakeVoice` to `tests/fixtures/parts.py` unchanged, and import them back. Two of them gain keyword arguments, with defaults that keep today's output:
   - `write_timelines`:
     - `master: bool = False`: with it set, the tone is passed through `aio.master` (-14 LUFS) before `encode_flac`;
     - `voice: VoiceUsed | None = None`;
     - `assets: list[AssetUse] | None = None`.
   - `add_sketch` gains `provenance: Provenance | None = None`. The default stays today's `{"source": "t", "license": "t"}`, and publish fixtures pass `GENERATED_PROVENANCE`: source `"generated"`, licence `"openai-terms"`, provider `"openai"`, model `"gpt-image-1"`, usage terms set.
+- Create `tests/publish/conftest.py` with the `channel` and `settings` fixtures that the publish tests (and Task 10) share.
 - Tests: `tests/publish/test_provenance.py`.
 
 **Interfaces — Consumes:** `PartInputs`, `CheckResult`, `summarize`, `Rules` (Task 1); `ReciterIndex`, `default_reciters` (`quran/reciters.py`); `SketchRecord`, `SketchOrigin`, `Provenance`; `RenderReport.assets`, `PartTimeline.assets`, `.voice`, `.recitations`; `RenderReport.verses[*].ayat`.
 
 **Interfaces — Produces:**
 - `tests/fixtures/parts.py`: the moved builders, plus `fake_render_report(series: Series, part: Part, timeline: PartTimeline, *, video_file: str = ..., assets: list[RenderAsset] | None = None) -> RenderReport`. It builds a consistent report without rendering: one `SceneRender` per timeline scene, `VerseRender`s whose `shown_sha256` is that of `expected_verse_text` (Task 5; until then, the corpus formula from Global Constraints inline), and font and hand assets from `default_fonts()` / `default_hand()`.
-- `tests/fixtures/publish.py`: `make_inputs(tmp_path, library, *, series=None, render=None, timeline=None, **part_overrides) -> PartInputs`, a narration-only Arabic part with one generated sketch, plus `write_rules(tmp_path, **changes) -> Path` (the packaged TOML with dotted-key changes, for tests).
+- `tests/fixtures/publish.py`: `make_inputs(tmp_path, library, channel: ChannelConfig, *, series=None, render=None, timeline=None, **part_overrides) -> PartInputs`, a narration-only Arabic part with one generated sketch (tests pass the config loaded from `channel_file`). It uses `tmp_path` as `render_dir` and writes a placeholder `part-01.mp4` and a real `build_part_ass` `.ass` there, so `render_current` can pass. Also `write_rules(tmp_path, **changes) -> Path` (the packaged TOML with dotted-key changes, for tests). It writes TOML through a minimal emitter in this file, enough for the rules file's shapes (tables, str/int/float/bool/date/list); no TOML writer dependency is added, and it may reuse Task 1's inline helper.
 - `class AssetRecord(BaseModel)` (forbid):
   - `kind: Literal["sketch", "icon", "sfx", "font", "hand", "voice", "recitation"]; asset_id: str`;
   - `source: str; license: str; attribution: str = ""`;
   - `provider: str | None = None; model: str | None = None; created_at: datetime | None = None; usage_terms: str | None = None`;
   - `copied_from: int | None = None; scene_ids: list[str] = []`.
 - `asset_records(inputs: PartInputs) -> list[AssetRecord]` returns one record per distinct asset, in this order: sketches/icons (by `render.scenes` order), SFX, fonts, hand, voice, recitations.
-  - A sketch record is `"sketch"` when its provenance has a `provider`, else `"icon"` (bundled, or copied from bundled).
+  - Define **generated** := `origin is GENERATED or provenance.provider is not None`. A generated sketch record is `"sketch"`; everything else is `"icon"` (bundled, or copied from bundled). Task 8 uses the same predicate.
   - The voice record: `asset_id = f"{provider}/{voice_id}"`, `license = terms`, `source = provider`.
   - A recitation record: `asset_id = reciter_id`, `license`, `source`, `usage_terms = license_url`, and `scene_ids` = the verse scenes whose ayat it covers.
 - `provenance_checks(inputs: PartInputs, rules: Rules, reciters: ReciterIndex) -> list[CheckResult]` (`ASSET_PROVENANCE`). Each finding names the asset; FAIL reasons end with what to do. The rules:
   - A `render.scenes` sketch id whose record is None gives FAIL `"scene <id>: sketch <n> is not in the library; provenance unknown"`.
   - A blank `source` or `license` on any asset is a FAIL.
-  - A generated sketch (provenance `provider` is not None, or origin `GENERATED`) with a blank `provider`, `model` or `usage_terms` is a FAIL. Its licence is looked up in `rules.file.licences.generated`.
+  - A generated sketch (the predicate above) with a blank `provider`, `model` or `usage_terms` is a FAIL. Its licence is looked up in `rules.file.licences.generated`. A GENERATED record with no provider is therefore a "sketch", never an "icon".
   - Icons, SFX, fonts and the hand are looked up in `licences.assets`. An `attribution=True` licence with a blank attribution is a FAIL `"... CC-BY-4.0 needs an attribution; none is recorded"` (bundled icons record none).
   - Any lookup miss is a FAIL `"... licence <id> is not allowed by platform rules <version>"`. A `warn` verdict is a WARN with its `note`.
   - When the part has a NARRATION scene and `timeline.voice is None`: FAIL `"the narration voice is not recorded; rebuild audio"`. Otherwise `voice.terms` is looked up in `licences.voice`.
@@ -257,9 +261,8 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
     - `license`, `license_url` or `source` differ from the index: FAIL `"reciter <id>: its terms changed since the audio build; rebuild audio"`;
     - an ayah of `render.verses` not covered by any recitation's `ayat`: FAIL `"verse <s:a> has no licensed recitation recorded (unlicensed recitation)"`.
   - The PASS reason is `"<n> assets, each with a recorded source and an allowed licence"`.
-- `script_checks(inputs: PartInputs) -> list[CheckResult]` (`SCRIPT_SOURCE`), on `inputs.series.source`:
-  - `THIRD_PARTY_IN_COPYRIGHT`: FAIL `"'<work>' by <author> is third-party work in copyright; it cannot be published"`;
-  - `PERMISSION` with a blank note: FAIL;
+- `script_checks(inputs: PartInputs) -> list[CheckResult]` (`SCRIPT_SOURCE`), on `inputs.series.source`. It calls `script.source.check_rights` and maps `ScriptBlockedError` to a FAIL carrying that error's message; it does not re-implement the third-party or bare-permission rules. Only the items below are new code:
+  - `THIRD_PARTY_IN_COPYRIGHT` and `PERMISSION` with a blank note: FAIL with the `check_rights` message;
   - a blank author or work: WARN `"script source not recorded (author/work)"`;
   - otherwise PASS `"script: <work>, <author> (<rights>)"`, with `"; AI transcription - proofread"` appended when `ai_transcribed`.
 
@@ -267,6 +270,7 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 - [ ] **Step 2: Write the failing tests:**
   - `test_narration_part_passes_with_empty_reciter_index` (Review Focus 3): `ReciterIndex([])`, no verse, so exactly one PASS;
   - `test_generated_sketch_missing_model_or_terms_fails`;
+  - `test_generated_origin_without_provider_is_sketch_checked_as_generated`;
   - `test_unknown_generated_terms_fail_and_local_model_warns`;
   - `test_icon_cc_by_without_attribution_fails`;
   - `test_missing_library_record_fails`;
@@ -276,15 +280,15 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - `test_verse_without_recitation_fails` (Review Focus 3);
   - `test_reciter_removed_or_terms_changed_fails` (Review Focus 3);
   - `test_asset_records_one_per_asset_with_scene_ids` (the same sketch in two scenes gives one record with both ids);
-  - `test_script_third_party_and_bare_permission_fail_blank_author_warns`;
+  - `test_script_third_party_and_bare_permission_fail_blank_author_warns` (the FAIL message is `check_rights`'s);
   - `test_ai_transcribed_named_in_pass_reason`.
 - [ ] **Steps 3–6:** Red, implement, run the gate, then commit `feat: asset provenance and script-source publishing checks`.
 
 ### Task 4: Render currency and generation-time sketch results
 
-**Files:** Create `publish/consistency.py`. Test: `tests/publish/test_consistency.py`.
+**Files:** Create `publish/consistency.py`. Modify `render/build.py`: rename `_visual` to the public `visual_kind(scene)` and update its callers. Test: `tests/publish/test_consistency.py`.
 
-**Interfaces — Consumes:** `PartInputs`, `summarize` (Task 1); `SketchStatus`; `RenderReport.scenes` (`SceneRender.visual`, `.sketch_id`); `VisualSource.TEXT_CARD`; `vision.NOT_CHECKED`.
+**Interfaces — Consumes:** `PartInputs`, `summarize` (Task 1); `SketchStatus`; `RenderReport.scenes` (`SceneRender.visual`, `.sketch_id`); `render.build.visual_kind` (made public here); `vision.NOT_CHECKED`.
 
 **Interfaces — Produces:**
 - `RERENDER = "re-run narratoflow audio build and narratoflow render"`.
@@ -292,11 +296,13 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - the render's `(series_title, channel_slug, part_index, part_count)` differs from the series and the part, or the timeline's does;
   - `render.duration_ms != timeline.duration_ms`;
   - the `(scene_id, kind)` list of `render.scenes` differs from `part.scenes`;
-  - per scene: a render `visual == "text_card"` while the series scene is not a text card, or the reverse;
+  - per scene: `render.scenes[i].visual != visual_kind(scene)` (this covers a text-card swap in both directions; no second predicate is added);
   - per scene: a `"sketch"` scene whose `sketch_id != scene.sketch_id` (`"scene <id>: the video draws sketch <a>, the series now has sketch <b>"`);
   - `render_dir / render.video_file` or `render_dir / render.captions_file` is missing.
 
   The PASS reason is `"the video matches the series and its audio timeline"`.
+
+  The docstring notes the limit (G18): narration text edited after render, with the same scene ids, is not detected here, the same as render's `check_timeline`; the render report records no narration hash. The stale content review (Task 7) WARNs on it.
 - `sketch_checks(inputs: PartInputs) -> list[CheckResult]` returns two summarized groups, for each `"sketch"` scene whose record is not None (a None record is Task 3's FAIL):
   - `SKETCH_LIKENESS`:
     - `FAILED` is a FAIL `"scene <id>: sketch <n> failed the vision check (<status_reason>)"`;
@@ -319,7 +325,7 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 
 ### Task 5: Exact-verse check
 
-**Files:** Modify `captions/ass.py`. Create `publish/verse.py`. Tests: `tests/captions/test_ass.py` (extend), `tests/publish/test_verse.py`.
+**Files:** Modify `captions/ass.py` and `tests/fixtures/parts.py` (`fake_render_report` switches from Task 3's inline verse formula to `expected_verse_text`). Create `publish/verse.py`. Tests: `tests/captions/test_ass.py` (extend), `tests/publish/test_verse.py`.
 
 **Interfaces — Consumes:** `shown_text`, `AssEvent`, `AssDocument` (`captions`); `QuranCorpus`; `PartTimeline.scenes` (the slots); `VerseRender`.
 
@@ -333,18 +339,20 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 
   It round-trips `AssDocument.to_text()` up to centisecond rounding.
 - `expected_verse_text(corpus: QuranCorpus, ayat: Sequence[tuple[int, int]]) -> str` is the Global Constraints formula.
-- `verse_checks(inputs: PartInputs, corpus: Callable[[], QuranCorpus]) -> list[CheckResult]` (`VERSE_TEXT`). The corpus is loaded only when the part has a verse scene. For each verse scene, each item below is a FAIL `"FAIL: verse <s:a[-b]> ..."` with no override:
+- `verse_checks(inputs: PartInputs, corpus: Callable[[], QuranCorpus]) -> list[CheckResult]` (`VERSE_TEXT`). The corpus is loaded only when the part has a verse scene. For each verse scene, each item below is a FAIL with the reason `"verse <s:a[-b]> ..."` (no "FAIL:" prefix; the severity carries it) and no override. A check never raises:
   - there is no `VerseRender` for the scene;
   - `VerseRender.ayat` differs from the `VerseRef` range;
   - the sha256 of the expected text differs from `shown_sha256`;
-  - the `shown_text` of the `Verse` events in `parse_events(<captions file>)` with `ass_round_ms(slot.start) <= e.start_ms < ass_round_ms(slot.end)` differs from the expected text (the file that ships, as burned).
+  - the `shown_text` of the `Verse` events in `parse_events(<captions file>)` with `ass_round_ms(slot.start) <= e.start_ms < ass_round_ms(slot.end)` differs from the expected text (the file that ships, as burned; the comparison is against the events sorted by `(start, layer)`, because `AssDocument.to_text` sorts);
+  - the captions file is missing or unparseable (`parse_events` raises `ValueError`): one FAIL naming the file and `"re-render"`.
 
   The PASS reason is `"verse text matches the corpus exactly"`, or `"no Qur'anic verse in this part"`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_parse_events_roundtrip_with_commas_and_tags`;
+  - `test_parse_events_roundtrip_with_commas_and_tags` (compared with the events sorted by `(start, layer)`);
   - `test_parse_events_rejects_malformed_line`;
   - `test_verse_ok_31_33` (the `tests/fixtures/quran/` corpus; an ASS built with `build_part_ass` from a fake segments timeline);
+  - `test_missing_or_unparseable_ass_fails_without_raising`;
   - `test_edited_ass_verse_word_fails` (one Arabic word in the `.ass` replaced, written as `\u` escapes);
   - `test_report_hash_mismatch_fails`;
   - `test_ayat_range_mismatch_fails`;
@@ -364,7 +372,7 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 - `render.ffmpeg.run_tool_capture(tool, args, *, cwd=None, input=None, timeout_s=120) -> tuple[bytes, str]` returns stdout and the decoded stderr, with the same errors as `run_tool`. `run_tool` returns `run_tool_capture(...)[0]`.
 - `@dataclass(frozen=True) class MediaFacts: probe: MediaProbe; loudness: Loudness; sha256: str; size_bytes: int`.
 - `measure_loudness(tools: RenderTools, video: Path, audio_ms: int | None) -> Loudness` runs `tools.ffmpeg -hide_banner -nostdin -v info -i <video> -map 0:a:0 -af loudnorm=I=-14:TP=-1:LRA=11:print_format=json -f null -` (timeout 600 s) and calls `parse_loudnorm(stderr, gated=audio_ms is not None and audio_ms >= MIN_GATED_MS)`. This measures the AAC stereo track that ships.
-- `inspect_video(tools: RenderTools, video: Path) -> MediaFacts` combines `probe`, `measure_loudness` and the streamed sha256.
+- `inspect_video(tools: RenderTools, video: Path) -> MediaFacts` combines `probe`, `measure_loudness` and the streamed sha256. It lets `RenderError` (no audio stream, corrupt MP4) and `AudioError` propagate; `build_publish` catches them per part (Task 10).
 - `technical_checks(inputs: PartInputs, facts: MediaFacts | None, rules: Rules) -> list[CheckResult]` (`TECHNICAL`, pure):
   - `facts` None (the video is missing; Task 10) gives a single FAIL `"no video to check"`.
   - Per platform `pid, p` in rules order, each a FAIL with `platform=pid`:
@@ -382,7 +390,7 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - The PASS reason is `"<s> s, <w>x<h> @ <fps> fps, <I> LUFS, <TP> dBTP; fits <platform names>"`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_measure_unchanged_after_extract` (`measure` of a fixture tone equals the pre-refactor values pasted in);
+  - `test_parse_loudnorm_on_captured_stderr` (pure and exact: a captured loudnorm stderr string gives the expected `Loudness`), and `test_measure_of_fixture_tone_unchanged` (`measure` of the fixture tone, checked with `pytest.approx(abs=0.1)` only, because the floats depend on the ffmpeg build);
   - `test_run_tool_capture_returns_stderr` (`probe_tools`);
   - `test_inspect_master_after_aac_stereo_mux` (Review Focus 4, `probe_tools`): the `fixtures.audio.tone` 5 s through `aio.master`, then `encode_flac`, then muxed with a `lavfi` 1080x1920 color source using render's `X264_ARGS` + `AAC_ARGS` → integrated within -14 ±1, true peak ≤ -1.0, `technical_checks` with the packaged rules has no FAIL;
   - pure tests on hand-built `MediaFacts`:
@@ -397,7 +405,7 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 
 ### Task 7: Content-rules review (optional, cost-gated) and its check
 
-**Files:** Modify `models.py` and `planning/prompts.py`. Create `publish/content.py`. Tests: `tests/publish/test_content.py`.
+**Files:** Modify `models.py` and `planning/prompts.py`. Create `publish/content.py` (`review_text`, `review_prompt`, `content_checks`; it never names the LLM factory) and `publish/review.py` (`review_part`, `estimate_review`, `review_series`, `ReviewResult`, `ReviewInterruptedError`; the only publish module that imports `build_llm_client`). Tests: `tests/publish/test_content.py` (all Task 7 tests).
 
 **Interfaces — Consumes:** `LLMClient`, `StructuredResult`, `Usage`; `TrackedLLM`, `SpendTracker`, `estimate_llm_call`, `add_spend` (Task 2); `PriceTable`, `default_prices`; `build_llm_client`; `require_series_channel`; `Rules` (Task 1); `verse_label` (`planning/approval.py`).
 
@@ -419,12 +427,14 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - per scene `[<id>] <narration.source_text>`;
   - a verse scene is `[<id>] (Qur'an <verse_label>, recited; not reviewed)`;
   - a non-empty `card_text` adds `[<id> card] <card_text>`.
-- `estimate_review(series: Series, channel: ChannelConfig, prices: PriceTable, rules: Rules, parts: Sequence[int] | None = None) -> Decimal` sums `estimate_llm_call(prices, provider, model, system + user)` over the selected parts. It is exactly what `TrackedLLM` checks.
+- `review_prompt(part: Part, rules: Rules) -> tuple[str, str]` (in `content.py`) returns `(system, user)`, the one place the prompt is built (the user part wraps `review_text` in `<script>` tags). Both `review_part` and `estimate_review` use it.
+- **Provider and model (in `review.py`).** Everywhere (`TrackedLLM`, `estimate_review`, `prices.llm`) the provider is `channel.llm.provider.strip().lower()` and the model is `channel.llm.model`, exactly as `make_llm` does. `ContentReview.provider` / `.model` record these (the configured model).
+- `estimate_review(series: Series, channel: ChannelConfig, prices: PriceTable, rules: Rules, parts: Sequence[int] | None = None) -> Decimal` sums `estimate_llm_call(prices, provider, model, system + user)` (from `review_prompt`) over the selected parts. It is exactly what `TrackedLLM` checks.
 - `review_part(part: Part, rules: Rules, llm: LLMClient, *, provider: str, model: str, now: datetime) -> ContentReview`:
-  - one `complete_structured` call;
+  - one `complete_structured` call with the `review_prompt` pair;
   - `text_sha256 = sha256(review_text(part))`;
   - findings stored as returned (the clamping happens in `content_checks`, so the stored record shows what the model said).
-- `@dataclass class ReviewResult: reviewed: list[int]; findings: int; spent_usd: Decimal`.
+- `@dataclass class ReviewResult: reviewed: list[int]; findings: int; spent_usd: Decimal; per_part: list[tuple[int, int, int, Decimal]]`. `per_part` has `(index, fails, warns, spent)` per reviewed part, computed with `content_checks(part, rules)` (so the clamping applies) and that part's spend in this run.
 - `class ReviewInterruptedError(NarratoFlowError)` has the same shape as `AudioInterruptedError`: `partial: tuple[Series, ReviewResult]`, and the message ends with `" (progress so far is kept)"`.
 - `review_series(series, channel, settings, *, parts=None, llm: LLMClient | None = None, prices: PriceTable | None = None, rules: Rules | None = None, now: Callable[[], datetime] | None = None) -> tuple[Series, ReviewResult]`.
   - **Preflight, before any call:**
@@ -432,13 +442,14 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
     2. `require_series_channel`;
     3. every part index exists;
     4. `prices.llm(provider, model)` (`PlanningError` names the missing price);
-    5. `build_llm_client(channel.llm, settings)` when `llm` is None (a missing key refuses here).
+    5. `build_llm_client(channel.llm, settings)` when `llm` is None (a missing key refuses here);
+    6. for each selected part, `SpendTracker(channel.spending_limit_usd, spent=part.spent_usd).ensure_room(<that part's estimate_review>)`, raising a bare `BudgetExceededError` before any call (not wrapped as `ReviewInterruptedError`).
   - Then, per part: `tracker = SpendTracker(channel.spending_limit_usd, spent=part.spent_usd)`, `TrackedLLM(llm, tracker, provider, channel.llm.model, prices)`, `review_part`. Then set `part.content_review`, `part.spent_usd = tracker.spent` and `add_spend(part.spend, tracker)`.
-  - A `NarratoFlowError` writes that part's spend back and raises `ReviewInterruptedError` from it.
+  - A `NarratoFlowError` inside the loop (a provider failure, or a budget that ran out mid-run) writes that part's spend back and raises `ReviewInterruptedError` from it. Only the preflight raises the bare error.
   - The input series is not mutated (`model_copy(deep=True)`).
 - `content_checks(part: Part, rules: Rules) -> list[CheckResult]` (`CONTENT_RULES`):
   - no review: WARN `"content rules not checked; run narratoflow review"`;
-  - `text_sha256 != sha256(review_text(part))`: WARN `"content review is stale (the part changed since <reviewed_at date>); run narratoflow review"`, and no findings are evaluated;
+  - `text_sha256 != sha256(review_text(part))` or `review.rules_version != rules.file.version`: WARN `"content review is stale (the part or the platform rules changed since <reviewed_at date>); run narratoflow review"`, and no findings are evaluated (never a silent PASS);
   - per finding, with `cat = rules.file.content.get(f.category, rules.file.content["other"])`:
     - severity is FAIL iff `f.clear_violation and cat.max_severity == "fail"`, else WARN;
     - forced to WARN when `f.scene_id` names a verse scene;
@@ -446,10 +457,10 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
     - the reason is `"<category>: <reason>"`;
   - no findings: PASS `"no content-rule issues found by <provider>/<model> (rules <version>)"`.
 
-- [ ] **Step 1: Write the failing tests** (a `FakeLLM` returning a canned `_ReviewOutput` with `Usage(1000, 200)`, a priced fake model in a `PriceTable`):
+- [ ] **Step 1: Write the failing tests** (a `FakeLLM` returning a canned `_ReviewOutput` with `Usage(input_tokens=1000, output_tokens=200)`, a priced fake model in a `PriceTable`):
   - `test_review_text_deterministic_and_marks_verses`;
   - `test_review_stores_findings_and_charges_part` (`part.spent_usd` grows by the charged cost; `part.spend` has `"llm <provider>/<model>"`);
-  - `test_budget_refused_before_call` (limit below the estimate: `BudgetExceededError`, the fake is never called, the series is unchanged);
+  - `test_budget_refused_before_call` (limit below the estimate: a bare `BudgetExceededError`, not `ReviewInterruptedError`; the fake is never called; the series is unchanged);
   - `test_unapproved_and_missing_price_refused_before_call`;
   - `test_interrupted_keeps_earlier_parts` (the second part's fake raises `ProviderError`: `ReviewInterruptedError.partial` has part 1's review and spend);
   - `test_estimate_equals_tracked_check`;
@@ -459,7 +470,9 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - `test_unknown_scene_id_attributed_to_part` (Review Focus 5);
   - `test_long_reason_truncated` (Review Focus 5);
   - `test_not_reviewed_warns`;
-  - `test_edited_after_review_is_stale_warn` (Review Focus 5).
+  - `test_edited_after_review_is_stale_warn` (Review Focus 5);
+  - `test_rules_version_change_is_stale_warn`;
+  - `test_review_result_per_part_counts` (`per_part` carries `(index, fails, warns, spent)` matching `content_checks`).
 - [ ] **Steps 2–5:** Red, implement, run the gate, then commit `feat: optional cost-gated content-rules review with WARN/FAIL mapping`.
 
 ### Task 8: AI-disclosure text
@@ -475,12 +488,13 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   |---|---|---|---|
   | header | always | `AI disclosure:` | `إفصاح عن استخدام الذكاء الاصطناعي:` |
   | voice | `timeline.voice` is set | `- The narration voice is AI-generated ({provider}).` | `- صوت السرد مولد بالذكاء الاصطناعي ({provider}).` |
-  | sketches | any drawn sketch has a provenance `provider` | `- The sketches were generated with AI image models ({models}).` | `- الرسومات مولدة بنماذج ذكاء اصطناعي ({models}).` |
+  | sketches | any drawn sketch is generated (origin `GENERATED` or a provenance `provider`, the Task 3 predicate) | `- The sketches were generated with AI image models ({models}).` | `- الرسومات مولدة بنماذج ذكاء اصطناعي ({models}).` |
   | none | neither of the two above | `- No AI-generated voice or images are used in this part.` | `- لا يستخدم هذا الجزء صوتا أو صورا مولدة بالذكاء الاصطناعي.` |
   | recitation | per recitation | `- Qur'an recitation: a recording by {name}, used under {license}.` | `- التلاوة: تسجيل بصوت القارئ {name}، بموجب {license}.` |
   | script | always | `- Script: {work}, {author}.` | `- النص: {work}، {author}.` |
+  | script, none recorded | `author` and `work` both blank | `- Script: not recorded.` | `- \u0627\u0644\u0646\u0635: \u063a\u064a\u0631 \u0645\u0633\u062c\u0644.` |
 
-  `{models}` is the sorted unique `provider/model` list, joined with `", "` (English) or `"، "` (Arabic).
+  `{models}` is the sorted unique `provider/model` list, joined with `", "` (English) or `"، "` (Arabic). When only one of `author`/`work` is blank, the empty field (and its separator) is skipped.
 - `platform_labels(rules: Rules) -> dict[str, str]` maps each platform `name` to its `ai_label`.
 - `disclosure_checks(inputs: PartInputs, text: str) -> list[CheckResult]` (`AI_DISCLOSURE`):
   - `series.ai_disclosure is False`: FAIL `"AI disclosure is off for this series; set \"ai_disclosure\": true in the series file (NarratoFlow videos use an AI voice and must be disclosed)"`;
@@ -490,7 +504,9 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 - [ ] **Step 1: Write the failing tests:**
   - `test_english_disclosure_lines_exact`;
   - `test_arabic_disclosure_lines_exact` (expected strings as `\u` escapes);
-  - `test_icon_only_verse_part_says_no_ai_and_names_reciter`;
+  - `test_verse_only_part_says_none_and_names_reciter` (voice None, no sketch: the "none" line plus the reciter line);
+  - `test_icon_plus_voice_gives_voice_line_and_no_sketches_line` (an icon is drawn only in a narration scene, which has a voice);
+  - `test_blank_script_source_lines` (both blank: the "not recorded" line; one blank: the field is skipped);
   - `test_models_sorted_unique`;
   - `test_disclosure_off_fails_no_override`;
   - `test_platform_labels_from_rules`.
@@ -510,11 +526,11 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - `cost_estimated: bool` (`timeline.cost_estimated`);
   - `savings_usd: Decimal | None; savings_note: str`.
 - `cost_summary(part: Part, timeline: PartTimeline, channel: ChannelConfig, prices: PriceTable) -> CostSummary`. Savings from reuse = (the number of scenes with `match` in `{"reused", "bundled"}`) × `prices.image(style.image_provider, style.image_model)`, with the note `"estimated: images not bought at today's price"`. A `PlanningError` (no price) gives `savings_usd=None` and the note `"no image price"`.
-- `ModelsUsed`: `llm: str` (`provider/model`); `vision: str | None`; `voice: VoiceUsed | None` (its `fallback_from` and `fallback_reasons` are shown, spec §2.1); `image_models: list[str]` (sorted unique sketch `provider/model`); `style_fingerprint: str`; `style_version_ids: list[int]`; `reciters: list[str]`.
+- `ModelsUsed`: `llm: str` (`provider/model`); `vision: str | None`; `voice: VoiceUsed | None` (its `fallback_from` and `fallback_reasons` are shown, spec §2.1); `image_models: list[str]` (sorted unique sketch `provider/model`); `style_fingerprint: str`; `style_version_ids: list[int]`; `reciters: list[str]`. `vision` and `style_fingerprint` come from the current channel config, not from generation time, and the markdown labels them "configured"; `style_version_ids` (from the sketch records) are the record of what was used. `style_fingerprint(style)` can raise `ChannelConfigError`; `build_publish` calls it in preflight (Task 10).
 - `class PublishReport(BaseModel)`:
   - identity: `schema_version: Literal[1] = 1; series_title; channel_slug; part_index; part_count; created_at: AwareDatetime`;
-  - rules: `rules_version: str; rules_checked: date; rules_sha256: str`;
-  - the video: `video_file: str; video_sha256: str | None; duration_ms: int; width: int | None; height: int | None; outputs: list[AspectRatio]`;
+  - rules: `rules_version: str; rules_checked: date; rules_sha256: str; rules_origin: str` (`Rules.origin`);
+  - the video: `video_file: str; video_sha256: str | None; duration_ms: int; width: int | None; height: int | None; outputs: list[AspectRatio]` (always `[AspectRatio.PORTRAIT]`, the format actually rendered in v1, spec §8; `channel.outputs` may list 16:9, which render ignores with a warning);
   - contents: `scenes: list[SceneEntry]; costs: CostSummary; models: ModelsUsed; assets: list[AssetRecord]; script_source: ScriptSource; script_ai_transcribed: bool`;
   - the check: `checks: list[CheckResult]; verdict: Severity; exported: bool; export_file: str | None`;
   - disclosure: `disclosure_text: str; platform_labels: dict[str, str]`;
@@ -524,7 +540,7 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 - `to_markdown(self) -> str`. The sections, in order:
   1. `# <series title> - part N of M`;
   2. `**Verdict: <PASS|WARN|FAIL>** - exported as <file>` / `- export blocked: fix every FAIL below`;
-  3. `## Publishing check (rules <version>, checked <date>)`: a table `Check | Result | Scene | Platform | Reason` with FAILs first, then WARNs, then PASSes;
+  3. `## Publishing check (rules <version>, checked <date>, <origin>, sha256 <first 12 hex>)`: a table `Check | Result | Scene | Platform | Reason` with FAILs first, then WARNs, then PASSes;
   4. `## AI disclosure`: the text in a fenced block, then `Platform labels:` bullets;
   5. `## Scenes`;
   6. `## Costs`: per-provider lines, unattributed, estimate vs actual, savings;
@@ -537,11 +553,12 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 - `build_report(inputs: PartInputs, *, checks: list[CheckResult], facts: MediaFacts | None, disclosure: str, labels: dict[str, str], rules: Rules, prices: PriceTable, exported: bool, export_file: str | None, now: datetime) -> PublishReport`.
 - `PartSummary`: `index: int; verdict: Severity | None; exported: bool; duration_ms: int | None; spent_usd: Decimal; fails: int; warns: int; checked_at: AwareDatetime | None; note: str`.
 - `class SeriesSummary(BaseModel)`: `schema_version: Literal[1] = 1; series_title; channel_slug; created_at; rules_version; parts: list[PartSummary]; estimate_usd; spent_usd; planning_estimate_usd; savings_usd: Decimal | None`, with `save` / `load` / `to_markdown`.
-- `build_summary(series: Series, reports: Mapping[int, PublishReport | None], *, rules: Rules, now: datetime) -> SeriesSummary`:
+- `build_summary(series: Series, reports: Mapping[int, PublishReport | None], *, current: set[int], rules: Rules, now: datetime) -> SeriesSummary` (`current` is the set of parts checked in this run):
   - one `PartSummary` per series part;
   - a None report gives `verdict=None` and the note `"not checked"`;
-  - a report from an earlier run (`created_at < now`) gets the note `"from an earlier run"`;
-  - totals over all parts; `planning_estimate_usd = series.est_planning_cost_usd`.
+  - a report whose part is not in `current` gets the note `"from an earlier run"` (membership, not a timestamp comparison; `now` only stamps the summary's `created_at`);
+  - totals over all parts; `planning_estimate_usd = series.est_planning_cost_usd`;
+  - `savings_usd` is the sum over reports whose `costs.savings_usd` is not None, and None when no report has one.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_report_roundtrip_and_strict`;
@@ -552,14 +569,15 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - `test_markdown_lists_every_fail_and_warn_reason_and_disclosure`;
   - `test_markdown_escapes_pipes_in_scene_text`;
   - `test_models_used_shows_voice_fallback`;
-  - `test_summary_marks_unchecked_and_earlier_parts`.
+  - `test_summary_marks_unchecked_and_earlier_parts` (the earlier-run note follows `current`, even when every `created_at` is before `now`);
+  - `test_summary_savings_sums_only_priced_reports`.
 - [ ] **Steps 2–5:** Red, implement, run the gate, then commit `feat: per-part production report and series summary`.
 
 ### Task 10: Publish orchestration and export
 
 **Files:** Create `publish/build.py`. Test: `tests/publish/test_build.py`.
 
-**Interfaces — Consumes:** everything above; `RenderReport.load`, `PartTimeline.load`, `default_library`, `default_corpus`, `default_reciters`, `default_prices`, `find_render_tools`, `require_series_channel`.
+**Interfaces — Consumes:** everything above; `RenderReport.load`, `PartTimeline.load`, `default_library`, `default_corpus`, `default_reciters`, `default_prices`, `find_render_tools` (render's one tool contract: it also needs libass, libx264, ffv1 and aac, although publish itself needs only ffprobe and loudnorm; no new probe is added), `require_series_channel`, `style_fingerprint`; from tests, `reciter()`, `FakeVoice` (`tests/fixtures/parts.py`) and the `channel`/`settings` fixtures (`tests/publish/conftest.py`).
 
 **Interfaces — Produces:**
 - `@dataclass(frozen=True) class PartPublish: index: int; report: PublishReport; report_path: Path; export_path: Path | None`.
@@ -569,24 +587,27 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   1. `series.approved`;
   2. `require_series_channel`;
   3. every part index exists (`PlanningError` as render's);
-  4. rules load;
+  4. rules load, and `style_fingerprint` is computed once (a `ChannelConfigError` surfaces here, before any check);
   5. per selected part:
      - `render_dir / f"part-{n:02d}.render.json"` exists (else `PublishError("part <n> has no render report; run narratoflow render")`), then `RenderReport.load`;
      - `audio_dir / render.timeline_file` exists (else `PublishError("part <n>: <timeline> is missing; run narratoflow audio build")`), then `PartTimeline.load`;
   6. tools (`find_render_tools(settings)` unless given).
+- `build_publish` calls `now()` exactly once per run and passes that one datetime to every `build_report` and to `build_summary`, with `current` = the selected parts. The `verse_checks` corpus loader is `lambda: corpus or default_corpus(settings)`.
 - **Per part:**
   1. Load the sketch records for the render scenes (the library opens only if a scene has a `sketch_id`).
-  2. `facts = inspect_video(...)` when the video file exists, else None.
-  3. Run the checks in `CheckId` order: `rules_checks(rules, now().date())`, `render_current_checks`, `provenance_checks`, `script_checks`, `sketch_checks`, `verse_checks` (corpus loader), `disclosure_checks`, `content_checks(part, rules)`, `technical_checks`.
+  2. `facts = inspect_video(...)` when the video file exists, else None. A `RenderError` or `AudioError` from it (no audio stream, corrupt MP4) is caught: `facts=None` plus a `TECHNICAL` FAIL carrying the error text, so the part is not exported and the run continues.
+  3. Run the checks in `CheckId` order: `rules_checks(rules, now().date())`, `render_current_checks`, `provenance_checks`, `script_checks`, `sketch_checks`, `verse_checks` (corpus loader), `disclosure_checks`, `content_checks(part, rules)`, `technical_checks`. (`verse_checks` handles a missing `.ass` itself and never raises.)
   4. `verdict = worst(checks)`.
-  5. If `verdict is not FAIL`:
-     - copy the MP4 to a temp file in `export_dir` (created on demand), sha256 it, raise `PublishError` unless it equals `facts.sha256`, then `os.replace` to `part-NN.mp4`;
-     - write `part-NN.disclosure.txt` and `part-NN.publish.md` atomically.
-  6. If FAIL: unlink those three export files when present (Review Focus 1).
-  7. Save `part-NN.publish.json` and `part-NN.publish.md` in `render_dir`.
+  5. Build the report (`build_report`): with `exported=True` and `export_file` set when `verdict is not FAIL`, else `exported=False`.
+  6. If `verdict is not FAIL`:
+     - copy the MP4 to a temp file in `export_dir` (created on demand), sha256 it, fail unless it equals `facts.sha256`, then `os.replace` to `part-NN.mp4`;
+     - then write `part-NN.disclosure.txt` and `part-NN.publish.md` atomically;
+     - on a copy failure or a hash mismatch, save the report with `exported=False`; a hash mismatch then raises `PublishError` after that part's report is saved, and the series summary is not written (the docstring says so).
+  7. If FAIL: unlink those three export files when present (Review Focus 1).
+  8. Save `part-NN.publish.json` and `part-NN.publish.md` in `render_dir`, after the export files are written (step 6).
 - After all parts:
   - load each unselected part's existing `part-NN.publish.json`, ignoring one that fails to load or names another series or channel (treated as None);
-  - `build_summary`, saved as `render_dir / "series.publish.json"` and `.md`, with `.md` copied into `export_dir` when it exists;
+  - `build_summary(..., current=<selected parts>, now=<the run's one now>)`, saved as `render_dir / "series.publish.json"` and `.md`, with `.md` copied into `export_dir` when it exists;
   - `blocked` = the indexes with verdict FAIL.
 - `build_publish` never raises for a FAIL; the CLI raises `PublishCheckFailedError`. It never modifies the series and never spends.
 
@@ -603,11 +624,13 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - `test_default_rules_fail_tiny_render_resolution` (the packaged rules on the 180x320 render → `TECHNICAL` FAIL per platform).
   - `test_missing_render_report_or_timeline_is_error` (`PublishError` before any check).
   - `test_unapproved_and_wrong_channel_refused`.
-  - `test_publish_spends_nothing_and_keeps_series`: the series JSON bytes are unchanged, and `narratoflow.llm.factory.build_llm_client` is monkeypatched to raise if called.
-  - `test_export_hash_mismatch_raises` (`inspect_video` monkeypatched to return a wrong sha).
+  - `test_publish_spends_nothing_and_keeps_series`: every bound name is monkeypatched to raise if called (`narratoflow.llm.factory.build_llm_client`, `narratoflow.llm.factory.make_llm`, `narratoflow.publish.review.build_llm_client`), and so is `TrackedLLM.complete_structured`; the series JSON bytes and every `part.spent_usd` / `part.spend` are unchanged.
+  - `test_export_hash_mismatch_raises` (`narratoflow.publish.build.inspect_video`, the bound name, monkeypatched to return a wrong sha; `PublishError` is raised after that part's report is saved, and no summary is written);
+  - `test_unreadable_video_is_technical_fail_and_run_continues` (`inspect_video` raises `RenderError`: `facts=None`, a `TECHNICAL` FAIL with the error text, the next part still runs);
+  - `test_summary_uses_one_run_clock` (a real, advancing `now`: every part checked in this run reads as current, not "from an earlier run").
   - `test_part_filter_and_summary_reads_earlier_reports`.
-  - `test_reference_verse_part_checks_reciter` (the Plan 5 `test_reference_series_31_33_end_to_end` setup, with the injected fake reciter):
-    - with `reciters=ReciterIndex([that reciter])`: `VERSE_TEXT` PASS and `ASSET_PROVENANCE` has no FAIL;
+  - `test_reference_verse_part_checks_reciter` (the Plan 5 `test_reference_series_31_33_end_to_end` setup, with the injected fake reciter, except: `add_sketch(provenance=GENERATED_PROVENANCE)` and a fake voice named `"elevenlabs"`, priced `elevenlabs/m1`, so its terms are in `licences.voice`):
+    - with `reciters=ReciterIndex([that reciter])`: `VERSE_TEXT` PASS and `ASSET_PROVENANCE` has WARNs only (no FAIL);
     - with `ReciterIndex([])`: `ASSET_PROVENANCE` FAILs naming the reciter.
 - [ ] **Steps 2–5:** Red, implement, run the gate, then commit `feat: publish orchestration with per-part blocking export and series summary`.
 
@@ -619,9 +642,9 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
 - `narratoflow review SERIES_JSON --channel PATH [--part N]... [--yes]`:
   - It runs everything that can refuse without spend first: the series loads, it is approved, `require_series_channel`, the key (`build_llm_client`) and the price.
   - Unless `--yes`, it confirms `"Review content rules for <k> part(s)? Estimated cost <usd>"` (`estimate_review`). A no prints `Unchanged.`.
-  - It then runs `review_series` and saves the series.
+  - It then runs `review_series`, passing its pre-built client as `llm=` (the client is built once), and saves the series.
   - On `ReviewInterruptedError` it saves `partial[0]` and re-raises.
-  - Output: one line per part, `part N: <f> finding(s) (<x> fail, <y> warn), spent <usd>`, then `total spent <usd>`.
+  - Output: one line per `ReviewResult.per_part` entry `(index, fails, warns, spent)`, `part N: <f> finding(s) (<x> fail, <y> warn), spent <usd>` (`f = x + y`), then `total spent <usd>`.
 - `narratoflow publish SERIES_JSON --channel PATH [--part N]... [--audio DIR] [--render DIR] [--export DIR]`:
   - `--audio` defaults to `SERIES_JSON.parent / "audio"`;
   - `--render` defaults to the audio directory (render's default `--out`);
@@ -644,7 +667,7 @@ The spec §5.3 report needs "cost per provider". Today each stage only records t
   - `test_publish_default_dirs_and_part_filter`;
   - `test_publish_missing_render_report_exits_1` (the real `build_publish`);
   - `test_review_asks_with_estimate_and_no_leaves_series_unchanged`;
-  - `test_review_yes_saves_findings_and_spend`;
+  - `test_review_yes_saves_findings_and_spend` (also asserts the per-part line and that the CLI's `llm=` reaches `review_series`);
   - `test_review_interrupted_saves_partial`;
   - `test_review_missing_key_refused_before_prompt`.
 - [ ] **Steps 2–5:** Red, implement, run the gate, update the README, then commit `feat: review and publish commands`.

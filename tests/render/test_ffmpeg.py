@@ -8,7 +8,13 @@ import pytest
 
 from narratoflow.errors import RenderError
 from narratoflow.render import ffmpeg as F
-from narratoflow.render.ffmpeg import RenderTools, find_render_tools, probe, run_tool
+from narratoflow.render.ffmpeg import (
+    RenderTools,
+    find_render_tools,
+    probe,
+    run_tool,
+    run_tool_capture,
+)
 from narratoflow.settings import Settings
 
 
@@ -117,6 +123,20 @@ def test_run_tool_oserror(tmp_path: Path) -> None:
 def test_run_tool_returns_stdout_and_input(tmp_path: Path) -> None:
     sh = _fake_tool(tmp_path / "t", "cat\n")
     assert run_tool(sh, [], input=b"abc", cwd=tmp_path) == b"abc"
+
+
+def test_run_tool_capture_returns_stderr(probe_tools: RenderTools) -> None:
+    out, err = run_tool_capture(probe_tools.ffmpeg, ["-hide_banner", "-v", "info", "-version"])
+    assert out.startswith(b"ffmpeg version")
+    assert isinstance(err, str)
+    _, err = run_tool_capture(
+        probe_tools.ffmpeg,
+        ["-hide_banner", "-nostdin", "-v", "info", "-f", "lavfi", "-i", "anullsrc=d=0.1",
+         "-af", "volumedetect", "-f", "null", "-"],
+    )  # fmt: skip
+    assert "mean_volume" in err
+    with pytest.raises(RenderError, match="failed"):
+        run_tool_capture(probe_tools.ffmpeg, ["-hide_banner", "-i", "/nonexistent.mp4"])
 
 
 def test_probe_bad_json(tmp_path: Path) -> None:

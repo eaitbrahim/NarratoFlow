@@ -175,3 +175,36 @@ def test_encode_flac_oserror_becomes_audio_error(
     monkeypatch.setattr(tempfile, "mkstemp", boom)
     with pytest.raises(AudioError, match="disk full"):
         aio.encode_flac(tone(100), tmp_path / "a.flac")
+
+
+_CAPTURED_LOUDNORM = (
+    "  Stream #0:0: Audio: pcm_s16le, 192000 Hz, mono, s16, 3072 kb/s\n"
+    "[Parsed_loudnorm_0 @ 0x7fec10900] \n"
+    '{\n\t"input_i" : "-20.75",\n\t"input_tp" : "-16.99",\n\t"input_lra" : "0.00",\n'
+    '\t"input_thresh" : "-30.75",\n\t"output_i" : "-13.95",\n\t"output_tp" : "-10.27",\n'
+    '\t"output_lra" : "0.00",\n\t"output_thresh" : "-23.95",\n'
+    '\t"normalization_type" : "dynamic",\n\t"target_offset" : "-0.05"\n}\n'
+    "size=N/A time=00:00:03.00 bitrate=N/A speed= 117x elapsed=0:00:00.02    \n"
+)
+
+
+def test_parse_loudnorm_on_captured_stderr() -> None:
+    assert aio.parse_loudnorm(_CAPTURED_LOUDNORM, gated=True) == aio.Loudness(
+        -20.75, -16.99, 0.0, -30.75, -0.05
+    )
+    assert aio.parse_loudnorm(_CAPTURED_LOUDNORM, gated=False).integrated_lufs is None
+    inf = _CAPTURED_LOUDNORM.replace('"-20.75"', '"-inf"').replace('"-16.99"', '"-inf"')
+    assert aio.parse_loudnorm(inf, gated=True) == aio.Loudness(None, None, 0.0, -30.75, -0.05)
+    with pytest.raises(AudioError, match="no measurement"):
+        aio.parse_loudnorm("no json here", gated=True)
+    with pytest.raises(AudioError, match="could not be parsed"):
+        aio.parse_loudnorm('{"input_i" : "-20"}', gated=True)
+
+
+def test_measure_of_fixture_tone_unchanged(ffmpeg_bin: str) -> None:
+    loud = aio.measure(tone(3000))
+    assert loud.integrated_lufs == pytest.approx(-20.75, abs=0.1)
+    assert loud.true_peak_dbtp == pytest.approx(-16.99, abs=0.1)
+    assert loud.lra == pytest.approx(0.0, abs=0.1)
+    assert loud.threshold == pytest.approx(-30.75, abs=0.1)
+    assert loud.offset == pytest.approx(-0.05, abs=0.1)

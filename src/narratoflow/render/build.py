@@ -325,7 +325,7 @@ def _run_jobs(jobs: list[SceneJob], workers: int | None, part: int) -> None:
             raise
 
 
-def _visual(scene: Scene) -> Literal["sketch", "text_card", "verse"]:
+def visual_kind(scene: Scene) -> Literal["sketch", "text_card", "verse"]:
     if scene.kind is SceneKind.VERSE:
         return "verse"
     return "sketch" if _drawn(scene) else "text_card"
@@ -352,7 +352,7 @@ class _Run:
             zip(plan.part.scenes, plan.timeline.scenes, strict=True)
         ):
             frames = frame_range(timing.start_ms, timing.end_ms)
-            visual = _visual(scene)
+            visual = visual_kind(scene)
             variation: Variation | None = None
             strokes: StrokeSet | None = None
             draw: tuple[int, int] | None = None

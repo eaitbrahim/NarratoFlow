@@ -298,30 +298,51 @@ def caption_max_chars(language: Language) -> int:
     return CAPTION_MAX_CHARS_AR if language is Language.ARABIC else CAPTION_MAX_CHARS
 
 
-def _width(text: str) -> int:
-    """Characters that take horizontal space: combining marks (tashkeel) are not counted."""
-    return sum(1 for ch in text if not unicodedata.combining(ch))
+EMOJI_MODIFIERS = range(0x1F3FB, 0x1F400)
+
+
+def display_units(ch: str, language: Language) -> int:
+    """Display width in quarter characters: marks and joiners take none; Latin letters in
+    an Arabic style (Amiri) take 5/4 of an Arabic letter."""
+    if unicodedata.category(ch) in ("Mn", "Me", "Cf") or ord(ch) in EMOJI_MODIFIERS:
+        return 0
+    if language is Language.ARABIC and ord(ch) < 0x0600 and not ch.isspace():
+        return 5
+    return 4
+
+
+def _width(text: str, language: Language) -> int:
+    """`display_units` of `text`: tashkeel takes no width, Latin in Arabic takes 5/4."""
+    return sum(display_units(ch, language) for ch in text)
 
 
 def caption_pages(
-    words: Sequence[WordTiming], max_chars: int = CAPTION_MAX_CHARS
+    words: Sequence[WordTiming],
+    max_chars: int = CAPTION_MAX_CHARS,
+    language: Language = Language.ENGLISH,
 ) -> list[list[WordTiming]]:
-    """Greedy, in-order pages bounded by word count, characters, sentence ends and gaps."""
+    """Greedy, in-order pages bounded by word count, width, sentence ends and gaps.
+
+    The width is counted like `overlays.truncate` counts it (`display_units`, in quarter
+    characters against ``4 * max_chars``), so Latin-heavy Arabic pages stay one line.
+    """
+    room = 4 * max_chars
+    space = display_units(" ", language)
     pages: list[list[WordTiming]] = []
     page: list[WordTiming] = []
-    chars = 0
+    used = 0
     for w in words:
         if page:
             prev = page[-1]
             if (
                 len(page) + 1 > CAPTION_MAX_WORDS
-                or chars + 1 + _width(w.text) > max_chars
+                or used + space + _width(w.text, language) > room
                 or prev.text.endswith(SENTENCE_END)
                 or w.start_ms - prev.start_ms > CAPTION_GAP_MS
             ):
                 pages.append(page)
-                page, chars = [], 0
-        chars += _width(w.text) + (1 if page else 0)
+                page, used = [], 0
+        used += _width(w.text, language) + (space if page else 0)
         page.append(w)
     if page:
         pages.append(page)
@@ -335,7 +356,7 @@ def caption_events(scene: SceneTiming, language: Language) -> list[AssEvent]:
     """
     if scene.kind is SceneKind.VERSE or not scene.words:
         return []
-    pages = caption_pages(scene.words, caption_max_chars(language))
+    pages = caption_pages(scene.words, caption_max_chars(language), language)
     events: list[AssEvent] = []
     for i, page in enumerate(pages):
         start = page[0].start_ms

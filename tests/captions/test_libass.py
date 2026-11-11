@@ -250,3 +250,27 @@ def test_arabic_caption_inside_caption_band(render_tools: RenderTools, tmp_path:
         assert CAPTIONS.contains(box), f"{name}: caption ink {box} leaves {CAPTIONS}"
         # One line: a second line would start a whole line height (= Fontsize) lower.
         assert box.h < style.size, f"{name}: ink {box.h} px tall, wrapped to two lines?"
+
+
+def test_latin_heavy_arabic_caption_pages_stay_one_line_inside_caption_band(
+    render_tools: RenderTools, tmp_path: Path
+) -> None:
+    # Latin in Amiri is wider than the widest Arabic letters (W about 35 px at the Caption
+    # em): a page of Latin names in an Arabic narration must still be one line inside
+    # CAPTIONS. 28 characters of W would wrap below the band.
+    style = _caption_style(Language.ARABIC)
+    for name, texts in (
+        ("spaced", ["WWWW"] * 5 + ["WWW"]),
+        ("unbroken", ["W" * 22, SEEN3]),
+        ("mixed", [SEEN3, "WWWWWW", "MMMMMM", "WWWWWW", SEEN3, "1453"]),
+    ):
+        scene = _scene(texts)
+        events = caption_events(scene, Language.ARABIC)
+        assert len(events) >= 2, name
+        for i, event in enumerate(events):
+            # Shown long enough for every word to be revealed (unrevealed karaoke is grey).
+            shown = AssEvent(0, 3_000, "Caption", event.text)
+            frame = _still(render_tools, tmp_path / f"{name}{i}", style, [shown], 2_900)
+            box = _bbox(_ink(frame))
+            assert CAPTIONS.contains(box), f"{name}[{i}]: caption ink {box} leaves {CAPTIONS}"
+            assert box.h < style.size, f"{name}[{i}]: ink {box.h} px tall, two lines?"

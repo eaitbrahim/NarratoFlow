@@ -26,6 +26,7 @@ from narratoflow.models import (
     SceneKind,
     ScriptSource,
     Series,
+    VerseRef,
 )
 from narratoflow.render.ffmpeg import RenderTools
 from narratoflow.render.layout import STAGE, TOP_BAR, Rect
@@ -266,6 +267,24 @@ def test_topright_title_truncated_to_24_chars() -> None:
     ]
     assert _windows(badges) == [(0, 1_000, "A rather long scene" + ELL), (2_000, 3_000, "Short")]
     assert all(len(e.text) <= 24 for e in badges)
+
+
+def test_verse_scene_has_no_topright_badge() -> None:
+    # The verse reference line under the verse already shows the (localized) reference.
+    verse = Scene(
+        id="s1",
+        kind=SceneKind.VERSE,
+        title="31:33",
+        narration=Narration(source_text="x"),
+        verse=VerseRef(surah=31, ayah_start=33, ayah_end=33, certain=True, uthmani_text="x"),
+    )
+    part = _part(1, 1, scenes=[verse, _scene("s2", "Topic")])
+    tl = _timeline(part, [("s1", 0, 1_000), ("s2", 1_000, 2_000)])
+    for language in (Language.ARABIC, Language.ENGLISH):
+        badges = [
+            e for e in overlay_events(_series(language, part), part, tl) if e.style == "TopRight"
+        ]
+        assert _windows(badges) == [(1_000, 2_000, "Topic")]
 
 
 def test_unknown_timeline_scene_is_an_error() -> None:

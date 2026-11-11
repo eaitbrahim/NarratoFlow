@@ -407,3 +407,13 @@ def test_write_failure_leaves_no_temp_file(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["is-a-dir"]
     with pytest.raises(RenderError, match="cannot write"):
         _doc().write(tmp_path / "missing" / "captions.ass")
+
+
+def test_arabic_caption_pages_weight_latin_like_truncate() -> None:
+    latin = [_w("WWWW", i * 100) for i in range(5)] + [_w("WWW", 500)]  # 28 characters
+    assert [len(p) for p in caption_pages(latin, CAPTION_MAX_CHARS_AR)] == [6]
+    # In an Arabic style each Latin letter counts 5/4 (spaces 1): five words are
+    # 20 * 5 + 4 * 4 = 116 > 112 quarter units, so a page holds four.
+    assert [len(p) for p in caption_pages(latin, CAPTION_MAX_CHARS_AR, Language.ARABIC)] == [4, 2]
+    arabic = [_w(SEEN3 + SEEN3[0], i * 100) for i in range(5)] + [_w(SEEN3, 500)]
+    assert [len(p) for p in caption_pages(arabic, CAPTION_MAX_CHARS_AR, Language.ARABIC)] == [6]

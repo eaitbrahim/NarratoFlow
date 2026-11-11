@@ -10,10 +10,10 @@ import unicodedata
 
 from narratoflow.audio.timeline import PartTimeline, SceneTiming
 from narratoflow.audio.words import tokens
-from narratoflow.captions.ass import AssEvent, escape_text
+from narratoflow.captions.ass import EMOJI_MODIFIERS, AssEvent, display_units, escape_text
 from narratoflow.captions.verse import VERSE_POS, localize_digits
 from narratoflow.errors import RenderError
-from narratoflow.models import Language, Part, Scene, Series
+from narratoflow.models import Language, Part, Scene, SceneKind, Series
 
 HOOK_MS = 2500
 RECAP_MS = 2500
@@ -46,17 +46,6 @@ LABELS = {
 }
 
 _ZWJ, _ZWNJ, _TATWEEL = "\u200d", "\u200c", "\u0640"
-_EMOJI_MODIFIERS = range(0x1F3FB, 0x1F400)
-
-
-def _units(ch: str, language: Language) -> int:
-    """Display width in quarter characters: marks and joiners take none; Latin letters in
-    an Arabic style (Amiri) take 5/4 of an Arabic letter."""
-    if unicodedata.category(ch) in ("Mn", "Me", "Cf") or ord(ch) in _EMOJI_MODIFIERS:
-        return 0
-    if language is Language.ARABIC and ord(ch) < 0x0600 and not ch.isspace():
-        return 5
-    return 4
 
 
 def _boundary(text: str, i: int) -> bool:
@@ -66,14 +55,14 @@ def _boundary(text: str, i: int) -> bool:
     nxt, prev = text[i], text[i - 1]
     if nxt in (_ZWJ, _ZWNJ, _TATWEEL) or prev == _ZWJ:
         return False  # joiners and a tatweel stay with the letter before; ZWJ glues both
-    return unicodedata.category(nxt) not in ("Mn", "Me") and ord(nxt) not in _EMOJI_MODIFIERS
+    return unicodedata.category(nxt) not in ("Mn", "Me") and ord(nxt) not in EMOJI_MODIFIERS
 
 
 def _cut(word: str, room: int, language: Language) -> str:
     """The longest grapheme-whole prefix of `word` within `room` quarter units."""
     used = i = 0
-    while i < len(word) and used + _units(word[i], language) <= room:
-        used += _units(word[i], language)
+    while i < len(word) and used + display_units(word[i], language) <= room:
+        used += display_units(word[i], language)
         i += 1
     while not _boundary(word, i):
         i -= 1
@@ -89,19 +78,19 @@ def truncate(
 ) -> str:
     """Display cut: whitespace collapsed, cut at a word boundary, ``\u2026`` appended.
 
-    Widths are counted by `_units`. A token wider than `line` (one display line) is cut
+    Widths are counted by `display_units`. A token wider than `line` (one display line) is cut
     with the ellipsis and ends the text, so an unbreakable string cannot run sideways out
     of its zone. A cut never splits a grapheme.
     """
     words = text.split()
     budget = limit * 4
     line_room = min(limit if line is None else line, limit) * 4
-    ell = _units(ELLIPSIS, language)
+    ell = display_units(ELLIPSIS, language)
     kept: list[str] = []
     used = 0
     for word in words:
         sep = 4 if kept else 0
-        width = sum(_units(ch, language) for ch in word)
+        width = sum(display_units(ch, language) for ch in word)
         if width > line_room:
             cut = _cut(word, min(line_room, budget - used - sep) - ell, language)
             if cut:
@@ -115,7 +104,7 @@ def truncate(
         return " ".join(kept)
     while kept and used + ell > budget:
         last = kept.pop()
-        used -= sum(_units(ch, language) for ch in last) + (4 if kept else 0)
+        used -= sum(display_units(ch, language) for ch in last) + (4 if kept else 0)
     if not kept:
         kept = [_cut(words[0], line_room - ell, language)]
     return " ".join(kept) + ELLIPSIS
@@ -185,13 +174,16 @@ def timeline_scenes(part: Part, timeline: PartTimeline) -> list[tuple[SceneTimin
 
 
 def overlay_events(series: Series, part: Part, timeline: PartTimeline) -> list[AssEvent]:
-    """The part label, each scene's topic badge and the headline row."""
+    """The part label, each non-verse scene's topic badge and the headline row."""
     d = timeline.duration_ms
     events: list[AssEvent] = []
     label = part_label(part.index, part.count, series.language)
     if label is not None and d > 0:
         events.append(AssEvent(0, d, "TopLeft", escape_text(label)))
     for slot, scene in timeline_scenes(part, timeline):
+        # A verse scene's reference line (localized digits) already labels it.
+        if scene.kind is SceneKind.VERSE:
+            continue
         title = scene.title
         if title.strip() and slot.end_ms > slot.start_ms:
             text = escape_text(truncate(title, BADGE_MAX_CHARS, language=series.language))

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from narratoflow.channels.config import load_channel, style_fingerprint
+from narratoflow.channels.config import LlmConfig, load_channel, style_fingerprint
 from narratoflow.channels.keys import ProviderKind, check_provider_keys, required_key_env_vars
 from narratoflow.errors import ChannelConfigError, MissingApiKeyError
 from narratoflow.models import AspectRatio
@@ -94,3 +94,27 @@ def test_provider_names_case_insensitive(channel_file: Path) -> None:
     channel.voice.provider = "EDGE"
     assert ProviderKind.LLM not in required_key_env_vars(channel)
     assert ProviderKind.VOICE not in required_key_env_vars(channel)
+
+
+def test_llm_config_defaults() -> None:
+    llm = LlmConfig(provider="anthropic", model="claude-opus-5-5")
+    assert llm.effort == "medium"
+    assert llm.max_tokens == 16000
+    assert llm.refusal_fallback is True
+
+
+def test_llm_config_from_toml(channel_file: Path) -> None:
+    text = channel_file.read_text(encoding="utf-8")
+    text += 'effort = "xhigh"\nmax_tokens = 32000\nrefusal_fallback = false\n'
+    channel_file.write_text(text, encoding="utf-8")
+    llm = load_channel(channel_file).llm
+    assert (llm.effort, llm.max_tokens, llm.refusal_fallback) == ("xhigh", 32000, False)
+
+
+@pytest.mark.parametrize("field", ['effort = "extreme"', "max_tokens = 0"])
+def test_llm_config_rejects_bad_values(channel_file: Path, field: str) -> None:
+    channel_file.write_text(
+        channel_file.read_text(encoding="utf-8") + field + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ChannelConfigError):
+        load_channel(channel_file)

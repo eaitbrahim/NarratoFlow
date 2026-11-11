@@ -7,7 +7,7 @@ import json
 import tomllib
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -37,9 +37,15 @@ class VoiceConfig(BaseModel):
     voice_id: str
 
 
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
+
 class LlmConfig(BaseModel):
     provider: str
     model: str
+    effort: Effort = "medium"
+    max_tokens: int = Field(default=16000, gt=0)
+    refusal_fallback: bool = True
 
 
 class ChannelConfig(BaseModel):

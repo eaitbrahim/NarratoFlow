@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import socket
+import sys
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -291,6 +293,37 @@ def test_missing_render_report_or_timeline_is_error(
     assert not (tmp_path / "export").exists()
 
 
+@pytest.mark.parametrize("export", ["video", "video/export", "."])
+def test_export_dir_overlapping_render_dir_is_refused(
+    one_part: Series,
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    render_tools: RenderTools,
+    export: str,
+) -> None:
+    video_dir = tmp_path / "video"
+    before = sorted(p.name for p in video_dir.iterdir())
+    undisclosed = one_part.model_copy(update={"ai_disclosure": False})
+    with pytest.raises(PublishError, match="must be outside the render directory"):
+        build_publish(
+            undisclosed,
+            channel,
+            settings,
+            render_dir=video_dir,
+            audio_dir=tmp_path / "audio",
+            export_dir=tmp_path / export,
+            tools=render_tools,
+            library=library,
+            rules=_tiny_rules(tmp_path),
+            now=_now,
+        )
+    assert (video_dir / "part-01.mp4").is_file()
+    assert sorted(p.name for p in video_dir.iterdir()) == before
+    assert not (video_dir / "export").exists()
+
+
 def test_unknown_part_index_is_error(
     channel: ChannelConfig, settings: Settings, library: SketchLibrary, tmp_path: Path
 ) -> None:
@@ -353,9 +386,27 @@ def test_publish_spends_nothing_and_keeps_series(
         "narratoflow.llm.factory.build_llm_client",
         "narratoflow.llm.factory.make_llm",
         "narratoflow.publish.review.build_llm_client",
+        "narratoflow.sketching.generate.build_llm_client",
     ):
         monkeypatch.setattr(target, refuse)
+    # ...and every other module that binds a factory name.
+    bound = 0
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("narratoflow"):
+            continue
+        for attr in ("build_llm_client", "make_llm"):
+            if hasattr(module, attr):
+                monkeypatch.setattr(module, attr, refuse)
+                bound += 1
+    assert bound >= 4  # factory (2), publish.review, sketching.generate
     monkeypatch.setattr(TrackedLLM, "complete_structured", refuse)
+
+    def no_network(*_a: object, **_k: object) -> None:
+        raise AssertionError("publish must not touch the network")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", no_network)
+    monkeypatch.setattr(socket, "create_connection", no_network)
     spent = one_part.model_copy(
         update={
             "parts": [
@@ -477,25 +528,40 @@ def test_unreadable_video_is_technical_fail_and_run_continues(
     library: SketchLibrary,
     tmp_path: Path,
     render_tools: RenderTools,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real = inspect_video
-
-    def corrupt_first(tools: RenderTools, video: Path) -> MediaFacts:
-        if video.name == "part-01.mp4":
-            raise RenderError("moov atom not found")
-        return real(tools, video)
-
-    monkeypatch.setattr(build_module, "inspect_video", corrupt_first)
+    video_dir = tmp_path / "video"
+    (video_dir / "part-01.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42 not really an mp4")
     result = _publish(two_parts, channel, settings, tmp_path, render_tools, library)
     assert result.blocked == [1]
     first, second = result.parts
     technical = [c for c in first.report.checks if c.check is CheckId.TECHNICAL]
     assert [c.severity for c in technical] == [Severity.FAIL]
-    assert "moov atom not found" in technical[0].reason
+    reason = technical[0].reason
+    assert reason.startswith("part-01.mp4 cannot be read: ffprobe failed (exit ")
+    assert "\n" not in reason and "0x" not in reason and str(tmp_path) not in reason
+    for path in (first.report_path, video_dir / "part-01.publish.md"):
+        assert str(video_dir) not in path.read_text(encoding="utf-8")
     assert first.report.video_sha256 is None and first.export_path is None
     assert second.report.exported is True and second.export_path is not None
     assert second.export_path.is_file()
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("", "RenderError"),
+        ("moov atom not found", "moov atom not found"),
+        (
+            "ffprobe failed (exit 1):\n\n[mov,mp4 @ 0x957088000] moov atom not found\n"
+            "/private/var/x/video/part-01.mp4: Invalid data",
+            "ffprobe failed (exit 1): [mov,mp4] moov atom not found",
+        ),
+        ("cannot read /tmp/a/b/part-01.mp4: denied", "cannot read part-01.mp4: denied"),
+    ],
+)
+def test_short_error(message: str, expected: str) -> None:
+    video = Path("/elsewhere/video/part-01.mp4")
+    assert build_module._short_error(RenderError(message), video) == expected
 
 
 def test_missing_video_is_technical_fail(

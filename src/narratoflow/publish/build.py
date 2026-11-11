@@ -2,7 +2,8 @@
 
 Everything that is an error rather than a check result is raised before any check
 runs, in this order: the series is approved and belongs to the channel, every part
-index exists, the platform rules load and the channel's style fingerprint computes,
+index exists, the export directory is outside the render directory (and does not
+contain it), the platform rules load and the channel's style fingerprint computes,
 each selected part has its render report and timeline, and the tools are found.
 
 Then, per part: the sketch records, the MP4's facts (`inspect_video`; a video that
@@ -29,6 +30,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Callable, Sequence
@@ -64,6 +66,9 @@ logger = logging.getLogger(__name__)
 SUMMARY_STEM = "series.publish"
 _MODE = 0o644
 _CHUNK = 1 << 20
+_POINTER = re.compile(r"\s*@\s*0x[0-9a-fA-F]+")
+_ABS_PATH = re.compile(r"(?<![\w.])/(?:[^\s/'\"]+/)*([^\s/'\":]+)")
+_MAX_DETAIL = 200
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,31 @@ def _file_sha256(path: Path) -> str:
         while chunk := fh.read(_CHUNK):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _short_error(exc: Exception, video: Path) -> str:
+    """`exc` as one short line for a report: what failed and the first meaningful line
+    of its detail, with absolute paths cut to the file name and `@ 0x...` pointers
+    dropped (a tool's stderr carries both)."""
+    text = _ABS_PATH.sub(r"\1", _POINTER.sub("", str(exc).replace(str(video), video.name)))
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return type(exc).__name__
+    head = lines[0].rstrip(":").strip()
+    if len(lines) == 1:
+        return head[:_MAX_DETAIL]
+    return f"{head}: {lines[1][:_MAX_DETAIL]}"
+
+
+def _check_dirs(render_dir: Path, export_dir: Path) -> None:
+    """Refuse an export directory that is, contains or is inside the render directory:
+    exporting there would overwrite, or on a FAIL delete, the rendered files."""
+    render, export = render_dir.resolve(), export_dir.resolve()
+    if render == export or export.is_relative_to(render) or render.is_relative_to(export):
+        raise PublishError(
+            f"the export directory {export_dir} must be outside the render directory "
+            f"{render_dir} (and not contain it)"
+        )
 
 
 def _selected(series: Series, parts: Sequence[int] | None) -> list[Part]:
@@ -204,7 +234,7 @@ class _Run:
         try:
             return inspect_video(self.tools, video), None
         except (RenderError, AudioError) as exc:
-            reason = f"{video.name} cannot be read: {exc}"
+            reason = f"{video.name} cannot be read: {_short_error(exc, video)}"
             return None, CheckResult(check=CheckId.TECHNICAL, severity=Severity.FAIL, reason=reason)
 
     def checks(
@@ -365,6 +395,7 @@ def build_publish(
         raise PlanningError("approve the series first")
     require_series_channel(series, channel)
     selected = _selected(series, parts)
+    _check_dirs(render_dir, export_dir)
     rules = rules if rules is not None else default_rules(settings)
     style_fingerprint(channel.style)  # a ChannelConfigError surfaces before any check
     loaded = [_load_part(p, render_dir=render_dir, audio_dir=audio_dir) for p in selected]

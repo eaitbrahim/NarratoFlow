@@ -19,8 +19,12 @@ quran.com API v4, checked 2026-11-11:
   credentials, and the shipped allow-list has no ``qurancom`` reciter.
 
 Downloads are cached as ``<cache_dir>/<reciter id>/<SSSAAA>.mp3`` plus
-``<SSSAAA>.segments.json`` when segments exist; both are written atomically and
-the audio file is written last, so it marks a complete entry.
+``<SSSAAA>.segments.json`` (the same ``[word, start_ms, end_ms]`` triples) when
+segments exist. Both are written atomically and the audio file is written last,
+so it marks a complete entry. A cached file that is not audio, or cached
+segments that fail validation, make the entry a miss: it is deleted and fetched
+again. Redirects are followed only to https URLs, and bodies are capped
+(`MAX_AUDIO_BYTES` per recording, `MAX_JSON_BYTES` per API response).
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from narratoflow.audio import io as aio
 from narratoflow.audio.timeline import AyahTiming, TimelineWord, TimingSource
@@ -52,6 +56,9 @@ QURANCOM_AUDIO_BASE = "https://verses.quran.com/"
 TIMEOUT_S = 60.0
 AYAH_GAP_MS = 300
 MAX_SEGMENT_MS = 3_600_000
+MAX_AUDIO_BYTES = 20 * 1024 * 1024  # one ayah's recording
+MAX_JSON_BYTES = 1024 * 1024  # an API response or cached segments
+MAX_REDIRECTS = 5
 MAX_SURAH = 114
 MAX_AYAH = 286  # the longest surah (al-Baqarah)
 _FILE_MODE = 0o644
@@ -115,6 +122,27 @@ def _is_audio(data: bytes) -> bool:
     return len(data) >= 2 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0
 
 
+def _unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise AudioError(f"cannot remove recitation cache file {path}: {exc}") from exc
+
+
+def _read_capped(response: httpx.Response, limit: int, host: str, surah: int, ayah: int) -> bytes:
+    declared = response.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise ProviderError(f"{host} response for {surah}:{ayah} exceeds {limit} bytes")
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_bytes():
+        size += len(chunk)
+        if size > limit:
+            raise ProviderError(f"{host} response for {surah}:{ayah} exceeds {limit} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _write_atomic(path: Path, data: bytes) -> None:
     tmp_name: str | None = None
     try:
@@ -166,12 +194,27 @@ def _checked_segments(raw: object) -> list[AyahSegment]:
 
 
 class RecitationSource:
-    """Fetches one reciter's per-ayah recordings, caching them under ``cache_dir``."""
+    """Fetches one reciter's per-ayah recordings, caching them under ``cache_dir``.
+
+    Use it as a context manager (or call `close`) to close the HTTP client it
+    created; a client passed in by the caller is left open.
+    """
 
     def __init__(self, reciter: Reciter, cache_dir: Path, http: httpx.Client | None = None) -> None:
         self.reciter = reciter
         self.cache_dir = cache_dir / reciter.id
+        self._owns_http = http is None
         self.http = http if http is not None else httpx.Client(timeout=TIMEOUT_S)
+
+    def __enter__(self) -> RecitationSource:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._owns_http:
+            self.http.close()
 
     def fetch(self, surah: int, ayah: int) -> AyahAudio:
         if not (1 <= surah <= MAX_SURAH and 1 <= ayah <= MAX_AYAH):
@@ -183,61 +226,89 @@ class RecitationSource:
             url, segments = self._qurancom_lookup(surah, ayah)
         else:
             url, segments = self.reciter.file_url(surah, ayah), None
-        audio = self._get(url, surah, ayah).content
+        audio = self._get(url, surah, ayah, MAX_AUDIO_BYTES)
         if not _is_audio(audio):
             raise ProviderError(
                 f"{self.reciter.name}: recording of {surah}:{ayah} is not audio "
                 f"({len(audio)} bytes)"
             )
         key = _key(surah, ayah)
+        seg_path = self.cache_dir / f"{key}.segments.json"
         if segments is not None:
-            payload = json.dumps([s.model_dump() for s in segments]).encode()
-            _write_atomic(self.cache_dir / f"{key}.segments.json", payload)
+            payload = json.dumps([[s.word, s.start_ms, s.end_ms] for s in segments]).encode()
+            _write_atomic(seg_path, payload)
+        else:
+            _unlink(seg_path)  # never pair new audio with stale timings
         _write_atomic(self.cache_dir / f"{key}.mp3", audio)
         return AyahAudio(surah, ayah, audio, segments)
 
     def _cached(self, surah: int, ayah: int) -> AyahAudio | None:
+        """The cached entry, or None (a miss). A damaged entry is deleted and refetched."""
         key = _key(surah, ayah)
         audio_path = self.cache_dir / f"{key}.mp3"
+        seg_path = self.cache_dir / f"{key}.segments.json"
         if not audio_path.is_file():
             return None
+        where = f"{surah}:{ayah}"
         try:
             audio = audio_path.read_bytes()
         except OSError as exc:
             raise AudioError(f"cannot read recitation cache {audio_path}: {exc}") from exc
-        seg_path = self.cache_dir / f"{key}.segments.json"
-        segments: list[AyahSegment] | None = None
-        if seg_path.is_file():
-            where = f"{surah}:{ayah} (cache)"
-            try:
-                raw: Any = json.loads(seg_path.read_text(encoding="utf-8"))
-                segments = [AyahSegment.model_validate(item) for item in raw]
-            except (OSError, ValueError, TypeError, ValidationError):
-                logger.warning("%s: cached word segments are unreadable; ignoring them", where)
-                segments = None
-        return AyahAudio(surah, ayah, audio, segments or None)
-
-    def _get(self, url: str, surah: int, ayah: int) -> httpx.Response:
-        host = urlsplit(url).netloc
+        if not _is_audio(audio):
+            logger.warning("%s: cached recording is not audio; fetching it again", where)
+            _unlink(audio_path)
+            return None
+        if not seg_path.is_file():
+            return AyahAudio(surah, ayah, audio, None)
         try:
-            response = self.http.get(url, timeout=TIMEOUT_S, follow_redirects=True)
-        except httpx.TimeoutException as exc:
-            raise ProviderError(f"{host} request timed out ({type(exc).__name__})") from exc
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"cannot reach {host} ({type(exc).__name__})") from exc
+            text = seg_path.read_text(encoding="utf-8")
+            segments = _checked_segments(json.loads(text)) if len(text) <= MAX_JSON_BYTES else None
+        except (OSError, ValueError, RecursionError):
+            segments = None
+        if not segments:
+            # Damaged timings: drop the whole entry so audio and timings come back together.
+            logger.warning("%s: cached word segments are invalid; fetching the ayah again", where)
+            _unlink(audio_path)
+            _unlink(seg_path)
+            return None
+        return AyahAudio(surah, ayah, audio, segments)
+
+    def _get(self, url: str, surah: int, ayah: int, limit: int) -> bytes:
+        """The body of ``url``, following only https redirects, read up to ``limit`` bytes."""
+        request = self.http.build_request("GET", url, timeout=TIMEOUT_S)
+        for _ in range(MAX_REDIRECTS + 1):
+            host = request.url.host
+            if request.url.scheme != "https":
+                raise ProviderError(f"refusing a non-https URL on {host} for {surah}:{ayah}")
+            try:
+                response = self.http.send(request, stream=True, follow_redirects=False)
+                try:
+                    if response.is_redirect and response.next_request is not None:
+                        request = response.next_request
+                        continue
+                    self._check_status(response, host, surah, ayah)
+                    return _read_capped(response, limit, host, surah, ayah)
+                finally:
+                    response.close()
+            except httpx.TimeoutException as exc:
+                raise ProviderError(f"{host} request timed out ({type(exc).__name__})") from exc
+            except httpx.HTTPError as exc:
+                raise ProviderError(f"cannot reach {host} ({type(exc).__name__})") from exc
+        raise ProviderError(f"too many redirects for {surah}:{ayah}")
+
+    def _check_status(self, response: httpx.Response, host: str, surah: int, ayah: int) -> None:
         if response.status_code == 404:
             raise ReciterError(f"{self.reciter.name} has no recording of {surah}:{ayah}")
         if not response.is_success:
             raise ProviderError(f"{host} returned HTTP {response.status_code} for {surah}:{ayah}")
-        return response
 
     def _qurancom_lookup(self, surah: int, ayah: int) -> tuple[str, list[AyahSegment] | None]:
         rid = self.reciter.recitation_id
         url = f"{QURANCOM_API}/recitations/{rid}/by_ayah/{surah}:{ayah}"
-        response = self._get(url, surah, ayah)
+        raw = self._get(url, surah, ayah, MAX_JSON_BYTES)
         try:
-            body: Any = response.json()
-        except ValueError as exc:
+            body: Any = json.loads(raw)
+        except (ValueError, RecursionError) as exc:
             raise ProviderError("quran.com response is not valid JSON") from exc
         files = body.get("audio_files") if isinstance(body, dict) else None
         if not isinstance(files, list) or not files or not isinstance(files[0], dict):

@@ -14,6 +14,7 @@ from conftest import FIXTURES
 from fixtures.audio import speechlike, to_wav_bytes
 
 from narratoflow.audio import io as aio
+from narratoflow.audio import recitation
 from narratoflow.audio.recitation import (
     AYAH_GAP_MS,
     AyahSegment,
@@ -125,10 +126,7 @@ def test_qurancom_fetch_reads_url_and_segments(tmp_path: Path) -> None:
     ]
     cache = tmp_path / "qc-hafs"
     assert (cache / "019002.mp3").read_bytes() == WAV
-    assert json.loads((cache / "019002.segments.json").read_text()) == [
-        {"word": 1, "start_ms": 0, "end_ms": 400},
-        {"word": 2, "start_ms": 450, "end_ms": 900},
-    ]
+    assert json.loads((cache / "019002.segments.json").read_text()) == segs
     assert not [p for p in cache.iterdir() if p.name.startswith(".")]
 
 
@@ -167,21 +165,137 @@ def test_cached_ayah_without_segments_file_has_no_segments(tmp_path: Path) -> No
     assert got.audio == WAV
 
 
-def test_corrupt_cached_segments_are_dropped(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    "cached",
+    [
+        "{not json",
+        json.dumps([[2, 0, 100], [1, 100, 200]]),  # non-monotonic
+        json.dumps([{"word": 1, "start_ms": 0, "end_ms": 100}]),  # not triples
+        json.dumps([]),
+    ],
+)
+def test_invalid_cached_segments_refetch_the_ayah(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, cached: str
 ) -> None:
     cache = tmp_path / "qc-hafs"
     cache.mkdir()
     (cache / "019002.mp3").write_bytes(WAV)
-    (cache / "019002.segments.json").write_text("{not json", encoding="utf-8")
+    (cache / "019002.segments.json").write_text(cached, encoding="utf-8")
+    seen: list[str] = []
+    segs = [[1, 0, 400]]
+    with caplog.at_level(logging.WARNING):
+        got = source(qurancom(), tmp_path, api_server({"19:2": WAV}, {"19:2": segs}, seen)).fetch(
+            19, 2
+        )
+    assert len(seen) == 2  # fetched again
+    assert got.segments == [AyahSegment(word=1, start_ms=0, end_ms=400)]
+    assert json.loads((cache / "019002.segments.json").read_text()) == segs
+    assert "19:2" in caplog.text
+
+
+def test_cached_non_audio_is_deleted_and_refetched(tmp_path: Path) -> None:
+    cache = tmp_path / "files-hafs"
+    cache.mkdir()
+    (cache / "019002.mp3").write_bytes(b"")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=WAV)
+
+    got = source(files_reciter(), tmp_path, handler).fetch(19, 2)
+    assert seen == ["https://audio.example.org/r/019002.mp3"]
+    assert got.audio == WAV
+    assert (cache / "019002.mp3").read_bytes() == WAV
+
+
+def test_refetch_without_segments_removes_stale_segments(tmp_path: Path) -> None:
+    cache = tmp_path / "qc-hafs"
+    cache.mkdir()
+    (cache / "019002.mp3").write_bytes(b"not audio")  # forces a refetch
+    (cache / "019002.segments.json").write_text(json.dumps([[1, 0, 100]]), encoding="utf-8")
+    seen: list[str] = []
+    got = source(qurancom(), tmp_path, api_server({"19:2": WAV}, {}, seen)).fetch(19, 2)
+    assert got.segments is None
+    assert not (cache / "019002.segments.json").exists()
 
     def refuse(request: httpx.Request) -> httpx.Response:
         raise AssertionError("no request expected")
 
-    with caplog.at_level(logging.WARNING):
-        got = source(qurancom(), tmp_path, refuse).fetch(19, 2)
-    assert got.segments is None
-    assert "19:2" in caplog.text
+    assert source(qurancom(), tmp_path, refuse).fetch(19, 2).segments is None
+
+
+def test_https_redirect_is_followed(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "audio.example.org":
+            return httpx.Response(302, headers={"location": "https://mirror.example.org/a.mp3"})
+        return httpx.Response(200, content=WAV)
+
+    got = source(files_reciter(), tmp_path, handler).fetch(2, 255)
+    assert seen == ["https://audio.example.org/r/002255.mp3", "https://mirror.example.org/a.mp3"]
+    assert got.audio == WAV
+
+
+def test_redirect_to_http_is_refused(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.scheme == "http":
+            return httpx.Response(200, content=WAV)
+        return httpx.Response(302, headers={"location": "http://evil.example.org/a.mp3"})
+
+    with pytest.raises(ProviderError, match="non-https"):
+        source(files_reciter(), tmp_path, handler).fetch(2, 255)
+    assert seen == ["https://audio.example.org/r/002255.mp3"]  # http hop never requested
+    assert not (tmp_path / "files-hafs" / "002255.mp3").exists()
+
+
+def test_redirect_loop_is_provider_error(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": str(request.url)})
+
+    with pytest.raises(ProviderError, match="too many redirects"):
+        source(files_reciter(), tmp_path, handler).fetch(2, 255)
+
+
+def test_audio_body_over_cap_is_provider_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recitation, "MAX_AUDIO_BYTES", 1000)
+    stream = httpx.ByteStream(b"ID3" + b"x" * 2000)  # no content-length: streamed check
+    src = source(files_reciter(), tmp_path, lambda request: httpx.Response(200, stream=stream))
+    with pytest.raises(ProviderError, match="exceeds 1000 bytes"):
+        src.fetch(2, 255)
+    declared = httpx.Response(200, content=b"ID3" + b"x" * 2000)  # content-length header
+    src = source(files_reciter(), tmp_path, lambda request: declared)
+    with pytest.raises(ProviderError, match="exceeds 1000 bytes"):
+        src.fetch(2, 255)
+    assert not (tmp_path / "files-hafs" / "002255.mp3").exists()
+
+
+def test_api_body_over_cap_is_provider_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recitation, "MAX_JSON_BYTES", 100)
+    body = {"audio_files": [{"url": "a/019002.mp3", "segments": [[1, 0, 1]] * 50}]}
+    src = source(qurancom(), tmp_path, lambda request: httpx.Response(200, json=body))
+    with pytest.raises(ProviderError, match="exceeds 100 bytes"):
+        src.fetch(19, 2)
+
+
+def test_source_closes_only_its_own_client(tmp_path: Path) -> None:
+    with RecitationSource(files_reciter(), tmp_path) as owned:
+        client = owned.http
+    assert client.is_closed
+    given = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+    with RecitationSource(files_reciter(), tmp_path, http=given):
+        pass
+    assert not given.is_closed
+    given.close()
 
 
 def test_404_is_reciter_error_naming_ayah(tmp_path: Path) -> None:

@@ -13,9 +13,16 @@ Every reciter in `assets/reciters/index.toml` must be listed here with its licen
 licence URL, recording source, segment-timing source and the date its terms were checked.
 The terms must allow use of the recordings in published (possibly monetised) videos.
 
-No reciter is shipped (checked 2026-11-11): the quran.com, quranicaudio.com and
-everyayah.com terms either limit use to personal, non-commercial listening or state no
-licence. Verse scenes therefore FAIL until a licensed reciter is added.
+No reciter is shipped (checked 2026-11-11). Rejected sources:
+
+- quran.com (https://quran.com/terms-and-conditions): personal, non-commercial use only.
+- quranicaudio.com (https://quranicaudio.com/about): no commercial use.
+- everyayah.com (https://everyayah.com/recitations_ayat.html): no licence stated.
+- alquran.cloud (https://alquran.cloud/terms-and-conditions, section IV): a non-commercial
+  redistribution licence; the reciters keep copyright and may require removal at their
+  discretion.
+
+Verse scenes therefore FAIL until a licensed reciter is added.
 
 | Reciter id | Riwaya | Source | License | License URL | Segments | Checked |
 |---|---|---|---|---|---|---|

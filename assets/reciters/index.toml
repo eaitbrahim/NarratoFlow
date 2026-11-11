@@ -9,6 +9,9 @@
 # - quranicaudio.com: "you may not use these files for commercial purposes"
 #   (https://quranicaudio.com/about).
 # - everyayah.com: states no licence at all (https://everyayah.com/recitations_ayat.html).
+# - alquran.cloud terms section IV: recitations are licensed for non-commercial
+#   redistribution; the reciters keep copyright and may ask for removal at their
+#   discretion (https://alquran.cloud/terms-and-conditions).
 # With this list empty, every verse scene FAILs with "no allow-listed reciter for
 # riwaya hafs; unlicensed recitation is not allowed".
 #

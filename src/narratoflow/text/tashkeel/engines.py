@@ -47,7 +47,10 @@ class MishkalDiacritizer:
         self._engine: Any = TashkeelClass()
 
     def diacritize(self, text: str) -> str:
-        return str(self._engine.tashkeel(text))
+        out = str(self._engine.tashkeel(text)).strip()
+        lead = text[: len(text) - len(text.lstrip())]
+        trail = text[len(text.rstrip()) :]
+        return lead + out + trail
 
 
 def vocalize_scene(scene: Scene, d: Diacritizer) -> Scene:

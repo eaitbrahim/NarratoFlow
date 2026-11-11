@@ -102,6 +102,28 @@ def test_mishkal_runs_and_passes_guard() -> None:
     pytest.importorskip("mishkal")
     text = "العلم نور"
     assert_skeleton_preserved(text, MishkalDiacritizer().diacritize(text))
+    padded = "  العلم نور \n"
+    assert_skeleton_preserved(padded, MishkalDiacritizer().diacritize(padded))
+
+
+def test_mishkal_outer_whitespace_restored(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
+    class FakeTashkeel:
+        def tashkeel(self, text: str) -> str:
+            return " " + add_fatha(text.strip()) + "  "
+
+    pkg = types.ModuleType("mishkal")
+    sub = types.ModuleType("mishkal.tashkeel")
+    sub.TashkeelClass = FakeTashkeel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mishkal", pkg)
+    monkeypatch.setitem(sys.modules, "mishkal.tashkeel", sub)
+    d = MishkalDiacritizer()
+    out = d.diacritize("العلم نور")
+    assert out == add_fatha("العلم نور")
+    assert d.diacritize(" نور\n") == " " + add_fatha("نور") + "\n"
+    assert not vocalize_scene(scene("العلم نور"), d).flags
 
 
 def add_fatha(text: str) -> str:

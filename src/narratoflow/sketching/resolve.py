@@ -16,7 +16,11 @@ from narratoflow.library.keys import parse_idea_key
 from narratoflow.models import Scene, Series, VisualSource
 from narratoflow.planning.ideas import IdeaOut, validate_idea
 from narratoflow.settings import Settings
-from narratoflow.sketching.generate import QUARANTINED_FLAG, generate_missing
+from narratoflow.sketching.generate import (
+    QUARANTINED_FLAG,
+    GenerationInterruptedError,
+    generate_missing,
+)
 
 
 def _resolved(series: Series, scene_id: str, change: Callable[[Scene], dict[str, Any]]) -> Series:
@@ -35,6 +39,17 @@ def _resolved(series: Series, scene_id: str, change: Callable[[Scene], dict[str,
     raise PlanningError(f"unknown scene {scene_id}")
 
 
+def _requarantined(partial: Series, scene_id: str) -> Series:
+    """`partial` with the scene flagged again if it ended up without a sketch."""
+    fixed = partial.model_copy(deep=True)
+    for part in fixed.parts:
+        for i, scene in enumerate(part.scenes):
+            if scene.id == scene_id and scene.sketch_id is None:
+                flags = [f for f in scene.flags if f != QUARANTINED_FLAG] + [QUARANTINED_FLAG]
+                part.scenes[i] = scene.model_copy(update={"flags": flags})
+    return fixed
+
+
 def regenerate(
     series: Series, scene_id: str, channel: ChannelConfig, settings: Settings, **deps: Any
 ) -> Series:
@@ -49,7 +64,13 @@ def regenerate(
         scene_id,
         lambda s: {"sketch_id": None, "match": "new", "sketch_attempt": s.sketch_attempt + 1},
     )
-    out, _ = generate_missing(prepared, channel, settings, only=frozenset({scene_id}), **deps)
+    try:
+        out, _ = generate_missing(prepared, channel, settings, only=frozenset({scene_id}), **deps)
+    except GenerationInterruptedError as e:
+        # the creator confirmed this attempt only: a scene left without a sketch goes
+        # back to quarantine so the next `sketch generate` does not spend on it
+        e.partial = (_requarantined(e.partial[0], scene_id), e.partial[1])
+        raise
     return out
 
 

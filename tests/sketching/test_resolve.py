@@ -1,6 +1,6 @@
-# ruff: noqa: F401, F811  (fixtures imported from test_generate are used by name)
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -8,25 +8,18 @@ from fixtures import images as img
 from llm.fakes import FakeLLM
 
 from narratoflow.channels.config import ChannelConfig
-from narratoflow.errors import PlanningError
+from narratoflow.errors import BudgetExceededError, PlanningError
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.models import Series, VisualSource
 from narratoflow.settings import Settings
-from narratoflow.sketching.generate import QUARANTINED_FLAG, generate_missing
+from narratoflow.sketching.generate import (
+    QUARANTINED_FLAG,
+    GenerationInterruptedError,
+    generate_missing,
+)
 from narratoflow.sketching.resolve import regenerate, swap_idea, use_text_card
 from narratoflow.visuals.marker import marker_seed
-from sketching.test_generate import (
-    PRICES,
-    FakeImages,
-    channel,
-    clean,
-    no_bundled,
-    scene,
-    scenes_of,
-    series,
-    settings,
-    verdict,
-)
+from sketching.support import PRICES, FakeImages, clean, scene, scenes_of, series, verdict
 
 
 def quarantined() -> Series:
@@ -188,3 +181,28 @@ def test_use_text_card_refuses_unknown_or_unflagged_scenes() -> None:
 def test_sources_are_ascii() -> None:
     root = Path(__file__).parents[2] / "src" / "narratoflow" / "sketching"
     (root / "resolve.py").read_bytes().decode("ascii")
+
+
+def test_interrupted_regenerate_keeps_the_scene_quarantined(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    limited = channel.model_copy(update={"spending_limit_usd": Decimal("0.01")})
+    images = FakeImages()
+    with pytest.raises(GenerationInterruptedError) as info:
+        regenerate(
+            quarantined(),
+            "s001",
+            limited,
+            settings,
+            images=images,
+            vision=FakeLLM([]),
+            library=library,
+            prices=PRICES,
+        )
+    assert images.requests == []
+    assert isinstance(info.value.__cause__, BudgetExceededError)
+    [first, second] = scenes_of(info.value.partial[0])
+    assert QUARANTINED_FLAG in first.flags and first.sketch_id is None
+    assert first.sketch_attempt == 1
+    assert second == scenes_of(quarantined())[1]
+    assert "progress so far is kept" in str(info.value)

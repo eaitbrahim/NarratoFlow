@@ -37,6 +37,8 @@ def _tarball() -> bytes:
         "circle": [["path", {"d": CIRCLE}]],
         "blob": [["path", {"d": CIRCLE, "fill": "currentColor"}]],
         "hatch": [["path", {"d": HATCH}]],
+        "disc": [["rect", {"x": 3, "y": 3, "width": 18, "height": 18}]],
+        "nosvg": [["path", {"d": CIRCLE}]],
     }
     members = {
         "package/tabler-nodes-outline.json": json.dumps(nodes).encode(),
@@ -45,6 +47,7 @@ def _tarball() -> bytes:
         "package/icons/outline/blob.svg": b"<svg/>",
         "package/icons/outline/hatch.svg": b"<svg/>",
         "package/icons/outline/ghost.svg": b"<svg/>",
+        "package/icons/outline/disc.svg": b"<svg/>",
     }
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as archive:
@@ -79,6 +82,8 @@ def test_build_pack_pins_sha_and_refuses_bad_icons(
             fetch.IconSpec("ghost", "ghost-shape", "not in the nodes file"),
             fetch.IconSpec("blob", "blob", "has a fill attribute"),
             fetch.IconSpec("hatch", "hatch", "a filled square"),
+            fetch.IconSpec("disc", "disc", "a node that is not a plain path"),
+            fetch.IconSpec("nosvg", "nosvg", "in the nodes JSON but not in the tarball"),
         ),
     )
     with pytest.raises(ValueError) as exc:
@@ -87,6 +92,8 @@ def test_build_pack_pins_sha_and_refuses_bad_icons(
     assert "ghost" in message
     assert "blob" in message
     assert "hatch" in message
+    assert "disc: has a node that is not a plain path" in message
+    assert "nosvg: has no package/icons/outline/nosvg.svg member" in message
     assert "circle" not in message
     assert not bad.exists() or not any(bad.iterdir())
 

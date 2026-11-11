@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -10,7 +11,7 @@ import pytest
 from conftest import FIXTURES
 from llm.fakes import FakeLLM
 from PIL import Image
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from rich.console import Console
 
 from narratoflow.channels.config import (
@@ -32,7 +33,7 @@ from narratoflow.errors import (
 from narratoflow.library.keys import parse_idea_key
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchStatus
-from narratoflow.llm.base import LLMClient
+from narratoflow.llm.base import LLMClient, StructuredResult
 from narratoflow.models import (
     Language,
     Narration,
@@ -706,7 +707,14 @@ class _Answers(ScriptedLLM):
         super().__init__()
         self.key = key
 
-    def complete_structured(self, *, system, user, output, images=()):  # type: ignore[no-untyped-def]
+    def complete_structured[T: BaseModel](
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
+    ) -> StructuredResult[T]:
         result = super().complete_structured(system=system, user=user, output=output, images=images)
         if output is IdeaOut:
             value = result.value.model_copy(update={"idea_key": self.key})

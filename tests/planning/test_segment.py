@@ -278,13 +278,13 @@ def test_join_invariant_on_real_fixture() -> None:
     [hit] = hits
     # the leading bracket has no letters, so it joins the verse scene
     assert scenes[0] is verse
-    assert verse.narration.source_text == text[: hit.end]
-    assert verse.narration.source_text == OPEN + text[hit.start : hit.end]
+    # ...and so do the closing bracket and "..." the LLM cut off after it
+    assert verse.narration.source_text.startswith(OPEN + text[hit.start : hit.end] + CLOSE)
+    assert not any(c.isalnum() for c in verse.narration.source_text[hit.end - hit.start + 1 :])
     first_narration = scenes[1]
     assert first_narration.kind is SceneKind.NARRATION
-    assert not set(text[hit.start : hit.end].split()) & set(
-        first_narration.narration.source_text.split()
-    )
+    # the first narration starts after the quoted verse, so it swallows none of it
+    assert len(verse.narration.source_text) >= hit.end
     assert len(scenes) > 4
     assert all(not s.flags for s in scenes)
 
@@ -301,3 +301,39 @@ def test_prompts_mention_verbatim_rule() -> None:
 def test_sources_are_ascii() -> None:
     for module in (segment_module, prompts_module):
         assert Path(module.__file__ or "").read_bytes().isascii()
+
+
+def test_letterless_llm_span_merges_into_previous_verse_scene() -> None:
+    # The reference script opens with a verse, the closing bracket and "...", then prose.
+    text = (FIXTURES / "input" / "clean_ar.txt").read_text(encoding="utf-8")
+    q = FIXTURES / "quran"
+    corpus = QuranCorpus.from_files(q / "quran-simple-clean.txt", q / "quran-uthmani.txt")
+    [hit] = detect_verses(text, corpus)
+    answer = _sentence_split(text[hit.end :])
+    # the sentence split cuts the bracket and the ellipsis off as their own span
+    assert not any(c.isalnum() for c in answer.scenes[0].text)
+
+    scenes = segment_script(text, [hit], FakeLLM([answer]))
+
+    assert "".join(s.narration.source_text for s in scenes) == text
+    assert all(any(c.isalnum() for c in s.narration.source_text) for s in scenes)
+    verse = scenes[0]
+    assert verse.kind is SceneKind.VERSE
+    assert verse.narration.source_text.startswith(text[: hit.end])
+    assert answer.scenes[0].text in verse.narration.source_text
+    assert all(s.kind is SceneKind.NARRATION for s in scenes[1:])
+    assert [s.id for s in scenes] == [f"s{n:03d}" for n in range(1, len(scenes) + 1)]
+
+
+def test_leading_letterless_span_merges_into_next_scene() -> None:
+    text = "... Hello there. Goodbye now."
+    llm = FakeLLM([_out("...", "Hello there.", "Goodbye now.")])
+    scenes = segment_script(text, [], llm)
+    assert [s.narration.source_text for s in scenes] == ["... Hello there. ", "Goodbye now."]
+    assert [s.id for s in scenes] == ["s001", "s002"]
+
+
+def test_several_leading_letterless_spans_merge_into_next_scene() -> None:
+    text = "... -- Hello there."
+    scenes = segment_script(text, [], FakeLLM([_out("...", "--", "Hello there.")]))
+    assert [s.narration.source_text for s in scenes] == [text]

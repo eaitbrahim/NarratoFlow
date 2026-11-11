@@ -8,6 +8,7 @@ the channel's spending limit. Only then is any LLM or embedding call made.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -15,6 +16,7 @@ from narratoflow.channels.config import ChannelConfig, style_fingerprint
 from narratoflow.channels.keys import check_provider_keys
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import (
+    CANDIDATE_TOP_K,
     CATALOG_EMBED_THRESHOLD,
     SpendTracker,
     estimate_part_cost,
@@ -31,7 +33,7 @@ from narratoflow.llm.base import LLMClient
 from narratoflow.llm.factory import make_llm
 from narratoflow.models import Language, Part, Scene, SceneKind, Series
 from narratoflow.planning.ideas import assign_ideas
-from narratoflow.planning.prompts import IDEAS_SYSTEM, SEGMENT_SYSTEM
+from narratoflow.planning.prompts import IDEAS_SYSTEM, SEGMENT_SYSTEM, TASHKEEL_SYSTEM
 from narratoflow.planning.segment import segment_script
 from narratoflow.planning.series import split_into_parts
 from narratoflow.quran.corpus import QuranCorpus, default_corpus
@@ -50,9 +52,19 @@ _MATCH: dict[MatchKind, Literal["reused", "bundled", "new"]] = {
 }
 
 
-def _system_prompt_tokens() -> int:
-    """Tokens of the larger planning system prompt, charged once per estimated pass."""
-    return max(estimate_tokens(SEGMENT_SYSTEM), estimate_tokens(IDEAS_SYSTEM))
+def estimate_planning(
+    text: str, channel: ChannelConfig, prices: PriceTable, *, catalog_size: int
+) -> Decimal:
+    """The pre-call planning estimate for `text`, using the real system prompts."""
+    return estimate_planning_cost(
+        text,
+        channel,
+        prices,
+        segment_system_tokens=estimate_tokens(SEGMENT_SYSTEM),
+        ideas_system_tokens=estimate_tokens(IDEAS_SYSTEM),
+        tashkeel_system_tokens=estimate_tokens(TASHKEEL_SYSTEM),
+        catalog_size=catalog_size,
+    )
 
 
 def _diacritizer(channel: ChannelConfig, llm: LLMClient) -> Diacritizer:
@@ -72,6 +84,7 @@ def _candidates(
         [scenes[i].narration.source_text for i in narration],
         embedder,
         full_limit=CATALOG_EMBED_THRESHOLD,
+        top_k=CANDIDATE_TOP_K,
     )
     result: list[list[tuple[str, str]]] = [[] for _ in scenes]
     for i, cands in zip(narration, found, strict=True):
@@ -113,13 +126,7 @@ def plan_series(
     library = default_library(settings)
     version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
     catalog_size = len(library.idea_catalog(version))
-    estimate = estimate_planning_cost(
-        text,
-        channel,
-        prices,
-        system_prompt_tokens=_system_prompt_tokens(),
-        catalog_size=catalog_size,
-    )
+    estimate = estimate_planning(text, channel, prices, catalog_size=catalog_size)
     tracker.ensure_room(estimate, "planning")
 
     if llm is None:

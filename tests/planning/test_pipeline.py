@@ -39,6 +39,7 @@ from narratoflow.planning.ideas import IdeaOut
 from narratoflow.planning.pipeline import plan_series
 from narratoflow.planning.segment import SegmentOut, _collapse_ws
 from narratoflow.quran.corpus import QuranCorpus
+from narratoflow.script.source import load_script
 from narratoflow.settings import Settings
 from narratoflow.text.tashkeel.engines import Vocalized
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons
@@ -229,6 +230,11 @@ def test_planning_cost_is_tracker_spend_and_llm_is_built(
     )
     [wrapped] = built
     assert series.est_planning_cost_usd == wrapped.tracker.spent > 0
+    # the pre-call estimate covers every call the run really made
+    _, body = load_script(write_script(tmp_path, read("clean_ar.txt")), Language.ARABIC)
+    estimate = pipeline_module.estimate_planning(body, paid, prices, catalog_size=0)
+    assert estimate >= wrapped.tracker.spent
+    assert estimate < 3 * wrapped.tracker.spent  # and is not wildly inflated
 
 
 def test_large_catalog_builds_embedder(

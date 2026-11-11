@@ -18,7 +18,7 @@ from narratoflow.costs.tracker import (
 )
 from narratoflow.errors import BudgetExceededError, ProviderError
 from narratoflow.llm.base import Usage
-from narratoflow.models import Narration, Part, Scene
+from narratoflow.models import Language, Narration, Part, Scene
 from narratoflow.settings import Settings
 
 
@@ -70,25 +70,67 @@ def test_estimate_tokens_arabic_vs_english() -> None:
     assert estimate_tokens("a" * 8) == 2
 
 
-def test_estimate_planning_cost(prices: PriceTable, channel_file: Path) -> None:
-    ch = load_channel(channel_file).model_copy(
+def _paid(channel_file: Path) -> ChannelConfig:
+    base = load_channel(channel_file)
+    return base.model_copy(
         update={
-            "llm": load_channel(channel_file).llm.model_copy(
+            "llm": base.llm.model_copy(
                 update={"provider": "anthropic", "model": "claude-opus-5-5"}
             ),
             "embed": EmbedConfig(provider="voyage", model="voyage-multilingual-2"),
         }
     )
-    text = "a" * 4000  # 1000 tokens
-    # per pass: in 2500 * 4/1M + out 1200 * 20/1M ; two passes
-    expected = 2 * (Decimal(2500) * 4 + Decimal(1200) * 20) / 1_000_000
-    assert estimate_planning_cost(text, ch, prices) == expected
-    big = estimate_planning_cost(text, ch, prices, catalog_size=301)
-    embed = (Decimal(301 * 20 + 1000)) * Decimal("0.12") / 1_000_000
-    assert big == expected + embed
-    assert estimate_planning_cost(text, ch, prices, catalog_size=300) == expected
+
+
+_SYS = {"segment_system_tokens": 100, "ideas_system_tokens": 600, "tashkeel_system_tokens": 50}
+
+
+def _usd(input_tokens: int, output_tokens: int) -> Decimal:
+    return (Decimal(input_tokens) * 4 + Decimal(output_tokens) * 20) / 1_000_000
+
+
+def test_estimate_planning_cost_english(prices: PriceTable, channel_file: Path) -> None:
+    ch = _paid(channel_file).model_copy(update={"language": Language.ENGLISH})
+    text = " ".join(["abc"] * 1000)  # 3999 chars -> 1000 tokens, 1000 words
+    calls = 34  # ceil(1000 / 30)
+    segment = _usd(100 + 1000, 1200)
+    ideas = _usd(calls * 600 + 1000, calls * 80)
+    expected = (segment + ideas) * Decimal("1.2")
+    assert estimate_planning_cost(text, ch, prices, **_SYS) == expected
+    # small catalogs are shown whole: 15 tokens per candidate line in every idea call
+    with_catalog = (segment + _usd(calls * (600 + 300 * 15) + 1000, calls * 80)) * Decimal("1.2")
+    assert estimate_planning_cost(text, ch, prices, **_SYS, catalog_size=300) == with_catalog
+    # large ones are narrowed to the top 5 and embedded
+    big = estimate_planning_cost(text, ch, prices, **_SYS, catalog_size=301)
+    narrowed = segment + _usd(calls * (600 + 5 * 15) + 1000, calls * 80)
+    embed = Decimal(301 * 20 + 1000) * Decimal("0.12") / 1_000_000
+    assert big == (narrowed + embed) * Decimal("1.2")
     free = ch.model_copy(update={"embed": EmbedConfig(provider="ollama", model="x")})
-    assert estimate_planning_cost(text, free, prices, catalog_size=301) == expected
+    assert estimate_planning_cost(text, free, prices, **_SYS, catalog_size=301) == (
+        narrowed * Decimal("1.2")
+    )
+
+
+def test_estimate_planning_cost_arabic_tashkeel(prices: PriceTable, channel_file: Path) -> None:
+    ch = _paid(channel_file)
+    assert ch.language is Language.ARABIC and ch.diacritizer == "llm"
+    text = "\u0643\u062a\u0628 " * 10  # 40 chars, all-Arabic -> 14 tokens, 10 words
+    segment = _usd(100 + 14, 17)
+    ideas = _usd(600 + 14, 80)
+    tashkeel = _usd(50 + 14, 35)
+    assert estimate_planning_cost(text, ch, prices, **_SYS) == (
+        (segment + ideas + tashkeel) * Decimal("1.2")
+    )
+    mishkal = ch.model_copy(update={"diacritizer": "mishkal"})
+    assert estimate_planning_cost(text, mishkal, prices, **_SYS) == (
+        (segment + ideas) * Decimal("1.2")
+    )
+
+
+def test_estimate_planning_cost_free_llm_is_zero(prices: PriceTable, channel_file: Path) -> None:
+    assert (
+        estimate_planning_cost("some words here", load_channel(channel_file), prices, **_SYS) == 0
+    )
 
 
 def test_estimate_part_cost(prices: PriceTable, channel_file: Path) -> None:

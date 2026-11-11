@@ -18,7 +18,7 @@ from narratoflow.channels.config import ChannelConfig
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import BudgetExceededError, ProviderError
 from narratoflow.llm.base import LLMClient, StructuredResult, Usage
-from narratoflow.models import Part
+from narratoflow.models import Language, Part
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,12 @@ _MILLION = Decimal(1_000_000)
 _OUTPUT_FACTOR = Decimal("1.2")
 CATALOG_EMBED_THRESHOLD = 300
 CATALOG_DESCRIPTION_TOKENS = 20
+WORDS_PER_SCENE = 30
+CANDIDATE_TOP_K = 5
+CANDIDATE_LINE_TOKENS = 15
+IDEA_OUTPUT_TOKENS = 80
+_TASHKEEL_OUTPUT_FACTOR = Decimal("2.5")
+PLANNING_MARGIN = Decimal("1.2")
 
 
 @dataclass(frozen=True)
@@ -82,26 +88,49 @@ def estimate_planning_cost(
     channel: ChannelConfig,
     prices: PriceTable,
     *,
-    system_prompt_tokens: int = 1500,
+    segment_system_tokens: int,
+    ideas_system_tokens: int,
+    tashkeel_system_tokens: int,
     catalog_size: int = 0,
 ) -> Decimal:
-    """Two LLM passes, each system + text tokens in and 1.2 x text tokens out.
+    """Estimate every planning call, times `PLANNING_MARGIN`.
 
-    When `catalog_size` exceeds 300, adds embedding of the catalog descriptions
-    (~20 tokens each) plus the text, priced for `channel.embed`.
+    With T text tokens and n = max(1, ceil(words / 30)) scenes:
+    - segmentation: one pass, segment system + T in, 1.2 x T out;
+    - ideas: n calls, each ideas system + candidate lines (the catalog up to 300
+      entries, else the top 5; 15 tokens each) + T / n in, 80 out;
+    - tashkeel (Arabic with the LLM diacritizer only): n calls, n x tashkeel
+      system + T in, 2.5 x T out;
+    - embeddings when `catalog_size` exceeds 300: the catalog descriptions
+      (~20 tokens each) plus the text, priced for `channel.embed`.
+
+    The system-prompt token counts are passed in because the prompts live in
+    `planning`, which imports this module.
     """
     text_tokens = estimate_tokens(text)
-    output_tokens = math.ceil(text_tokens * _OUTPUT_FACTOR)
+    calls = max(1, math.ceil(len(text.split()) / WORDS_PER_SCENE))
+    shown = catalog_size if catalog_size <= CATALOG_EMBED_THRESHOLD else CANDIDATE_TOP_K
+    candidate_tokens = shown * CANDIDATE_LINE_TOKENS
     llm = channel.llm
-    per_pass = _llm_cost(
-        prices, llm.provider, llm.model, system_prompt_tokens + text_tokens, output_tokens
+
+    def cost(input_tokens: int, output_tokens: int) -> Decimal:
+        return _llm_cost(prices, llm.provider, llm.model, input_tokens, output_tokens)
+
+    total = cost(segment_system_tokens + text_tokens, math.ceil(text_tokens * _OUTPUT_FACTOR))
+    total += cost(
+        calls * (ideas_system_tokens + candidate_tokens) + text_tokens,
+        calls * IDEA_OUTPUT_TOKENS,
     )
-    total = 2 * per_pass
+    if channel.language is Language.ARABIC and channel.diacritizer == "llm":
+        total += cost(
+            calls * tashkeel_system_tokens + text_tokens,
+            math.ceil(text_tokens * _TASHKEEL_OUTPUT_FACTOR),
+        )
     if catalog_size > CATALOG_EMBED_THRESHOLD:
         embed_tokens = catalog_size * CATALOG_DESCRIPTION_TOKENS + text_tokens
         embed = channel.embed
         total += embed_tokens * prices.embed(embed.provider, embed.model) / _MILLION
-    return total
+    return total * PLANNING_MARGIN
 
 
 def estimate_part_cost(

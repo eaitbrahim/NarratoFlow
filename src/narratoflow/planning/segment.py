@@ -147,13 +147,34 @@ def _flush_brackets(text: str, verses: Sequence[VerseHit]) -> set[int]:
     return flush
 
 
+def _merge_letterless(text: str, pieces: list[_Piece]) -> list[_Piece]:
+    """Fold each narration piece without letters or digits into the previous piece,
+    or into the next one when it comes first. Pieces are contiguous, so the join of
+    their slices is unchanged."""
+    merged: list[_Piece] = []
+    lead: int | None = None
+    for piece in pieces:
+        if piece.verse is None and not _has_text(text[piece.start : piece.end]):
+            if merged:
+                merged[-1].end = piece.end
+            elif lead is None:
+                lead = piece.start
+            continue
+        if lead is not None:
+            piece.start, lead = lead, None
+        merged.append(piece)
+    return merged
+
+
 def segment_script(text: str, verses: Sequence[VerseHit], llm: LLMClient) -> list[Scene]:
     """Split `text` into scenes without changing a character.
 
     `verses` must be sorted and non-overlapping. A stretch between verses that holds
     no letters or digits (brackets, punctuation, whitespace) is not sent to the LLM; it
     joins the previous scene, or the next one when it comes first, so that the scenes'
-    `source_text` values concatenate back to `text`.
+    `source_text` values concatenate back to `text`. The same holds for a letterless
+    span the LLM cuts off: it is merged into its neighbour (a verse scene included), so
+    no scene without letters or digits reaches idea assignment.
     """
     pieces: list[_Piece] = []
     cursor = 0
@@ -173,6 +194,7 @@ def segment_script(text: str, verses: Sequence[VerseHit], llm: LLMClient) -> lis
         cursor = end
     if not pieces:
         raise SegmentationError("the script has no text to segment")
+    pieces = _merge_letterless(text, pieces)
 
     flush = _flush_brackets(text, verses)
     scenes: list[Scene] = []

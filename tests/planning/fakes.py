@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel
 
+from narratoflow.costs.tracker import estimate_tokens
 from narratoflow.llm.base import StructuredResult, Usage
 from narratoflow.planning.ideas import IdeaOut
 from narratoflow.planning.segment import SegmentOut, SegmentSpan
@@ -14,7 +15,6 @@ from narratoflow.text.tashkeel.engines import Vocalized
 
 FATHA = "\u064e"
 SCRIPTED_IDEA = "scroll|generic"
-_USAGE = Usage(input_tokens=100, output_tokens=50)
 # A sentence ends at . ! ? or the Arabic question mark (U+061F) followed by whitespace.
 _SENTENCE_END = re.compile(r"(?<=[.!?\u061f])\s+")
 _TEXT_MARK = "TEXT:\n"
@@ -33,7 +33,8 @@ class ScriptedLLM:
     """An `LLMClient` whose answers are computed from the user prompt.
 
     SegmentOut: the stretch split at sentence ends; IdeaOut: `scroll|generic`;
-    Vocalized: the text with a fatha after each Arabic letter.
+    Vocalized: the text with a fatha after each Arabic letter. Usage is the
+    `estimate_tokens` of the prompt and of the JSON answer.
     """
 
     name: str = "scripted"
@@ -68,8 +69,13 @@ class ScriptedLLM:
             value = Vocalized(text=add_fatha(user))
         else:
             raise AssertionError(f"ScriptedLLM cannot answer {output.__name__}")
+        # usage as a real model would bill it: the prompt in, the JSON answer out
+        usage = Usage(
+            input_tokens=estimate_tokens(system + user),
+            output_tokens=estimate_tokens(value.model_dump_json()),
+        )
         return StructuredResult(
-            value=output.model_validate(value.model_dump()), usage=_USAGE, model=self.model
+            value=output.model_validate(value.model_dump()), usage=usage, model=self.model
         )
 
 

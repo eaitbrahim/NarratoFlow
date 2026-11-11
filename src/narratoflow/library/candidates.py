@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from narratoflow.costs.tracker import CATALOG_EMBED_THRESHOLD
 from narratoflow.errors import PlanningError
 from narratoflow.library.repository import SketchLibrary
 
@@ -86,7 +87,7 @@ def candidate_keys(
     embedder: Embedder | None,
     *,
     extra: Sequence[Entry] = (),
-    full_limit: int = 300,
+    full_limit: int = CATALOG_EMBED_THRESHOLD,
     top_k: int = 5,
 ) -> list[list[Entry]]:
     """Per scene, the (idea_key, description) entries the planner may pick from.

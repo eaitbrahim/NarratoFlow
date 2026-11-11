@@ -112,6 +112,7 @@ def _candidates(
         [scenes[i].narration.source_text for i in narration],
         embedder,
         extra=extra,
+        # Must equal the estimate's threshold (one decision, costs.tracker).
         full_limit=CATALOG_EMBED_THRESHOLD,
         top_k=CANDIDATE_TOP_K,
     )

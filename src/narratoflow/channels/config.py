@@ -74,7 +74,7 @@ def load_channel(path: Path) -> ChannelConfig:
                 (path.parent / str(style["reference_sketch"])).resolve()
             )
         return ChannelConfig.model_validate(raw)
-    except (OSError, tomllib.TOMLDecodeError, ValidationError) as e:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError) as e:
         raise ChannelConfigError(f"Invalid channel config {path}: {e}") from e
 
 

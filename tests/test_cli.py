@@ -163,3 +163,44 @@ def test_dotenv_typo_key_ignored(
     captured = capsys.readouterr()
     assert code == 0, captured.err
     assert "sk-SECRET123" not in captured.out + captured.err
+
+
+def test_library_copy_to_quarantined_dedupe_exit_1(
+    channel_file: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    channel = load_channel(channel_file)
+    library = default_library(get_settings())
+    version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
+    prov = Provenance(source="test", license="CC0", created_at=datetime(2026, 1, 1, tzinfo=UTC))
+    record = library.add_sketch(
+        version,
+        "alpha|generic",
+        b"A",
+        ".png",
+        SketchOrigin.GENERATED,
+        SketchStatus.PASSED,
+        True,
+        prov,
+    )
+    other = tmp_path / "other.toml"
+    other.write_text(
+        channel_file.read_text(encoding="utf-8").replace(channel.slug, "other-channel", 1),
+        encoding="utf-8",
+    )
+    (tmp_path / "ref.png").write_bytes((channel_file.parent / "ref.png").read_bytes())
+    assert run_main(monkeypatch, "library", "copy", str(record.id), str(other)) == 0
+    capsys.readouterr()
+    target = load_channel(other)
+    target_version = library.ensure_style_version(target.slug, style_fingerprint(target.style))
+    copy_id = library.copy_to(record.id, target_version).id
+    library.quarantine(copy_id, "bad lines")
+    code = run_main(monkeypatch, "library", "copy", str(record.id), str(other))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "quarantined" in captured.err and str(copy_id) in captured.err
+    assert "bad lines" in captured.err
+    assert "Traceback" not in captured.err

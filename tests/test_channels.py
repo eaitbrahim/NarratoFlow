@@ -79,3 +79,18 @@ def test_all_missing_keys_listed_together(channel_file: Path) -> None:
 def test_present_key_passes(channel_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "x")
     check_provider_keys(load_channel(channel_file), get_settings())
+
+
+def test_non_utf8_toml_wrapped(tmp_path: Path) -> None:
+    bad = tmp_path / "c.toml"
+    bad.write_bytes('name = "\u0642\u0646\u0627\u0629"\n'.encode("cp1256"))
+    with pytest.raises(ChannelConfigError, match=r"c\.toml"):
+        load_channel(bad)
+
+
+def test_provider_names_case_insensitive(channel_file: Path) -> None:
+    channel = load_channel(channel_file)
+    channel.llm.provider = " Ollama "
+    channel.voice.provider = "EDGE"
+    assert ProviderKind.LLM not in required_key_env_vars(channel)
+    assert ProviderKind.VOICE not in required_key_env_vars(channel)

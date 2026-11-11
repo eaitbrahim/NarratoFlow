@@ -10,8 +10,9 @@ from rich.markup import escape
 
 from narratoflow.channels.config import load_channel, style_fingerprint
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
-from narratoflow.errors import CorruptInputError, NarratoFlowError
+from narratoflow.errors import CorruptInputError, LibraryError, NarratoFlowError
 from narratoflow.library.repository import default_library
+from narratoflow.library.schemas import SketchStatus
 from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project
 from narratoflow.settings import get_settings
@@ -78,6 +79,11 @@ def library_copy(sketch_id: int, target_channel_toml: Path) -> None:
     library = default_library(get_settings())
     version = library.ensure_style_version(target.slug, style_fingerprint(target.style))
     record = library.copy_to(sketch_id, version)
+    if record.status is SketchStatus.FAILED:
+        raise LibraryError(
+            f"sketch {sketch_id} is quarantined in channel {target.slug} "
+            f"(copy id {record.id}): {record.status_reason}"
+        )
     _out.print(record.id, highlight=False)
 
 

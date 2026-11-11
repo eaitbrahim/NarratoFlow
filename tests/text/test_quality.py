@@ -105,7 +105,7 @@ def test_scene_break_lines_pass(scene_break: str) -> None:
 
 
 def test_fragmented_lines_reported_once() -> None:
-    text = "ab\ncd\nef\nthis is a long line\nanother long line here"
+    text = "ab\ncd\nef\n" + "\n".join(f"this is long line number {n}" for n in range(8))
     report = check_input(text, Language.ENGLISH)
     frag = [i for i in report.issues if i.kind is IssueKind.FRAGMENTED_LINES]
     assert len(frag) == 1 and frag[0].line == 1
@@ -124,3 +124,15 @@ def test_quality_source_is_ascii() -> None:
 
     assert module.__file__ is not None
     assert Path(module.__file__).read_text(encoding="utf-8").isascii()
+
+
+def test_short_clean_script_with_one_short_line_passes() -> None:
+    text = "\n".join(
+        [
+            "\u0628\u062f\u0623\u062a \u0627\u0644\u0642\u0635\u0629 \u0647\u0646\u0627",
+            "\u0646\u0639\u0645",
+            "\u062b\u0645 \u0627\u0646\u062a\u0647\u062a \u0627\u0644\u0642\u0635\u0629",
+            "\u0648\u0634\u0643\u0631\u0627 \u0644\u0643\u0645 \u062c\u0645\u064a\u0639\u0627",
+        ]
+    )
+    assert check_input(text, Language.ARABIC).ok

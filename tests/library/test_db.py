@@ -186,3 +186,12 @@ def test_env_without_connection_explains_open_library(offline: bool) -> None:
         config.set_main_option("script_location", str(path))
         with pytest.raises(LibraryError, match="open_library"):
             alembic_command.upgrade(config, "head", sql=offline)
+
+
+def test_unknown_revision_wrapped(tmp_path: Path) -> None:
+    p = tmp_path / "library.db"
+    open_library(p).dispose()
+    with sqlite3.connect(p) as conn:
+        conn.execute("UPDATE alembic_version SET version_num = 'deadbeef0000'")
+    with pytest.raises(LibraryError, match="newer"):
+        open_library(p)

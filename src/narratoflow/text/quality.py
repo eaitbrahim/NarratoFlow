@@ -12,6 +12,7 @@ _EXCERPT_MAX = 40
 _MAX_REPORTED = 10
 _FRAGMENT_SHORT = 3
 _FRAGMENT_RATIO = 0.2
+_FRAGMENT_MIN_LINES = 10  # too few lines make the ratio meaningless
 
 # LRM, RLM, ALM, tatweel, bidi embeddings/overrides U+202A-U+202E, isolates U+2066-U+2069.
 _INVISIBLE_AND_TATWEEL = dict.fromkeys(
@@ -82,7 +83,7 @@ def check_input(text: str, language: Language) -> QualityReport:
         bare = _HARAKAT.sub("", line)
         if _ARABIC_STRETCH.search(bare) or _LATIN_STRETCH.search(bare):
             issues.append(QualityIssue(IssueKind.STRETCHED_LETTERS, number, _excerpt(line)))
-    if non_empty and len(short) / non_empty > _FRAGMENT_RATIO:
+    if non_empty >= _FRAGMENT_MIN_LINES and len(short) / non_empty > _FRAGMENT_RATIO:
         number, excerpt = short[0]
         issues.append(QualityIssue(IssueKind.FRAGMENTED_LINES, number, excerpt))
     issues.sort(key=lambda i: i.line)

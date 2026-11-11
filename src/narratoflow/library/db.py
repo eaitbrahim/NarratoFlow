@@ -8,6 +8,7 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
+from alembic.util.exc import CommandError
 from sqlalchemy import Connection, Engine, create_engine, event
 from sqlalchemy.exc import DatabaseError
 
@@ -87,6 +88,11 @@ def open_library(db_path: Path) -> Engine:
         _migrate(db_path)
     except (OSError, DatabaseError) as e:
         raise LibraryError(f"cannot open library at {db_path}: {e}") from e
+    except CommandError as e:
+        raise LibraryError(
+            f"cannot migrate library at {db_path}: {e}. "
+            "It may have been created by a newer NarratoFlow version."
+        ) from e
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"timeout": _BUSY_TIMEOUT_S})
     event.listen(engine, "connect", _set_pragmas)
     return engine

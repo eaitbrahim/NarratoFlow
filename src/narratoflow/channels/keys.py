@@ -27,7 +27,7 @@ def required_key_env_vars(channel: ChannelConfig) -> dict[ProviderKind, str]:
     return {
         kind: f"NARRATOFLOW_{kind.value.upper()}_API_KEY"
         for kind, provider in providers.items()
-        if provider not in FREE_PROVIDERS
+        if provider.strip().lower() not in FREE_PROVIDERS
     }
 
 

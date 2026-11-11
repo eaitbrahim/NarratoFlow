@@ -1,5 +1,8 @@
+import json
+import os
 import stat
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
@@ -229,16 +232,27 @@ def test_concat_list_writes_bare_names(tmp_path: Path) -> None:
     assert text == "file 'seg-000.mkv'\nfile 'seg-001.mkv'\n"
 
 
-@pytest.mark.parametrize("name", ["a'b.mkv", "sub/seg-000.mkv", "x\ny.mkv"])
+@pytest.mark.parametrize(
+    "name", ["a'b.mkv", "seg:0.mkv", "file:seg.mkv", "x\ny.mkv", "a b.mkv", "-x.mkv", ".."]
+)
 def test_concat_list_rejects_unsafe_names(tmp_path: Path, name: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unsafe segment name"):
         write_concat_list([tmp_path / name], tmp_path / "segments.txt")
     assert not (tmp_path / "segments.txt").exists()
 
 
-def test_concat_list_rejects_segment_outside_list_dir(tmp_path: Path) -> None:
+@pytest.mark.parametrize("sub", ["other", "sub/deeper"])
+def test_concat_list_rejects_segment_outside_list_dir(tmp_path: Path, sub: str) -> None:
     with pytest.raises(ValueError, match="not in"):
-        write_concat_list([tmp_path / "other" / "seg-000.mkv"], tmp_path / "segments.txt")
+        write_concat_list([tmp_path / sub / "seg-000.mkv"], tmp_path / "segments.txt")
+
+
+def test_concat_list_accepts_relative_and_absolute_spellings(tmp_path: Path) -> None:
+    (tmp_path / "work").mkdir()  # the autouse fixture makes tmp_path the cwd
+    write_concat_list([Path("work/seg-000.mkv")], tmp_path.absolute() / "work" / "segments.txt")
+    write_concat_list([tmp_path.absolute() / "work" / "seg-001.mkv"], Path("work/list.txt"))
+    write_concat_list([Path("seg-002.mkv")], Path("work/bare.txt"))
+    assert (tmp_path / "work" / "list.txt").read_text(encoding="utf-8") == "file 'seg-001.mkv'\n"
 
 
 def test_concat_list_rejects_empty(tmp_path: Path) -> None:
@@ -255,7 +269,14 @@ def _probe_script(tmp_path: Path, frames: str) -> Path:
     return path
 
 
-def test_encode_part_passes_the_pinned_command(tmp_path: Path) -> None:
+@pytest.fixture
+def umask_022() -> Iterator[None]:
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+def test_encode_part_passes_the_pinned_command(tmp_path: Path, umask_022: None) -> None:
     log = tmp_path / "args.txt"
     cwd_log = tmp_path / "cwd.txt"
     body = f'echo "$@" > "{log}"\npwd > "{cwd_log}"\nfor a; do last="$a"; done\necho mp4 > "$last"'
@@ -269,7 +290,8 @@ def test_encode_part_passes_the_pinned_command(tmp_path: Path) -> None:
     args = log.read_text(encoding="utf-8").split()
     vf = (
         "ass=filename=captions.ass:fontsdir=fonts:shaping=complex,"
-        "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
+        "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+        "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
     )
     assert args[:-1] == [
         *["-hide_banner", "-nostdin", "-v", "error", "-xerror", "-y"],
@@ -374,8 +396,6 @@ _GOOD = MediaProbe(
 def test_verify_mp4_names_the_bad_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: Any
 ) -> None:
-    from dataclasses import replace
-
     monkeypatch.setattr(encoder, "probe", lambda _t, _p: replace(_GOOD, **{field: value}))
     tools = RenderTools(ffmpeg=tmp_path, ffprobe=tmp_path, version="")
     with pytest.raises(RenderError, match=field):
@@ -412,12 +432,45 @@ def test_long_part_no_av_drift(render_tools: RenderTools, tmp_path: Path) -> Non
     lengths = [len(frame_range(a, b)) for a, b in pairwise(bounds)]
     frames = frame_of(duration_ms)
     assert sum(lengths) == frames == 2700
-    work = _work(render_tools, tmp_path, [n for n in lengths if n > 0])
+    kept = [n for n in lengths if n > 0]
+    work = _work(render_tools, tmp_path, kept)
     out = tmp_path / "part-01.mp4"
     encode_part(render_tools, work, frames=frames, audio=_flac(tmp_path, duration_ms), out=out)
     got = verify_mp4(render_tools, out, size=SMALL, frames=frames, duration_ms=duration_ms)
     assert got.video_ms is not None and got.audio_ms is not None
     assert abs(got.video_ms - got.audio_ms) <= AV_TOLERANCE_MS
+    # Every decoded frame (averaged to 1x1) shows its own segment's flat colour, so a
+    # matched drop + dup at any boundary fails even though the count still matches.
+    args = [
+        "-v", "error", "-i", str(out), "-vf", "scale=1:1",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]  # fmt: skip
+    raw = run_tool(render_tools.ffmpeg, args)
+    shown = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+    palette = np.array([_color(i)[0, 0] for i in range(len(kept))], dtype=np.int32)
+    nearest = ((shown[:, None, :] - palette[None, :, :]) ** 2).sum(axis=2).argmin(axis=1)
+    assert nearest.tolist() == np.repeat(np.arange(len(kept)), kept).tolist()
+
+
+def test_output_tagged_bt709_high_42(render_tools: RenderTools, tmp_path: Path) -> None:
+    work = _work(render_tools, tmp_path, [20, 10])
+    out = tmp_path / "part-01.mp4"
+    encode_part(render_tools, work, frames=30, audio=_flac(tmp_path, 1000), out=out)
+    args = [
+        "-v", "error", "-select_streams", "v:0", "-of", "json", "-show_entries",
+        "stream=color_primaries,color_transfer,color_space,color_range,profile,level",
+        str(out),
+    ]  # fmt: skip
+    raw = run_tool(render_tools.ffprobe, args)
+    stream = json.loads(raw)["streams"][0]
+    assert stream == {
+        "color_primaries": "bt709",
+        "color_transfer": "bt709",
+        "color_space": "bt709",
+        "color_range": "tv",
+        "profile": "High",
+        "level": 42,
+    }
 
 
 def _frame_at(tools: RenderTools, path: Path, t_ms: int) -> np.ndarray:

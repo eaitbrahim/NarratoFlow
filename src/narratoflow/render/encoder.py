@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -33,7 +34,10 @@ FINAL_TIMEOUT_S = 1800
 # Relative names only: the final pass runs with cwd=<work dir>, so no path is interpolated.
 _FINAL_VF = (
     "ass=filename=captions.ass:fontsdir=fonts:shaping=complex,"
-    "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
+    "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+    # The encoder takes colour tags from the frame, and scale sets only matrix and range;
+    # without this the H.264 VUI says primaries/transfer "unspecified" despite X264_ARGS.
+    "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
 )
 
 
@@ -147,6 +151,17 @@ class FrameSink:
                 self._stderr.close()
 
 
+# Only plain file-name characters: no quote (breaks the list), no ':' (the concat demuxer
+# reads `x:y` as a protocol), no whitespace or path separators.
+_SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+
+
+def _umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
 def write_concat_list(segments: Sequence[Path], path: Path) -> None:
     """Write an ffconcat list of bare segment names; each segment must sit beside `path`."""
     if not segments:
@@ -154,9 +169,9 @@ def write_concat_list(segments: Sequence[Path], path: Path) -> None:
     lines: list[str] = []
     for seg in segments:
         name = seg.name
-        if seg.parent not in (Path("."), path.parent):
+        if seg.parent != Path(".") and seg.parent.resolve() != path.parent.resolve():
             raise ValueError(f"segment {seg} is not in {path.parent}")
-        if not name or any(c in name for c in "'/\n\r"):
+        if not _SAFE_NAME.fullmatch(name):
             raise ValueError(f"unsafe segment name {name!r}")
         lines.append(f"file '{name}'\n")
     path.write_text("".join(lines), encoding="utf-8")
@@ -223,7 +238,7 @@ def encode_part(tools: RenderTools, work_dir: Path, *, frames: int, audio: Path,
             )
         run_tool(tools.ffmpeg, args, cwd=work_dir, timeout_s=FINAL_TIMEOUT_S)
         try:
-            tmp.chmod(0o644)
+            tmp.chmod(0o666 & ~_umask())  # mkstemp makes 0600; give the usual file mode
             os.replace(tmp, out)
         except OSError as exc:
             raise RenderError(f"cannot write {out}: {exc}") from exc

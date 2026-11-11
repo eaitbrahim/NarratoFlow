@@ -320,3 +320,78 @@ def test_duplicate_with_different_shape_is_uncertain(tmp_path: Path) -> None:
     c = _corpus(tmp_path, [f"8|1|سس {six}", f"9|2|{six}"])
     [hit] = detect_verses(six, c)
     assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.certain) == (9, 2, False)
+
+
+# --- quote delimiters must be flush and directional ---
+
+
+def _ref(hit: VerseHit) -> tuple[int, int, int]:
+    return (hit.ref.surah, hit.ref.ayah_start, hit.ref.ayah_end)
+
+
+def test_closing_quote_of_ayah_then_narrator_quote(corpus: QuranCorpus) -> None:
+    a3 = corpus.ayah(19, 3).simple
+    text = f'"{a3}" قال "نعم"'
+    [hit] = detect_verses(text, corpus)
+    assert _ref(hit) == (19, 3, 3)
+    assert text[hit.start : hit.end] == a3
+
+
+def test_unrelated_opening_quote_after_narrator_word(corpus: QuranCorpus) -> None:
+    a3 = corpus.ayah(19, 3).simple
+    text = f'وفي الآية {a3} قال "نعم"'
+    [hit] = detect_verses(text, corpus)
+    assert _ref(hit) == (19, 3, 3)
+    assert text[hit.start : hit.end] == a3
+
+
+def test_unrelated_closing_quote_before_narrator_words(corpus: QuranCorpus) -> None:
+    a2_tail = " ".join(corpus.ayah(19, 2).simple.split()[-2:])
+    a3 = corpus.ayah(19, 3).simple
+    text = f'قال "نعم" {a2_tail} {a3}'
+    [hit] = detect_verses(text, corpus)
+    assert _ref(hit) == (19, 3, 3)
+    assert text[hit.start : hit.end] == a3
+
+
+def test_spaced_closing_quote_is_not_an_opener(corpus: QuranCorpus) -> None:
+    quote = " ".join([*corpus.ayah(19, 12).simple.split()[-3:], corpus.ayah(19, 13).simple])
+    for close in ('"', "”"):
+        text = f'قال "نعم{close} {quote}'
+        [hit] = detect_verses(text, corpus)
+        assert _ref(hit) == (19, 13, 13)
+
+
+def test_wrong_direction_bracket_does_not_open(corpus: QuranCorpus) -> None:
+    quote = " ".join([*corpus.ayah(19, 12).simple.split()[-3:], corpus.ayah(19, 13).simple])
+    [hit] = detect_verses(f"»{quote}", corpus)
+    assert _ref(hit) == (19, 13, 13)
+    [hit] = detect_verses(f"«{quote}«", corpus)
+    assert _ref(hit) == (19, 12, 13)
+
+
+def test_adjacent_quoted_ayat_are_separate_hits(corpus: QuranCorpus) -> None:
+    a3, a4 = corpus.ayah(19, 3).simple, corpus.ayah(19, 4).simple
+    for text in (f'"{a3}" "{a4}"', f"«{a3}» «{a4}»"):
+        hits = detect_verses(text, corpus)
+        assert [(_ref(h), h.ref.certain) for h in hits] == [((19, 3, 3), True), ((19, 4, 4), True)]
+        assert [text[h.start : h.end] for h in hits] == [a3, a4]
+
+
+def test_closer_alone_cuts_run_at_ayah_boundary(corpus: QuranCorpus) -> None:
+    a3, a4 = corpus.ayah(19, 3).simple, corpus.ayah(19, 4).simple
+    hits = detect_verses(f"«{a3}» {a4}", corpus)
+    assert [_ref(h) for h in hits] == [(19, 3, 3), (19, 4, 4)]
+
+
+def test_opener_alone_starts_run_at_ayah_boundary(corpus: QuranCorpus) -> None:
+    a2, a3 = corpus.ayah(19, 2).simple, corpus.ayah(19, 3).simple
+    hits = detect_verses(f"{a2} «{a3}»", corpus)
+    assert [_ref(h) for h in hits] == [(19, 2, 2), (19, 3, 3)]
+
+
+def test_cut_piece_below_min_words_is_dropped(corpus: QuranCorpus) -> None:
+    a3 = corpus.ayah(19, 3).simple
+    a4_head = " ".join(corpus.ayah(19, 4).simple.split()[:5])
+    hits = detect_verses(f"«{a3}» {a4_head}", corpus, min_words=6)
+    assert [_ref(h) for h in hits] == []

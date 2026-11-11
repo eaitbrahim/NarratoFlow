@@ -5,8 +5,9 @@ greedily word by word, crossing into the next ayah of the same surah only when
 the ayat are consecutive. A run that pokes fewer than four words into an ayah at
 either edge is trimmed back to the ayah boundary, so the author's own words next
 to a quote are not swallowed. An edge is kept when the author marked it with an
-opening or closing quote or bracket, or when it is a whole ayah of two or more
-words. The longest non-overlapping runs win, and each becomes a `VerseHit` whose
+opening or closing quote or bracket flush against the edge word, or when it is a
+whole ayah of two or more words. A flush delimiter at an ayah boundary inside a
+run cuts the run there. The longest non-overlapping runs win, and each becomes a `VerseHit` whose
 `VerseRef` carries the verified Uthmani text of every ayah the run touches.
 """
 
@@ -136,20 +137,15 @@ def _tokenize(text: str) -> list[_Word]:
     return words
 
 
-def _neighbour(text: str, at: int, step: int) -> str:
-    """The first non-space character from `at` in direction `step`, or ""."""
-    while 0 <= at < len(text) and text[at].isspace():
-        at += step
-    return text[at] if 0 <= at < len(text) else ""
-
-
 def _opens(text: str, start: int) -> bool:
-    ch = _neighbour(text, start - 1, -1)
+    """An opening quote or bracket flush against the word starting at `start`."""
+    ch = text[start - 1] if start > 0 else ""
     return ch == '"' or (ch != "" and unicodedata.category(ch) in _OPEN_CATEGORIES)
 
 
 def _closes(text: str, end: int) -> bool:
-    ch = _neighbour(text, end, 1)
+    """A closing quote or bracket flush against the word ending at `end`."""
+    ch = text[end] if end < len(text) else ""
     return ch == '"' or (ch != "" and unicodedata.category(ch) in _CLOSE_CATEGORIES)
 
 
@@ -177,6 +173,20 @@ def _trim(text: str, words: list[_Word], slots: tuple[_Slot, ...], run: _Run) ->
     return _Run(first, k, run.seg, p)
 
 
+def _split(text: str, words: list[_Word], slots: tuple[_Slot, ...], run: _Run) -> list[_Run]:
+    """Cut a run at every ayah boundary the author delimited inside it."""
+    pieces: list[_Run] = []
+    begin = 0
+    for j in range(1, run.length):
+        if slots[run.slot + j].ayah != slots[run.slot + j - 1].ayah and (
+            _closes(text, words[run.first + j - 1].end) or _opens(text, words[run.first + j].start)
+        ):
+            pieces.append(_Run(run.first + begin, j - begin, run.seg, run.slot + begin))
+            begin = j
+    pieces.append(_Run(run.first + begin, run.length - begin, run.seg, run.slot + begin))
+    return pieces
+
+
 def _runs(text: str, words: list[_Word], index: VerseIndex, min_words: int) -> list[_Run]:
     norms = [w.norm for w in words]
     runs: list[_Run] = []
@@ -188,9 +198,10 @@ def _runs(text: str, words: list[_Word], index: VerseIndex, min_words: int) -> l
             k = _GRAM
             while i + k < len(norms) and p + k < len(slots) and norms[i + k] == slots[p + k].word:
                 k += 1
-            run = _trim(text, words, slots, _Run(i, k, seg, p))
-            if run.length >= min_words:
-                runs.append(run)
+            for piece in _split(text, words, slots, _Run(i, k, seg, p)):
+                run = _trim(text, words, slots, piece)
+                if run.length >= min_words:
+                    runs.append(run)
     return runs
 
 

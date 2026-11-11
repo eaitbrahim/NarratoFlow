@@ -1,5 +1,6 @@
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,6 @@ from narratoflow.errors import RenderError
 from narratoflow.render import ffmpeg as F
 from narratoflow.render.ffmpeg import RenderTools, find_render_tools, probe, run_tool
 from narratoflow.settings import Settings
-from render import conftest as render_conftest
 
 
 def _fake_tool(path: Path, body: str) -> Path:
@@ -75,18 +75,19 @@ def test_ffmpeg_not_found(tmp_path: Path) -> None:
 def test_render_tools_fixture_reads_owner_ffmpeg_at_import(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    render_conftest = sys.modules[f"{__package__}.conftest"]
     sentinel = tmp_path / "owner-ffmpeg"
     monkeypatch.setattr(render_conftest, "_OWNER_FFMPEG", sentinel)
     seen: list[Path | None] = []
 
     def spy(settings: Settings) -> RenderTools:
         seen.append(settings.ffmpeg)
-        raise RenderError("spy")
+        return RenderTools(settings.ffmpeg or Path("x"), Path("probe"), "v")
 
     monkeypatch.setattr(render_conftest, "find_render_tools", spy)
-    with pytest.raises(RenderError):
-        # Bypass pytest's fixture wrapper: call the underlying function.
-        render_conftest.render_tools.__wrapped__()  # type: ignore[attr-defined]
+    # Bypass pytest's fixture wrapper: call the underlying function.
+    tools = render_conftest.render_tools.__wrapped__()
+    assert tools.ffmpeg == sentinel
     assert seen == [sentinel]
 
 
@@ -151,14 +152,15 @@ def test_probe_reads_streams(render_tools: RenderTools, tmp_path: Path) -> None:
     assert p.video_codec == "h264" and p.audio_codec == "aac"
 
 
-def test_render_ass_still_blank_is_white(render_tools: RenderTools, tmp_path: Path) -> None:
+def test_render_ass_still_draws_ink(render_tools: RenderTools, tmp_path: Path) -> None:
     (tmp_path / "fonts").mkdir()
     (tmp_path / "c.ass").write_text(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 64\nPlayResY: 48\n\n"
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour\n"
         "Style: Default,Sans,10,&H00000000\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:01.00,Default,{\\an5\\fs40}###\n"
     )
     img = F.render_ass_still(render_tools, tmp_path, "c.ass", (64, 48), 100)
     assert img.shape == (48, 64, 3) and img.dtype.name == "uint8"
-    assert int(img.min()) == 255
+    assert int(img.min()) < 255

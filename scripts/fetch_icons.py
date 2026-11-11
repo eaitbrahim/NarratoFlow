@@ -185,7 +185,6 @@ ICONS: tuple[IconSpec, ...] = tuple(
         ("candle", "a lit candle, light in darkness, remembrance or hope"),
         ("infinity", "the infinity sign, endlessness or eternity"),
         ("atom", "an atom with orbits, science or physics"),
-        ("dna", "a DNA double helix, life, genetics or heredity"),
         ("microscope", "a microscope, close study, science or research"),
         ("flask", "a laboratory flask, chemistry or an experiment"),
         ("telescope", "a telescope, astronomy, looking far or discovery"),

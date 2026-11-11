@@ -8,7 +8,7 @@ Allowed: CC0, MIT, ISC, Apache-2.0, SIL OFL. CC-BY / CC-BY-SA only with attribut
 | Amiri 1.003 (Regular, Bold, Quran) | assets/fonts/ | https://github.com/aliftype/amiri/releases/download/1.003/Amiri-1.003.zip | OFL-1.1 (OFL-Amiri.txt) | — |
 | Noto Sans v2.015 (Regular, Bold; hinted) | assets/fonts/ | https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip | OFL-1.1 (OFL-NotoSans.txt) | — |
 | Hand sprite (right hand with marker) | assets/hands/ | scripts/make_hand.py (drawn polygons, NarratoFlow's own work) | Apache-2.0 | — |
-| Tabler Icons 3.49.0 (206 outline icons, rasterized) | assets/icons/ | https://registry.npmjs.org/@tabler/icons/-/icons-3.49.0.tgz | MIT (LICENSE-tabler.txt) | Copyright (c) 2020-2026 Paweł Kuna |
+| Tabler Icons 3.49.0 (205 outline icons, rasterized) | assets/icons/ | https://registry.npmjs.org/@tabler/icons/-/icons-3.49.0.tgz | MIT (LICENSE-tabler.txt) | Copyright (c) 2020-2026 Paweł Kuna |
 
 ## Reciters
 

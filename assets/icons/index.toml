@@ -785,13 +785,6 @@ license = "MIT"
 source = "https://registry.npmjs.org/@tabler/icons/-/icons-3.49.0.tgz#package/icons/outline/atom.svg"
 sha256 = "0437c919abf33e841443e0eea6cc3c919f335d6a098ab8a0138b00fe40f83fdd"
 
-[icons."dna|generic"]
-file = "dna.png"
-description = "a DNA double helix, life, genetics or heredity"
-license = "MIT"
-source = "https://registry.npmjs.org/@tabler/icons/-/icons-3.49.0.tgz#package/icons/outline/dna.svg"
-sha256 = "b9ec501596ea0c95b40a3e6b68fd7ca0eb339ca26b38533a331cf7b5bfcd9a5c"
-
 [icons."microscope|generic"]
 file = "microscope.png"
 description = "a microscope, close study, science or research"

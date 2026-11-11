@@ -154,3 +154,32 @@ def test_error_hierarchy() -> None:
     assert issubclass(ProviderRefusalError, ProviderError)
     assert ProviderRefusalError("cyber").category == "cyber"
     assert ProviderRefusalError(None).category is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        '{"schema_version": 2, "title": "t"}',
+        b"\xff\xfe\x00bad",
+    ],
+    ids=["bad-json", "invalid-series", "not-utf8"],
+)
+def test_series_load_wraps_bad_files(tmp_path: Path, content: str | bytes) -> None:
+    path = tmp_path / "series.json"
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(content, encoding="utf-8")
+    with pytest.raises(PlanningError, match="series"):
+        Series.load(path)
+
+
+def test_series_load_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(PlanningError, match="cannot read series"):
+        Series.load(tmp_path / "missing.json")
+
+
+def test_series_save_unwritable(tmp_path: Path) -> None:
+    with pytest.raises(PlanningError, match="cannot write series"):
+        _series().save(tmp_path / "no-such-dir" / "series.json")

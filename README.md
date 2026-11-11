@@ -18,7 +18,34 @@ uv run narratoflow channel check channel.toml          # fails fast naming a mis
 uv run narratoflow library keys channel.toml           # reusable sketch idea keys
 uv run narratoflow library copy SKETCH_ID other.toml   # reuse a sketch in another channel
 uv run narratoflow check-input script.txt --language ar   # reject corrupt PDF copy-paste
+
+uv run python scripts/fetch_quran.py                   # one-time: Tanzil Qur'an text for verse detection
+uv run narratoflow plan script.txt --channel channel.toml   # writes series.json next to the script
+uv run narratoflow approve series.json                 # review the list, then confirm (--yes skips the prompt)
 ```
+
+### Script front matter
+
+`narratoflow plan` reads a script that starts with a `+++` block declaring its source.
+Scripts marked `third_party_in_copyright` are refused before any paid call, and
+`permission` needs a `permission_note`:
+
+```
++++
+author = "Your Name"
+work = "Title of the work"        # also the series title
+rights = "own"                    # own | public_domain | permission
+permission_note = ""
++++
+The narration text follows, exactly as it should be spoken.
+```
+
+`plan` checks the API keys and the estimated planning cost against the channel's
+`spending_limit_usd` before the first LLM call. It prints the approval list (each scene's
+idea, whether its sketch is reused, bundled or new and paid, detected verses, flags and
+per-part cost estimates) when `approval_list = true`, when a part's estimate is over the
+limit, or when something needs a human check. Otherwise it approves the series and
+prints a one-line summary.
 
 System requirement: `ffmpeg` on `PATH`.
 

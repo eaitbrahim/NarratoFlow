@@ -13,7 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from narratoflow.errors import PlanningError
 
@@ -198,15 +198,27 @@ class Series(BaseModel):
     ai_disclosure: bool = True
 
     def save(self, path: Path) -> None:
-        path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        try:
+            path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        except OSError as exc:
+            raise PlanningError(f"cannot write series file {path}: {exc}") from exc
 
     @classmethod
     def load(cls, path: Path) -> Series:
-        text = path.read_text(encoding="utf-8")
-        raw = json.loads(text)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise PlanningError(f"cannot read series file {path}: {exc}") from exc
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise PlanningError(f"series file {path} is not valid JSON: {exc}") from exc
         found = raw.get("schema_version") if isinstance(raw, dict) else None
         if found != SCHEMA_VERSION:
             raise PlanningError(
                 f"unsupported series schema_version {found}; expected {SCHEMA_VERSION}"
             )
-        return cls.model_validate_json(text)
+        try:
+            return cls.model_validate_json(text)
+        except ValidationError as exc:
+            raise PlanningError(f"series file {path} is invalid:\n{exc}") from exc

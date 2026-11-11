@@ -39,3 +39,13 @@ class BundledIcons:
 
     def get(self, key: IdeaKey) -> BundledIcon | None:
         return self._icons.get(str(key))
+
+
+def _dev_index() -> Path:
+    return Path(__file__).parents[3] / "assets" / "icons" / "index.toml"
+
+
+def default_bundled_icons() -> BundledIcons:
+    """The repository's bundled icon index, or no icons when it is not present."""
+    index = _dev_index()
+    return BundledIcons.from_index(index) if index.is_file() else BundledIcons({})

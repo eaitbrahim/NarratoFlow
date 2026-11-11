@@ -5,6 +5,7 @@ and an async `stream()` yielding `{"type": "audio", "data"}` and
 `{"type": "WordBoundary", "offset", "duration", "text"}` chunks (100 ns units).
 """
 
+import asyncio
 import sys
 import types
 from collections.abc import AsyncIterator
@@ -15,7 +16,7 @@ import pytest
 from narratoflow.audio.words import TimedSpan
 from narratoflow.errors import ChannelConfigError, ExtraMissingError, ProviderError
 from narratoflow.models import Language
-from narratoflow.tts import SpeechRequest
+from narratoflow.tts import SpeechRequest, edge
 from narratoflow.tts.edge import DEFAULT_EDGE_VOICES, EdgeProvider
 
 REQ = SpeechRequest(text="hello world", voice_id="en-US-AndrewNeural", language=Language.ENGLISH)
@@ -120,4 +121,21 @@ def test_edge_no_audio_is_provider_error(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_edge_malformed_chunk_is_provider_error(monkeypatch: pytest.MonkeyPatch, bad: Any) -> None:
     fake_edge(monkeypatch, [{"type": "audio", "data": b"x"}, bad])
     with pytest.raises(ProviderError, match="edge-tts"):
+        EdgeProvider().synthesize(REQ)
+
+
+def test_edge_overall_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Communicate:
+        def __init__(self, text: str, voice: str, **kwargs: Any) -> None:
+            pass
+
+        async def stream(self) -> AsyncIterator[dict[str, Any]]:
+            yield {"type": "audio", "data": b"x"}
+            await asyncio.sleep(3600)
+
+    module = types.ModuleType("edge_tts")
+    module.Communicate = Communicate  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "edge_tts", module)
+    monkeypatch.setattr(edge, "EDGE_DEADLINE_S", 0.05)
+    with pytest.raises(ProviderError, match="timed out"):
         EdgeProvider().synthesize(REQ)

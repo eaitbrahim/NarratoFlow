@@ -45,6 +45,10 @@ class ProviderError(NarratoFlowError):
     """A paid or local provider call failed."""
 
 
+class BilledProviderError(ProviderError):
+    """The provider accepted (and bills) the call, but its response was unusable."""
+
+
 class ProviderRefusalError(ProviderError):
     """The model refused the request."""
 

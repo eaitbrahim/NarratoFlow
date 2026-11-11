@@ -24,7 +24,7 @@ import httpx
 from pydantic import SecretStr
 
 from narratoflow.audio.words import TimedSpan
-from narratoflow.errors import ChannelConfigError, ProviderError
+from narratoflow.errors import BilledProviderError, ChannelConfigError, ProviderError
 from narratoflow.tts import Speech, SpeechRequest
 
 BASE_URL = "https://api.elevenlabs.io/v1"
@@ -83,6 +83,13 @@ class ElevenLabsProvider:
             raise ProviderError(f"Cannot reach ElevenLabs: {self._scrub(str(e))}") from e
         if not response.is_success:
             raise ProviderError(self._http_error(response))
+        try:
+            return self._speech(response)
+        except ProviderError as e:
+            # A 2xx response is billed by ElevenLabs even when it is unusable.
+            raise BilledProviderError(str(e)) from e
+
+    def _speech(self, response: httpx.Response) -> Speech:
         try:
             body: Any = response.json()
         except ValueError as e:

@@ -15,6 +15,7 @@ The service is Microsoft's; tests only ever use a fake module.
 from __future__ import annotations
 
 import asyncio
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -28,6 +29,11 @@ DEFAULT_EDGE_VOICES: dict[Language, str] = {
     Language.ENGLISH: "en-US-AndrewNeural",
 }
 EXTRA_HINT = "install the 'tts-edge' extra: uv sync --extra tts-edge"
+EDGE_DEADLINE_S = 180.0
+"""Overall deadline of one synthesis (the library only bounds each receive)."""
+EDGE_VOICE_RE = re.compile(r"[a-z]{2,3}(-[A-Z][a-z]{3})?-[A-Z]{2}(-[a-z]+)?-[A-Za-z]+Neural")
+"""Edge voice short names, e.g. ar-SA-HamedNeural or zh-CN-liaoning-XiaobeiNeural;
+checked with `fullmatch`."""
 _TICKS_PER_MS = 10_000  # edge-tts times are in 100 ns units
 
 
@@ -45,15 +51,20 @@ class EdgeProvider:
         except ImportError as err:
             raise ExtraMissingError(EXTRA_HINT) from err
 
-        async def collect() -> list[Any]:
+        async def gather() -> list[Any]:
             communicate = edge_tts.Communicate(
                 req.text, req.voice_id, rate=self.rate, pitch=self.pitch, boundary="WordBoundary"
             )
             return [chunk async for chunk in communicate.stream()]
 
+        async def collect() -> list[Any]:
+            return await asyncio.wait_for(gather(), timeout=EDGE_DEADLINE_S)
+
         try:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 chunks = pool.submit(asyncio.run, collect()).result()
+        except TimeoutError as err:
+            raise ProviderError(f"edge-tts timed out after {EDGE_DEADLINE_S:g} s") from err
         except Exception as err:
             raise ProviderError(f"edge-tts failed: {type(err).__name__}") from err
         audio, spans = _parse(chunks)

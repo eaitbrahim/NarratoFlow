@@ -11,6 +11,7 @@ from narratoflow.channels.config import ChannelConfig
 from narratoflow.costs.prices import PriceTable
 from narratoflow.costs.tracker import SpendTracker, estimate_speech_cost, require_prices
 from narratoflow.errors import (
+    BilledProviderError,
     BudgetExceededError,
     ChannelConfigError,
     MissingApiKeyError,
@@ -46,6 +47,12 @@ def channel(language: str = "ar", **voice: Any) -> ChannelConfig:
     )
 
 
+def piper_model(path: Path) -> Path:
+    path.write_bytes(b"onnx")
+    Path(f"{path}.json").write_text("{}", encoding="utf-8")
+    return path
+
+
 def keyed() -> Settings:
     return Settings(voice_api_key=SecretStr("xi-key"))
 
@@ -74,8 +81,7 @@ def test_chain_paid_then_edge_default_voice_for_language() -> None:
 
 
 def test_chain_with_piper_fallback(tmp_path: Path) -> None:
-    model = tmp_path / "ar_JO-kareem-medium.onnx"
-    model.write_bytes(b"onnx")
+    model = piper_model(tmp_path / "ar_JO-kareem-medium.onnx")
     chain = build_voice_chain(
         channel(**eleven(fallback=["piper", "edge", "piper"], piper_model=str(model))), keyed()
     )
@@ -91,8 +97,7 @@ def test_chain_skips_primary_in_fallback(tmp_path: Path) -> None:
     assert len(chain) == 1
     assert isinstance(chain[0].provider, EdgeProvider)
     assert chain[0].voice_id == "ar-SA-ZariyahNeural"
-    model = tmp_path / "m.onnx"
-    model.write_bytes(b"onnx")
+    model = piper_model(tmp_path / "m.onnx")
     piper = build_voice_chain(
         channel(provider="piper", voice_id="x", piper_model=str(model), fallback=["piper", "edge"]),
         Settings(),
@@ -138,13 +143,18 @@ class FakeSpeech:
     name = "elevenlabs"
     model = "eleven_multilingual_v2"
 
-    def __init__(self, billed: int | None = None, fail: bool = False) -> None:
+    def __init__(
+        self, billed: int | None = None, fail: bool = False, billed_fail: bool = False
+    ) -> None:
         self.calls = 0
         self.billed = billed
         self.fail = fail
+        self.billed_fail = billed_fail
 
     def synthesize(self, req: SpeechRequest) -> Speech:
         self.calls += 1
+        if self.billed_fail:
+            raise BilledProviderError("ElevenLabs audio payload is not valid base64")
         if self.fail:
             raise ProviderError("ElevenLabs returned HTTP 500")
         return Speech(b"mp3", (), self.name, self.model, self.billed)
@@ -211,3 +221,68 @@ def test_free_fallbacks_need_no_prices() -> None:
     ch = channel(provider="edge", voice_id="ar-SA-HamedNeural", fallback=["edge"])
     no_vision = ch.model_copy(update={"vision": ch.vision.model_copy(update={"provider": "none"})})
     require_prices(no_vision, table)  # no voice entry needed for edge or its fallbacks
+
+
+def test_tracked_billed_failure_charges_estimate_and_reraises() -> None:
+    tracker = SpendTracker(Decimal(10))
+    tracked = TrackedSpeechProvider(FakeSpeech(billed_fail=True), tracker, PRICES)
+    with pytest.raises(BilledProviderError):
+        tracked.synthesize(REQ)
+    assert tracker.spent == Decimal("0.60")
+    assert [e.what for e in tracker.entries] == ["voice elevenlabs/eleven_multilingual_v2"]
+    assert tracked.cost_estimated is True
+
+
+def test_tracked_warns_when_charge_exceeds_estimate(caplog: pytest.LogCaptureFixture) -> None:
+    tracker = SpendTracker(Decimal(10))
+    tracked = TrackedSpeechProvider(FakeSpeech(billed=3000), tracker, PRICES)
+    with caplog.at_level("WARNING"):
+        tracked.synthesize(REQ)
+    assert tracker.spent == Decimal("0.90")
+    assert "exceeds the pre-call estimate" in caplog.text
+    assert "xxxx" not in caplog.text
+    assert "xi-key" not in caplog.text
+
+
+def test_tracked_no_warning_within_estimate(caplog: pytest.LogCaptureFixture) -> None:
+    tracked = TrackedSpeechProvider(FakeSpeech(billed=1000), SpendTracker(None), PRICES)
+    with caplog.at_level("WARNING"):
+        tracked.synthesize(REQ)
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ar-SA-HamedNeural",
+        "en-US-AriaNeural",
+        "en-US-AndrewMultilingualNeural",
+        "zh-CN-liaoning-XiaobeiNeural",
+        "iu-Latn-CA-SiqiniqNeural",
+        "fil-PH-AngeloNeural",
+    ],
+)
+def test_edge_voice_name_accepted(name: str) -> None:
+    assert (
+        build_voice_chain(channel(provider="edge", voice_id=name), Settings())[0].voice_id == name
+    )
+    chain = build_voice_chain(channel(**eleven(edge_voice=name)), keyed())
+    assert chain[1].voice_id == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", "HamedNeural", "ar-SA-Hamed", "ar-sa-HamedNeural", "ar-SA-HamedNeural\n", "../x"],
+)
+def test_edge_voice_name_rejected_up_front(name: str) -> None:
+    with pytest.raises(ChannelConfigError, match="edge voice"):
+        build_voice_chain(channel(provider="edge", voice_id=name), Settings())
+    with pytest.raises(ChannelConfigError, match="edge voice"):
+        build_voice_chain(channel(**eleven(edge_voice=name)), keyed())
+
+
+def test_piper_model_config_required_up_front(tmp_path: Path) -> None:
+    model = tmp_path / "m.onnx"
+    model.write_bytes(b"onnx")
+    with pytest.raises(ChannelConfigError, match=r"m\.onnx\.json"):
+        build_voice_chain(channel(**eleven(fallback=["piper"], piper_model=str(model))), keyed())

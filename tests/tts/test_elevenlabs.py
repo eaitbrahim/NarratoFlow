@@ -6,7 +6,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from narratoflow.errors import ChannelConfigError, ProviderError
+from narratoflow.errors import BilledProviderError, ChannelConfigError, ProviderError
 from narratoflow.models import Language
 from narratoflow.tts import SpeechRequest
 from narratoflow.tts.elevenlabs import ELEVENLABS_VOICE_ID_RE, ElevenLabsProvider
@@ -193,3 +193,44 @@ def test_non_json_200_body_raises_without_body_text() -> None:
     with pytest.raises(ProviderError) as ei:
         provider(h).synthesize(req())
     assert "secret" not in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        lambda r: httpx.Response(200, content=b"not json"),
+        lambda r: httpx.Response(200, json=[1, 2]),
+        lambda r: httpx.Response(200, json=body(audio_base64="!!!")),
+        lambda r: httpx.Response(200, json=body(audio_base64=None)),
+        lambda r: httpx.Response(200, json=body(alignment={"characters": ["a"]})),
+        lambda r: httpx.Response(
+            200,
+            json=body(
+                alignment={
+                    "characters": ["a"],
+                    "character_start_times_seconds": [-1.0],
+                    "character_end_times_seconds": [0.1],
+                }
+            ),
+        ),
+    ],
+)
+def test_failures_after_2xx_are_billed(handler: Handler) -> None:
+    with pytest.raises(BilledProviderError):
+        provider(handler).synthesize(req())
+
+
+@pytest.mark.parametrize("status", [401, 429, 500, 503])
+def test_http_errors_are_not_billed(status: int) -> None:
+    with pytest.raises(ProviderError) as info:
+        provider(lambda r: httpx.Response(status, json={})).synthesize(req())
+    assert not isinstance(info.value, BilledProviderError)
+
+
+def test_transport_errors_are_not_billed() -> None:
+    def boom(r: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    with pytest.raises(ProviderError) as info:
+        provider(boom).synthesize(req())
+    assert not isinstance(info.value, BilledProviderError)

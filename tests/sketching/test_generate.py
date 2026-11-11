@@ -625,6 +625,41 @@ def test_quarantined_scene_is_not_regenerated_automatically(
     assert scenes_of(out) == scenes_of(s) and result.quarantined == ["s001"]
 
 
+def test_text_card_scene_is_skipped_without_spend(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s = series([scene(1, visual={"source": "text_card"})])
+    images = FakeImages()
+    out, result = run(s, channel, settings, library, images, FakeLLM([]))
+    assert images.requests == [] and result.spent_usd == 0
+    assert scenes_of(out) == scenes_of(s)
+
+
+def test_only_restricts_the_run_to_the_named_scenes(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s = series([scene(1), scene(2)])
+    images = FakeImages()
+    out, result = generate_missing(
+        s,
+        channel,
+        settings,
+        images=images,
+        vision=FakeLLM(clean(1)),
+        library=library,
+        prices=PRICES,
+        only=frozenset({"s002"}),
+    )
+    first, second = scenes_of(out)
+    assert first == scenes_of(s)[0] and second.sketch_id is not None
+    assert len(images.requests) == 1 and result.generated == 1
+
+
+def test_attempt_changes_the_seed_and_zero_keeps_it() -> None:
+    assert marker_seed("v", "s1") == marker_seed("v", "s1", 0)
+    assert marker_seed("v", "s1", 1) != marker_seed("v", "s1")
+
+
 def test_quarantined_scene_is_not_auto_attached_to_a_reusable_or_bundled_sketch(
     channel: ChannelConfig,
     settings: Settings,

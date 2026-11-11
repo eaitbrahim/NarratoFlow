@@ -19,8 +19,10 @@ WEIGHT_JITTER = 0.10
 _Pt = tuple[float, float]
 
 
-def marker_seed(video_id: str, scene_id: str) -> int:
-    digest = hashlib.sha256(f"{video_id}:{scene_id}".encode()).hexdigest()
+def marker_seed(video_id: str, scene_id: str, attempt: int = 0) -> int:
+    """Seed for (video, scene); a later `attempt` (regeneration) gets a different one."""
+    text = f"{video_id}:{scene_id}" if attempt == 0 else f"{video_id}:{scene_id}:{attempt}"
+    digest = hashlib.sha256(text.encode()).hexdigest()
     return int(digest, 16) % (2**63)
 
 

@@ -45,7 +45,7 @@ from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
 from narratoflow.llm.base import LLMClient
 from narratoflow.llm.factory import build_llm_client, vision_llm_config
-from narratoflow.models import Language, Scene, SceneKind, Series
+from narratoflow.models import Language, Scene, SceneKind, Series, VisualSource
 from narratoflow.settings import Settings
 from narratoflow.sketching.vision import check_sketch, estimate_check_cost
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons, default_bundled_icons
@@ -251,7 +251,7 @@ def _generate_one(
         ImageRequest(
             prompt=build_prompt(style, key, scene.idea_description),
             reference_png=reference_png,
-            seed=marker_seed(video_id, scene.id),
+            seed=marker_seed(video_id, scene.id, scene.sketch_attempt),
         )
     )
     provenance = _provenance(image)
@@ -407,6 +407,9 @@ class _Run:
         self.stored = []
         if scene.kind is SceneKind.VERSE or scene.idea_key is None:
             return scene
+        if scene.visual.source is VisualSource.TEXT_CARD:
+            # the creator chose a text card: nothing to draw, nothing to spend
+            return scene
         if QUARANTINED_FLAG in scene.flags:
             # the creator resolves a quarantined scene; nothing is attached or
             # regenerated automatically (spec 6.3)
@@ -491,6 +494,7 @@ def generate_missing(
     vision: LLMClient | Literal["auto"] | None = "auto",
     library: SketchLibrary | None = None,
     prices: PriceTable | None = None,
+    only: frozenset[str] | None = None,
 ) -> tuple[Series, GenerationResult]:
     """Attach a library sketch to every narration scene of an approved series.
 
@@ -503,7 +507,9 @@ def generate_missing(
     attached sketch is still usable is kept as is; one quarantined since is
     flagged again without spend. Any `NarratoFlowError` raised mid-run (budget,
     provider, library) is re-raised as `GenerationInterruptedError` carrying the
-    partial series and result. The input series is not mutated.
+    partial series and result. `only` restricts the run to those scene ids; the
+    others are left untouched and not counted. Text-card scenes are skipped. The
+    input series is not mutated.
     """
     if not series.approved:
         raise PlanningError("approve the series first")
@@ -545,6 +551,8 @@ def generate_missing(
         tracker = SpendTracker(channel.spending_limit_usd)
         trackers.append(tracker)
         for i, scene in enumerate(part.scenes):
+            if only is not None and scene.id not in only:
+                continue
             try:
                 part.scenes[i] = run.scene(scene, tracker)
             except NarratoFlowError as e:

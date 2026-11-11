@@ -1,0 +1,90 @@
+"""The creator's three ways to settle a scene whose sketch was quarantined (spec 6.3).
+
+Regenerate (a paid call, the caller confirms), swap the idea key, or use a text
+card. A FAIL has no override. Each function returns a new `Series`; the input is
+never mutated.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from narratoflow.channels.config import ChannelConfig
+from narratoflow.errors import PlanningError
+from narratoflow.library.keys import parse_idea_key
+from narratoflow.models import Scene, Series, VisualSource
+from narratoflow.planning.ideas import IdeaOut, validate_idea
+from narratoflow.settings import Settings
+from narratoflow.sketching.generate import QUARANTINED_FLAG, generate_missing
+
+
+def _resolved(series: Series, scene_id: str, change: Callable[[Scene], dict[str, Any]]) -> Series:
+    """A copy of `series` whose quarantined scene `scene_id` is updated by `change`
+    (the quarantine flag is always cleared)."""
+    out = series.model_copy(deep=True)
+    for part in out.parts:
+        for i, scene in enumerate(part.scenes):
+            if scene.id != scene_id:
+                continue
+            if QUARANTINED_FLAG not in scene.flags:
+                raise PlanningError(f"scene {scene_id} is not quarantined")
+            flags = [f for f in scene.flags if f != QUARANTINED_FLAG]
+            part.scenes[i] = scene.model_copy(update={**change(scene), "flags": flags})
+            return out
+    raise PlanningError(f"unknown scene {scene_id}")
+
+
+def regenerate(
+    series: Series, scene_id: str, channel: ChannelConfig, settings: Settings, **deps: Any
+) -> Series:
+    """Generate a new sketch for one quarantined scene (a paid call: confirm first).
+
+    The scene's attempt counter goes up so the image seed differs from the earlier
+    one. `deps` are `generate_missing`'s `images`, `vision`, `library` and `prices`.
+    May raise `GenerationInterruptedError` like `generate_missing`.
+    """
+    prepared = _resolved(
+        series,
+        scene_id,
+        lambda s: {"sketch_id": None, "match": "new", "sketch_attempt": s.sketch_attempt + 1},
+    )
+    out, _ = generate_missing(prepared, channel, settings, only=frozenset({scene_id}), **deps)
+    return out
+
+
+def swap_idea(series: Series, scene_id: str, new_key: str, description: str) -> Series:
+    """Give a quarantined scene another idea; the next `sketch generate` matches it."""
+    violations = validate_idea(
+        IdeaOut(
+            idea_key=new_key,
+            description=description,
+            depicts_person=False,
+            depicts_logo=False,
+        )
+    )
+    if violations:
+        raise PlanningError("idea rejected: " + "; ".join(violations))
+    key = str(parse_idea_key(new_key))
+
+    def change(_: Scene) -> dict[str, Any]:
+        return {
+            "idea_key": key,
+            "idea_description": description,
+            "match": None,
+            "sketch_id": None,
+        }
+
+    return _resolved(series, scene_id, change)
+
+
+def use_text_card(series: Series, scene_id: str) -> Series:
+    """Show a text card instead of a sketch (the card is drawn in Plan 5)."""
+
+    def change(scene: Scene) -> dict[str, Any]:
+        return {
+            "sketch_id": None,
+            "visual": scene.visual.model_copy(update={"source": VisualSource.TEXT_CARD}),
+        }
+
+    return _resolved(series, scene_id, change)

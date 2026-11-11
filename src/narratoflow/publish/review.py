@@ -91,9 +91,9 @@ def _selected(series: Series, parts: Sequence[int] | None) -> list[Part]:
 
 
 def _part_estimate(
-    part: Part, prices: PriceTable, rules: Rules, provider: str, model: str
+    part: Part, prices: PriceTable, rules: Rules, provider: str, model: str, series_title: str
 ) -> Decimal:
-    system, user = review_prompt(part, rules)
+    system, user = review_prompt(part, rules, series_title=series_title)
     return estimate_llm_call(prices, provider, model, system + user)
 
 
@@ -108,32 +108,42 @@ def estimate_review(
     `TrackedLLM` checks before each call."""
     provider, model = _ident(channel)
     return sum(
-        (_part_estimate(p, prices, rules, provider, model) for p in _selected(series, parts)),
+        (
+            _part_estimate(p, prices, rules, provider, model, series.title)
+            for p in _selected(series, parts)
+        ),
         Decimal(0),
     )
 
 
 def review_part(
-    part: Part, rules: Rules, llm: LLMClient, *, provider: str, model: str, now: datetime
+    part: Part,
+    rules: Rules,
+    llm: LLMClient,
+    *,
+    series_title: str,
+    provider: str,
+    model: str,
+    now: datetime,
 ) -> ContentReview:
     """One structured call; the findings are stored as returned (clamping is in
     `content_checks`). `llm` is the tracked client."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise PlanningError("the review clock must be timezone-aware")
-    system, user = review_prompt(part, rules)
+    system, user = review_prompt(part, rules, series_title=series_title)
     result = llm.complete_structured(system=system, user=user, output=_ReviewOutput)
     return ContentReview(
         rules_version=rules.file.version,
         provider=provider,
         model=model,
         reviewed_at=now,
-        text_sha256=review_sha256(part),
+        text_sha256=review_sha256(part, series_title=series_title),
         findings=list(result.value.findings),
     )
 
 
-def _counts(part: Part, rules: Rules) -> tuple[int, int]:
-    severities = [r.severity for r in content_checks(part, rules)]
+def _counts(part: Part, rules: Rules, series_title: str) -> tuple[int, int]:
+    severities = [r.severity for r in content_checks(part, rules, series_title=series_title)]
     return severities.count(Severity.FAIL), severities.count(Severity.WARN)
 
 
@@ -168,7 +178,7 @@ def review_series(
     clock = now if now is not None else (lambda: datetime.now(UTC))
     what = f"llm {provider}/{model}"
     for part in selected:
-        estimate = _part_estimate(part, prices, rules, provider, model)
+        estimate = _part_estimate(part, prices, rules, provider, model, series.title)
         SpendTracker(channel.spending_limit_usd, spent=part.spent_usd).ensure_room(estimate, what)
 
     out = series.model_copy(deep=True)
@@ -180,7 +190,15 @@ def review_series(
         tracker = SpendTracker(channel.spending_limit_usd, spent=start)
         tracked = TrackedLLM(client, tracker, provider, model, prices)
         try:
-            review = review_part(part, rules, tracked, provider=provider, model=model, now=clock())
+            review = review_part(
+                part,
+                rules,
+                tracked,
+                series_title=series.title,
+                provider=provider,
+                model=model,
+                now=clock(),
+            )
         except (NarratoFlowError, KeyboardInterrupt) as exc:
             part.spent_usd = tracker.spent
             add_spend(part.spend, tracker)
@@ -199,7 +217,7 @@ def review_series(
         part.spent_usd = tracker.spent
         add_spend(part.spend, tracker)
         spent = tracker.spent - start
-        fails, warns = _counts(part, rules)
+        fails, warns = _counts(part, rules, series.title)
         result.reviewed.append(part.index)
         result.findings += len(review.findings)
         result.spent_usd += spent

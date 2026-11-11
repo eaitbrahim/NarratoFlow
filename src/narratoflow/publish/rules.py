@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import tomllib
 from dataclasses import dataclass
 from datetime import date
@@ -17,6 +18,8 @@ from narratoflow.publish.checks import CheckId, CheckResult, Severity
 from narratoflow.settings import Settings
 
 RULES_MAX_AGE_DAYS = 180
+
+_CATEGORY_SEPARATORS = re.compile(r"[\s-]+")
 
 _STRICT = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -70,6 +73,12 @@ class PlatformRules(BaseModel):
     verify: str
 
 
+def normalize_category(category: str) -> str:
+    """`" Graphic-Violence "` -> `"graphic_violence"`; empty becomes `"other"`."""
+    name = _CATEGORY_SEPARATORS.sub("_", category.strip().lower()).strip("_")
+    return name or "other"
+
+
 class ContentCategory(BaseModel):
     model_config = _STRICT
 
@@ -92,6 +101,13 @@ class RulesFile(BaseModel):
 
     @model_validator(mode="after")
     def _warn_only_categories(self) -> RulesFile:
+        normalised: dict[str, ContentCategory] = {}
+        for key, value in self.content.items():
+            name = normalize_category(key)
+            if name in normalised:
+                raise ValueError(f"content.{key} duplicates another category once normalised")
+            normalised[name] = value
+        self.content = normalised
         for name in ("religious_discussion", "other"):
             category = self.content.get(name)
             if category is None:

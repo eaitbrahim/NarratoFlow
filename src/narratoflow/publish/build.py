@@ -255,7 +255,7 @@ class _Run:
             *sketch_checks(inputs),
             *verse_checks(inputs, self.get_corpus),
             *disclosure_checks(inputs, text),
-            *content_checks(inputs.part, self.rules),
+            *content_checks(inputs.part, self.rules, series_title=self.series.title),
         ]
         if unreadable is not None:
             checks.append(unreadable)

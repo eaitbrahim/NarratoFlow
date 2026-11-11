@@ -123,3 +123,19 @@ def test_loudness_peak_order_rejected(tmp_path: Path) -> None:
     bad = _packaged_text().replace("warn_true_peak_dbtp = -1.0", "warn_true_peak_dbtp = 0.5")
     with pytest.raises(PublishError, match="warn_true_peak_dbtp"):
         load_rules(_write(tmp_path, bad))
+
+
+def test_content_category_keys_are_normalised_on_load(tmp_path: Path) -> None:
+    text = _packaged_text().replace("[content.graphic_violence]", "[content.graphic-violence]")
+    assert "[content.graphic-violence]" in text
+    rules = load_rules(_write(tmp_path, text))
+    assert "graphic_violence" in rules.file.content
+    assert "graphic-violence" not in rules.file.content
+
+
+def test_content_category_keys_colliding_once_normalised_are_refused(tmp_path: Path) -> None:
+    text = _packaged_text() + (
+        '\n[content.Graphic-Violence]\ndescription = "dup"\nmax_severity = "warn"\npolicies = []\n'
+    )
+    with pytest.raises(PublishError, match="Graphic-Violence"):
+        load_rules(_write(tmp_path, text))

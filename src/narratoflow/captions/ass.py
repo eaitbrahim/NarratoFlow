@@ -3,17 +3,22 @@
 Every author or overlay string goes through `escape_text`, so it can never open an
 override block; only the tags this module emits (``{\\k..}``) reach libass as tags.
 Karaoke uses ``\\k`` and never ``\\kf``: libass sweeps ``\\kf`` left to right even over
-right-to-left text.
+right-to-left text. It never emits ``\\k0`` either: libass does not start a syllable at a
+zero-length ``\\k``, so such a word would light with the syllable before it.
+
+Style sizes are target em pixels; `FontPack.fontsize_for_em` turns them into a per-font
+ASS Fontsize, because libass makes Fontsize the font's win-metric line height.
 """
 
 from __future__ import annotations
 
-import itertools
 import os
 import re
 import tempfile
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 from narratoflow.audio.timeline import SceneTiming
@@ -24,6 +29,9 @@ from narratoflow.render.layout import FRAME_H, FRAME_W
 
 CAPTION_MAX_WORDS = 6
 CAPTION_MAX_CHARS = 28  # characters of the page text, joining spaces included
+# Arabic pages stay on one line: at the Caption em, two Amiri lines (line height = the
+# win-metric Fontsize) do not fit the 180 px CAPTIONS band.
+CAPTION_MAX_CHARS_AR = 28  # widest letters (seen, sad) measure ~27.5 px each: 28 fit 828 px
 CAPTION_GAP_MS = 700
 CAPTION_HOLD_MS = 400
 SENTENCE_END = (".", "!", "?", "\u061f", "\u2026")
@@ -31,7 +39,7 @@ SENTENCE_END = (".", "!", "?", "\u061f", "\u2026")
 _MODE = 0o644
 _HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 _NEWLINES = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
-_ESCAPES = str.maketrans({"\\": "\u29f5", "{": "\uff5b", "}": "\uff5d"})
+_ESCAPES = str.maketrans({"\\": "/", "{": "(", "}": ")"})  # glyphs every bundled font has
 
 _STYLE_FORMAT = (
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
@@ -44,9 +52,9 @@ _EVENT_FORMAT = "Format: Layer, Start, End, Style, Name, MarginL, MarginR, Margi
 def ass_color(hex_rgb: str, alpha: int = 0) -> str:
     """``#RRGGBB`` to ``&HAABBGGRR``; alpha 0 is opaque and 255 transparent."""
     if not _HEX.fullmatch(hex_rgb):
-        raise ValueError(f"colour must be #RRGGBB, got {hex_rgb!r}")
+        raise RenderError(f"ASS colour must be #RRGGBB, got {hex_rgb!r}")
     if not 0 <= alpha <= 255:
-        raise ValueError(f"alpha must be 0..255, got {alpha}")
+        raise RenderError(f"ASS alpha must be 0..255, got {alpha}")
     rgb = hex_rgb[1:].upper()
     return f"&H{alpha:02X}{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}"
 
@@ -59,7 +67,7 @@ def _cs(ms: int) -> int:
 def ass_time(ms: int) -> str:
     """``H:MM:SS.cc``, rounded half up to centiseconds."""
     if ms < 0:
-        raise ValueError(f"ASS time cannot be negative, got {ms}")
+        raise RenderError(f"ASS time cannot be negative, got {ms}")
     cs = _cs(ms)
     h, rest = divmod(cs, 360_000)
     m, rest = divmod(rest, 6_000)
@@ -75,24 +83,30 @@ def escape_text(s: str) -> str:
 def karaoke(words: Sequence[tuple[str, int]], event_start_ms: int) -> str:
     """``\\k`` karaoke for ``(text, reveal_ms)`` words; each word lights at its reveal.
 
-    Durations come from cumulative centisecond offsets, so a reveal stays within 5 ms
-    of its time however long the page is.
+    Offsets are ``c_i = cs(reveal_i) - cs(event_start)`` clamped at 0, so a reveal stays
+    within 5 ms of its time however long the page is. Words sharing an offset share one
+    syllable (libass ignores ``\\k0``), the last syllable lasts 1 cs, and a leading empty
+    ``{\\k<c_0>}`` delays the first word when it is revealed after the event start.
     """
     prev: int | None = None
-    offsets: list[int] = []
-    for _, reveal in words:
+    groups: list[tuple[int, list[str]]] = []
+    for text, reveal in words:
         if prev is not None and reveal < prev:
-            raise ValueError("karaoke reveal times must be non-decreasing")
+            raise RenderError("karaoke reveal times must be non-decreasing")
         prev = reveal
-        offsets.append(max(0, _cs(reveal - event_start_ms)))
-    if not offsets:
+        offset = max(0, _cs(reveal) - _cs(event_start_ms))
+        if groups and groups[-1][0] == offset:
+            groups[-1][1].append(escape_text(text))
+        else:
+            groups.append((offset, [escape_text(text)]))
+    if not groups:
         return ""
-    durations = [b - a for a, b in itertools.pairwise(offsets)] + [0]
-    body = " ".join(
-        f"{{\\k{d}}}{escape_text(text)}" for (text, _), d in zip(words, durations, strict=True)
-    )
-    lead = f"{{\\k{offsets[0]}}}" if offsets[0] > 0 else ""
-    return lead + body
+    parts: list[str] = []
+    for i, (offset, texts) in enumerate(groups):
+        d = groups[i + 1][0] - offset if i + 1 < len(groups) else 1
+        parts.append(f"{{\\k{d}}}" + " ".join(texts))
+    lead = f"{{\\k{groups[0][0]}}}" if groups[0][0] > 0 else ""
+    return lead + " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -207,17 +221,19 @@ class AssDocument:
             raise RenderError(f"cannot write subtitles {path}: {exc}") from exc
 
 
-# name: (font weight, size ar, size en, bold, alignment, (margin L, R, V)).
-# Sizes are the starting values; when a zone test fails, lower the size here and never
-# move or grow a zone. The Verse style always uses the Quran font.
-_STYLE_TABLE: dict[str, tuple[str, int, int, bool, int, tuple[int, int, int]]] = {
-    "Caption": ("bold", 64, 60, True, 8, (60, 192, 1260)),
-    "Verse": ("quran", 76, 76, False, 5, (84, 216, 0)),
-    "VerseRef": ("regular", 40, 40, False, 2, (84, 216, 696)),
-    "TopLeft": ("bold", 36, 36, True, 7, (60, 60, 172)),
-    "TopRight": ("regular", 36, 36, False, 9, (60, 60, 172)),
-    "Headline": ("bold", 46, 46, True, 8, (60, 60, 240)),
-    "Card": ("bold", 88, 88, True, 5, (84, 216, 0)),
+# name: (font weight, em px, bold, alignment, (margin L, R, V)).
+# Sizes are target em pixels (the Noto Sans em at the brief's English Fontsizes 60, 76,
+# 40, 36, 36, 46, 88), converted per font by `FontPack.fontsize_for_em`, so English output
+# is unchanged and Arabic gets the same em. When a zone test fails, lower the size here
+# and never move or grow a zone. The Verse style always uses the Quran font.
+_STYLE_TABLE: dict[str, tuple[str, Fraction, bool, int, tuple[int, int, int]]] = {
+    "Caption": ("bold", Fraction("39.5"), True, 8, (60, 192, 1260)),
+    "Verse": ("quran", Fraction("50.0"), False, 5, (84, 216, 0)),
+    "VerseRef": ("regular", Fraction("26.3"), False, 2, (84, 216, 696)),
+    "TopLeft": ("bold", Fraction("23.7"), True, 7, (60, 60, 172)),
+    "TopRight": ("regular", Fraction("23.7"), False, 9, (60, 60, 172)),
+    "Headline": ("bold", Fraction("30.3"), True, 8, (60, 60, 240)),
+    "Card": ("bold", Fraction("57.9"), True, 5, (84, 216, 0)),
 }
 _FONT_IDS = {
     Language.ARABIC: {"bold": "amiri-bold", "regular": "amiri-regular", "quran": "amiri-quran"},
@@ -234,8 +250,9 @@ _CAPTION_SECONDARY_ALPHA = 0x99
 def build_styles(language: Language, ink: str, fonts: FontPack) -> list[AssStyle]:
     """The fixed style set; families come from the font pack, never literals."""
     styles: list[AssStyle] = []
-    for name, (weight, size_ar, size_en, bold, align, (ml, mr, mv)) in _STYLE_TABLE.items():
+    for name, (weight, em_px, bold, align, (ml, mr, mv)) in _STYLE_TABLE.items():
         verse = name == "Verse"
+        font_id = _FONT_IDS[language][weight]
         secondary_alpha = 0
         if name == "Caption":
             secondary_alpha = _CAPTION_SECONDARY_ALPHA
@@ -244,8 +261,8 @@ def build_styles(language: Language, ink: str, fonts: FontPack) -> list[AssStyle
         styles.append(
             AssStyle(
                 name=name,
-                family=fonts.get(_FONT_IDS[language][weight]).family,
-                size=size_ar if language is Language.ARABIC else size_en,
+                family=fonts.get(font_id).family,
+                size=fonts.fontsize_for_em(font_id, em_px),
                 bold=bold,
                 primary=ink,
                 primary_alpha=0,
@@ -263,7 +280,19 @@ def build_styles(language: Language, ink: str, fonts: FontPack) -> list[AssStyle
     return styles
 
 
-def caption_pages(words: Sequence[WordTiming]) -> list[list[WordTiming]]:
+def caption_max_chars(language: Language) -> int:
+    """The page character limit: one line for Arabic, up to two lines for English."""
+    return CAPTION_MAX_CHARS_AR if language is Language.ARABIC else CAPTION_MAX_CHARS
+
+
+def _width(text: str) -> int:
+    """Characters that take horizontal space: combining marks (tashkeel) are not counted."""
+    return sum(1 for ch in text if not unicodedata.combining(ch))
+
+
+def caption_pages(
+    words: Sequence[WordTiming], max_chars: int = CAPTION_MAX_CHARS
+) -> list[list[WordTiming]]:
     """Greedy, in-order pages bounded by word count, characters, sentence ends and gaps."""
     pages: list[list[WordTiming]] = []
     page: list[WordTiming] = []
@@ -273,24 +302,27 @@ def caption_pages(words: Sequence[WordTiming]) -> list[list[WordTiming]]:
             prev = page[-1]
             if (
                 len(page) + 1 > CAPTION_MAX_WORDS
-                or chars + 1 + len(w.text) > CAPTION_MAX_CHARS
+                or chars + 1 + _width(w.text) > max_chars
                 or prev.text.endswith(SENTENCE_END)
                 or w.start_ms - prev.start_ms > CAPTION_GAP_MS
             ):
                 pages.append(page)
                 page, chars = [], 0
-        chars += len(w.text) + (1 if page else 0)
+        chars += _width(w.text) + (1 if page else 0)
         page.append(w)
     if page:
         pages.append(page)
     return pages
 
 
-def caption_events(scene: SceneTiming) -> list[AssEvent]:
-    """One word-timed ``Caption`` event per page; none for a verse scene."""
+def caption_events(scene: SceneTiming, language: Language) -> list[AssEvent]:
+    """One word-timed ``Caption`` event per page; none for a verse scene.
+
+    A page that would last 0 ms (the next page starts at the same time) is dropped.
+    """
     if scene.kind is SceneKind.VERSE or not scene.words:
         return []
-    pages = caption_pages(scene.words)
+    pages = caption_pages(scene.words, caption_max_chars(language))
     events: list[AssEvent] = []
     for i, page in enumerate(pages):
         start = page[0].start_ms
@@ -298,6 +330,8 @@ def caption_events(scene: SceneTiming) -> list[AssEvent]:
             end = pages[i + 1][0].start_ms
         else:
             end = min(max(w.end_ms for w in page) + CAPTION_HOLD_MS, scene.end_ms)
+        if end <= start:
+            continue
         text = karaoke([(w.text, w.start_ms) for w in page], start)
         events.append(AssEvent(start, end, "Caption", text))
     return events

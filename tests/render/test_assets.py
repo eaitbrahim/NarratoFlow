@@ -13,6 +13,7 @@ from types import ModuleType
 
 import numpy as np
 import pytest
+from fontTools.ttLib import TTFont
 from PIL import Image
 
 from narratoflow.errors import ChannelConfigError, RenderError
@@ -354,3 +355,20 @@ def test_hand_index_broken_toml(tmp_path: Path) -> None:
     bad.write_text("not toml [")
     with pytest.raises(ChannelConfigError, match="broken"):
         HandSprite.from_index(bad)
+
+
+def test_fontsize_for_em_uses_win_metrics_from_the_file() -> None:
+    fonts = default_fonts()
+    for fid in fonts.ids():
+        font = TTFont(fonts.get(fid).file)
+        os2 = font["OS/2"]
+        want = Fraction(os2.usWinAscent + os2.usWinDescent, font["head"].unitsPerEm)
+        font.close()
+        assert fonts.fontsize_per_em(fid) == want, fid
+    assert fonts.fontsize_per_em("amiri-bold") == Fraction(2760, 1000)
+    assert fonts.fontsize_per_em("notosans-bold") == Fraction(1519, 1000)
+    assert fonts.fontsize_for_em("notosans-bold", Fraction("39.5")) == 60
+    assert fonts.fontsize_for_em("amiri-bold", Fraction("39.5")) == 109
+    assert fonts.fontsize_for_em("amiri-quran", Fraction(50)) == 139
+    # Half up: 0.5 em px at 1519/1000 is 0.7595 -> 1; exactly x.5 rounds up.
+    assert fonts.fontsize_for_em("notosans-bold", Fraction(1000, 3038)) == 1

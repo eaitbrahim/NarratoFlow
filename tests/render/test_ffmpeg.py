@@ -75,7 +75,10 @@ def test_ffmpeg_not_found(tmp_path: Path) -> None:
 def test_render_tools_fixture_reads_owner_ffmpeg_at_import(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    render_conftest = sys.modules["conftest"]  # tests/conftest.py, shared with tests/captions
+    root_conftest = str(Path(__file__).parents[1] / "conftest.py")
+    render_conftest = next(
+        m for m in list(sys.modules.values()) if getattr(m, "__file__", None) == root_conftest
+    )
     sentinel = tmp_path / "owner-ffmpeg"
     monkeypatch.setattr(render_conftest, "_OWNER_FFMPEG", sentinel)
     seen: list[Path | None] = []

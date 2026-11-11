@@ -65,6 +65,17 @@ def _cmap(file: Path, sha256: str) -> frozenset[int]:
         font.close()
 
 
+@cache
+def _win_metrics(file: Path, sha256: str) -> tuple[int, int]:
+    """(unitsPerEm, usWinAscent + usWinDescent) of a font file."""
+    font = TTFont(file)
+    try:
+        os2 = font["OS/2"]
+        return int(font["head"].unitsPerEm), int(os2.usWinAscent) + int(os2.usWinDescent)
+    finally:
+        font.close()
+
+
 def _font_family(file: Path) -> str:
     font = TTFont(file)
     try:
@@ -126,6 +137,21 @@ class FontPack:
         directory.mkdir(parents=True, exist_ok=True)
         for asset in self._fonts.values():
             shutil.copyfile(asset.file, directory / asset.file.name)
+
+    def fontsize_per_em(self, font_id: str) -> Fraction:
+        """ASS Fontsize per em pixel: (usWinAscent + usWinDescent) / unitsPerEm.
+
+        libass sizes a font like VSFilter: Fontsize is the win-metric line height, so a
+        font with tall win metrics (Amiri) renders a smaller em at the same Fontsize.
+        """
+        asset = self._fonts[font_id]
+        upem, win = _win_metrics(asset.file, asset.sha256)
+        return Fraction(win, upem)
+
+    def fontsize_for_em(self, font_id: str, em_px: Fraction) -> int:
+        """The ASS Fontsize that renders `font_id` with an em of `em_px` pixels (half up)."""
+        exact = em_px * self.fontsize_per_em(font_id)
+        return int((exact * 2 + 1) // 2)
 
     def missing_glyphs(self, font_id: str, text: str) -> list[str]:
         """Sorted unique "U+XXXX" of the codepoints of `text` the font's cmap lacks."""

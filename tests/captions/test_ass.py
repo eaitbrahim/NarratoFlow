@@ -8,6 +8,7 @@ from narratoflow.captions.ass import (
     CAPTION_GAP_MS,
     CAPTION_HOLD_MS,
     CAPTION_MAX_CHARS,
+    CAPTION_MAX_CHARS_AR,
     CAPTION_MAX_WORDS,
     SENTENCE_END,
     AssDocument,
@@ -17,10 +18,12 @@ from narratoflow.captions.ass import (
     ass_time,
     build_styles,
     caption_events,
+    caption_max_chars,
     caption_pages,
     escape_text,
     karaoke,
 )
+from narratoflow.errors import RenderError
 from narratoflow.models import Language, SceneKind, WordTiming
 from narratoflow.render.assets import default_fonts
 
@@ -35,11 +38,13 @@ def _reveals(text: str, event_start_ms: int) -> list[tuple[str, int]]:
     out: list[tuple[str, int]] = []
     cs = 0
     for m in _K.finditer(text):
-        word = m.group(2).rstrip(" ")
-        if word:
-            out.append((word, event_start_ms + cs * 10))
+        out.extend((word, event_start_ms + cs * 10) for word in m.group(2).split())
         cs += int(m.group(1))
     return out
+
+
+def _scene_ar(words: list[TimelineWord]) -> list[AssEvent]:
+    return caption_events(_scene(words), Language.ARABIC)
 
 
 def _durations(text: str) -> list[int]:
@@ -72,10 +77,10 @@ def test_ass_time_and_color_format() -> None:
     assert ass_color("#aabbcc", 0x99) == "&H99CCBBAA"
     assert ass_color("#FFFFFF", 255) == "&HFFFFFFFF"
     for bad_hex in ("112233", "#12345", "#GGGGGG", "#1122334"):
-        with pytest.raises(ValueError, match="colour"):
+        with pytest.raises(RenderError, match="colour"):
             ass_color(bad_hex)
     for bad_alpha in (-1, 256):
-        with pytest.raises(ValueError, match="alpha"):
+        with pytest.raises(RenderError, match="alpha"):
             ass_color("#000000", bad_alpha)
 
     assert ass_time(0) == "0:00:00.00"
@@ -85,14 +90,14 @@ def test_ass_time_and_color_format() -> None:
     assert ass_time(1235) == "0:00:01.24"
     assert ass_time(59_999) == "0:01:00.00"
     assert ass_time(3_661_005) == "1:01:01.01"
-    with pytest.raises(ValueError, match="negative"):
+    with pytest.raises(RenderError, match="negative"):
         ass_time(-1)
 
 
 def test_escape_braces_and_backslash() -> None:
-    assert escape_text("a{\\b}c") == "a\uff5b\u29f5b\uff5dc"
+    assert escape_text("a{\\b}c") == "a(/b)c"
     assert escape_text("one\ntwo\r\nthree\rfour\u2028five") == "one two three four five"
-    assert escape_text("\\N\\h{\\fs200}") == "\u29f5N\u29f5h\uff5b\u29f5fs200\uff5d"
+    assert escape_text("\\N\\h{\\fs200}") == "/N/h(/fs200)"
     assert escape_text(SEEN3 + ".") == SEEN3 + "."
     for raw in ("{\\pos(0,0)}x", "a\\Nb", "}{"):
         assert not set(escape_text(raw)) & {"{", "}", "\\", "\n", "\r"}
@@ -100,13 +105,15 @@ def test_escape_braces_and_backslash() -> None:
 
 def test_karaoke_escapes_each_word() -> None:
     text = karaoke([("{\\fs300}big", 0), ("a\\Nb", 100)], 0)
-    assert text == "{\\k10}\uff5b\u29f5fs300\uff5dbig {\\k0}a\u29f5Nb"
+    assert text == "{\\k10}(/fs300)big {\\k1}a/Nb"
 
 
 def test_karaoke_cumulative_rounding_no_drift() -> None:
-    for event_start in (0, 7, 1_000):
+    for event_start in (0, 7, 1_005, 1_000):
         words = [(f"w{i}", event_start + i * 333) for i in range(200)]
-        rebuilt = _reveals(karaoke(words, event_start), event_start)
+        # The event itself starts at its centisecond-rounded time (ass_time).
+        rounded_start = (event_start * 2 + 10) // 20 * 10
+        rebuilt = _reveals(karaoke(words, event_start), rounded_start)
         assert [w for w, _ in rebuilt] == [w for w, _ in words]
         for (_, want), (_, got) in zip(words, rebuilt, strict=True):
             assert abs(got - want) <= 5
@@ -125,7 +132,7 @@ def test_karaoke_overlapping_and_zero_length_words() -> None:
 
 
 def test_karaoke_rejects_decreasing_starts() -> None:
-    with pytest.raises(ValueError, match="non-decreasing"):
+    with pytest.raises(RenderError, match="non-decreasing"):
         karaoke([("a", 500), ("b", 400)], 0)
 
 
@@ -134,16 +141,16 @@ def test_karaoke_leading_offset_when_first_word_after_event_start() -> None:
     assert text.startswith("{\\k25}{\\k35}one")
     assert _reveals(text, 0) == [("one", 250), ("two", 600)]
     at_start = karaoke([("one", 0), ("two", 600)], 0)
-    assert at_start == "{\\k60}one {\\k0}two"
+    assert at_start == "{\\k60}one {\\k1}two"
     assert karaoke([], 0) == ""
 
 
 def test_karaoke_no_trailing_space_single_space_joins() -> None:
     text = karaoke([("a", 0), ("b", 100), ("c", 200)], 0)
-    assert text == "{\\k10}a {\\k10}b {\\k0}c"
+    assert text == "{\\k10}a {\\k10}b {\\k1}c"
     assert not text.endswith(" ")
     assert "  " not in text
-    assert karaoke([("solo", 30)], 0) == "{\\k3}{\\k0}solo"
+    assert karaoke([("solo", 30)], 0) == "{\\k3}{\\k1}solo"
 
 
 def test_pages_respect_limits_sentence_and_gap() -> None:
@@ -179,7 +186,7 @@ def test_pages_respect_limits_sentence_and_gap() -> None:
 
 def test_caption_events_one_per_page_with_karaoke() -> None:
     words = [_w("Hello", 100, 400), _w("world.", 450, 900), _w("Next", 1_000, 1_300)]
-    events = caption_events(_scene(words))
+    events = caption_events(_scene(words), Language.ENGLISH)
     assert [(e.start_ms, e.end_ms, e.style, e.layer) for e in events] == [
         (100, 1_000, "Caption", 0),
         (1_000, 1_700, "Caption", 0),
@@ -189,7 +196,9 @@ def test_caption_events_one_per_page_with_karaoke() -> None:
 
 
 def test_caption_events_escape_author_text() -> None:
-    events = caption_events(_scene([_w("{\\an7}x", 0, 100), _w("y\\N", 100, 200)]))
+    events = caption_events(
+        _scene([_w("{\\an7}x", 0, 100), _w("y\\N", 100, 200)]), Language.ENGLISH
+    )
     assert len(events) == 1
     assert "\\an7" not in events[0].text
     assert "\\N" not in events[0].text
@@ -199,15 +208,46 @@ def test_caption_events_escape_author_text() -> None:
 def test_last_page_held_but_not_past_scene() -> None:
     # Overlapping words: the hold runs from the latest end, not the last word's end.
     words = [_w("a", 0, 900), _w("b", 100, 800)]
-    assert caption_events(_scene(words, end_ms=5_000))[-1].end_ms == 900 + CAPTION_HOLD_MS
-    assert caption_events(_scene(words, end_ms=1_000))[-1].end_ms == 1_000
-    zero = [_w("a", 300), _w("b", 300)]
-    held = caption_events(_scene(zero, end_ms=300))
-    assert [(e.start_ms, e.end_ms) for e in held] == [(300, 300)]
+    en = Language.ENGLISH
+    assert caption_events(_scene(words, end_ms=5_000), en)[-1].end_ms == 900 + CAPTION_HOLD_MS
+    assert caption_events(_scene(words, end_ms=1_000), en)[-1].end_ms == 1_000
+    zero = [_w("a", 300), _w("b", 300, 310)]
+    held = caption_events(_scene(zero, end_ms=310), en)
+    assert [(e.start_ms, e.end_ms) for e in held] == [(300, 310)]
+
+
+def test_zero_duration_pages_are_dropped() -> None:
+    # A sentence end splits pages between two words with the same start: the first page
+    # would last 0 ms and never show, so it is dropped rather than written.
+    words = [_w("Done.", 300), _w("Next", 300, 600)]
+    events = caption_events(_scene(words), Language.ENGLISH)
+    assert [(e.start_ms, e.end_ms) for e in events] == [(300, 1_000)]
+    assert "Next" in events[0].text
+    assert "Done." not in events[0].text
+    # A last page whose hold is clipped to a scene ending at its start is dropped too.
+    assert caption_events(_scene([_w("a", 0)], end_ms=0), Language.ENGLISH) == []
+
+
+def test_karaoke_never_emits_k0_and_groups_equal_reveals() -> None:
+    # libass does not start a syllable at \k0: the word would light with the one before.
+    text = karaoke([("a", 0), ("b", 1_000), ("c", 1_000), ("d", 2_000)], 0)
+    assert text == "{\\k100}a {\\k100}b c {\\k1}d"
+    assert "\\k0}" not in text
+    assert _reveals(text, 0) == [("a", 0), ("b", 1_000), ("c", 1_000), ("d", 2_000)]
+
+
+def test_karaoke_offsets_are_absolute_rounded() -> None:
+    # c_i = cs(reveal_i) - cs(event_start): every absolute reveal is within 5 ms.
+    text = karaoke([("a", 1_005), ("b", 1_340)], 1_005)
+    assert text == "{\\k33}a {\\k1}b"
+    event_cs = int(ass_time(1_005)[-2:]) * 10 + 1_000
+    assert event_cs == 1_010
+    rebuilt = _reveals(text, event_cs)
+    assert all(abs(got - want) <= 5 for (_, got), want in zip(rebuilt, (1_005, 1_340), strict=True))
 
 
 def test_caption_events_empty_for_verse_or_no_words() -> None:
-    assert caption_events(_scene([])) == []
+    assert caption_events(_scene([]), Language.ENGLISH) == []
     verse = SceneTiming(
         scene_id="v1",
         kind=SceneKind.VERSE,
@@ -219,18 +259,31 @@ def test_caption_events_empty_for_verse_or_no_words() -> None:
         timing_source=TimingSource.AYAH,
         ayat=[AyahTiming(surah=31, ayah=33, start_ms=0, end_ms=1_000)],
     )
-    assert caption_events(verse) == []
+    assert caption_events(verse, Language.ARABIC) == []
 
 
-_EXPECTED: dict[str, tuple[int | None, bool, int, tuple[int, int, int]]] = {
-    # name: (size, bold, alignment, (L, R, V))
-    "Caption": (None, True, 8, (60, 192, 1260)),
-    "Verse": (76, False, 5, (84, 216, 0)),
-    "VerseRef": (40, False, 2, (84, 216, 696)),
-    "TopLeft": (36, True, 7, (60, 60, 172)),
-    "TopRight": (36, False, 9, (60, 60, 172)),
-    "Headline": (46, True, 8, (60, 60, 240)),
-    "Card": (88, True, 5, (84, 216, 0)),
+def test_arabic_caption_pages_use_the_one_line_limit() -> None:
+    assert caption_max_chars(Language.ENGLISH) == CAPTION_MAX_CHARS
+    assert caption_max_chars(Language.ARABIC) == CAPTION_MAX_CHARS_AR == 28
+    # Tashkeel (combining marks) takes no width, so it does not count toward the limit.
+    fatha = "\u064e"
+    voweled = [_w((SEEN3 + fatha) * 1, i * 100) for i in range(7)]
+    assert [len(p) for p in caption_pages(voweled, CAPTION_MAX_CHARS_AR)] == [6, 1]
+    long_words = [_w(SEEN3 * 2, i * 100) for i in range(5)]  # 6 + 1 + 6 + 1 + 6 + 1 + 6 = 27
+    events = _scene_ar(long_words)
+    assert len(events) == 2
+
+
+# name: (Arabic Fontsize, English Fontsize, bold, alignment, (L, R, V)).
+# English sizes are the brief's; Arabic sizes give Amiri the same em (39.5 px for Caption).
+_EXPECTED: dict[str, tuple[int, int, bool, int, tuple[int, int, int]]] = {
+    "Caption": (109, 60, True, 8, (60, 192, 1260)),
+    "Verse": (139, 139, False, 5, (84, 216, 0)),
+    "VerseRef": (73, 40, False, 2, (84, 216, 696)),
+    "TopLeft": (65, 36, True, 7, (60, 60, 172)),
+    "TopRight": (65, 36, False, 9, (60, 60, 172)),
+    "Headline": (84, 46, True, 8, (60, 60, 240)),
+    "Card": (160, 88, True, 5, (84, 216, 0)),
 }
 
 
@@ -254,13 +307,11 @@ def test_arabic_styles_auto_direction_english_ltr() -> None:
     assert {s.family for n, s in ar.items() if n != "Verse"} == {amiri}
     assert {s.family for n, s in en.items() if n != "Verse"} == {noto}
 
-    assert ar["Caption"].size == 64
-    assert en["Caption"].size == 60
-    for styles in (ar, en):
-        for name, (size, bold, align, (ml, mr, mv)) in _EXPECTED.items():
+    for styles, col in ((ar, 0), (en, 1)):
+        for name, row in _EXPECTED.items():
             s = styles[name]
-            if size is not None:
-                assert s.size == size, name
+            bold, align, (ml, mr, mv) = row[2], row[3], row[4]
+            assert s.size == row[col], name
             assert (s.bold, s.alignment, s.margin_l, s.margin_r, s.margin_v) == (
                 bold,
                 align,
@@ -285,7 +336,7 @@ def _doc(language: Language = Language.ENGLISH) -> AssDocument:
 def test_never_kf() -> None:
     doc = _doc()
     words = [_w(f"w{i}", i * 150, i * 150 + 100) for i in range(20)]
-    doc.events = caption_events(_scene(words))
+    doc.events = caption_events(_scene(words), Language.ENGLISH)
     text = doc.to_text()
     assert "\\k" in text
     assert "\\kf" not in text
@@ -320,11 +371,11 @@ def test_document_sections_and_playres(tmp_path: Path) -> None:
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
     )
     assert (
-        "Style: Caption,Amiri,64,&H00111111,&H99111111,&H00FFFFFF,&HFF000000,"
+        "Style: Caption,Amiri,109,&H00111111,&H99111111,&H00FFFFFF,&HFF000000,"
         "-1,0,0,0,100,100,0,0,1,3,0,8,60,192,1260,-1"
     ) in lines
     assert (
-        "Style: Verse,Amiri Quran,76,&H00111111,&HFF111111,&H00FFFFFF,&HFF000000,"
+        "Style: Verse,Amiri Quran,139,&H00111111,&HFF111111,&H00FFFFFF,&HFF000000,"
         "0,0,0,0,100,100,0,0,1,0,0,5,84,216,0,-1"
     ) in lines
     dialogues = [ln for ln in lines if ln.startswith("Dialogue:")]
@@ -349,8 +400,6 @@ def test_document_sections_and_playres(tmp_path: Path) -> None:
 
 
 def test_write_failure_leaves_no_temp_file(tmp_path: Path) -> None:
-    from narratoflow.errors import RenderError
-
     target = tmp_path / "is-a-dir"
     target.mkdir()
     with pytest.raises(RenderError, match="cannot write"):

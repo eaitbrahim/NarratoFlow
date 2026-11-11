@@ -5,9 +5,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from fontTools.pens.boundsPen import BoundsPen
+from fontTools.ttLib import TTFont
 
 from narratoflow.audio.timeline import SceneTiming, TimelineWord, TimingSource
 from narratoflow.captions.ass import (
+    CAPTION_MAX_CHARS_AR,
     AssDocument,
     AssEvent,
     AssStyle,
@@ -23,6 +26,18 @@ from narratoflow.render.layout import CAPTIONS, FRAME_H, FRAME_W, Rect
 
 INK = "#111111"
 SEEN3 = "\u0633\u0633\u0633"
+MEEM3 = "\u0645\u0645\u0645"
+BEH3 = "\u0628\u0628\u0628"
+ALEF = "\u0627"
+# Six words of the widest letters (seen, sad, sheen, dad): 28 characters with the spaces.
+ARABIC_WIDE = [
+    "\u0633\u0633\u0633\u0633",
+    "\u0635\u0635\u0635\u0635",
+    "\u0634\u0634\u0634",
+    "\u0636\u0636\u0636\u0636",
+    "\u0633\u0633\u0633\u0633",
+    "\u0635\u0635\u0635\u0635",
+]
 # "dhahaba al-rajul ila al-suq fi al-layl": six words, 28 characters with the spaces.
 ARABIC_SIX = [
     "\u0630\u0647\u0628",
@@ -119,22 +134,92 @@ def test_arabic_trailing_punctuation_on_left(render_tools: RenderTools, tmp_path
     assert period.right <= seen.x
 
 
+def _column_runs(mask: np.ndarray, gap: int = 6) -> list[tuple[int, int]]:
+    """Inclusive x ranges of ink columns, split where more than `gap` columns are empty."""
+    xs = np.nonzero(mask.any(axis=0))[0]
+    runs: list[tuple[int, int]] = []
+    for x in xs.tolist():
+        if runs and x - runs[-1][1] <= gap:
+            runs[-1] = (runs[-1][0], x)
+        else:
+            runs.append((x, x))
+    return runs
+
+
 def test_karaoke_reveals_rtl_first_word_rightmost(
     render_tools: RenderTools, tmp_path: Path
 ) -> None:
-    # Unrevealed words are fully transparent, so only lit words leave ink.
+    # Three words of distinct shapes, spoken at 0, 1000 and 2000 ms. Unrevealed words are
+    # fully transparent, so only lit words leave ink. RTL: the first spoken word is the
+    # rightmost, and the reveal moves right to left one word at a time.
     style = dataclasses.replace(_caption_style(Language.ARABIC), secondary_alpha=0xFF)
-    # Two equal-width words, so each half of the line holds exactly one of them.
-    events = [_event(karaoke([(SEEN3, 0), (SEEN3, 1_000)], 0))]
-    early = _ink(_still(render_tools, tmp_path / "early", style, events, 500))
-    final = _ink(_still(render_tools, tmp_path / "final", style, events, 1_500))
-    line = _bbox(final)
-    mid = line.x + line.w // 2
-    lit = _bbox(early)
-    assert lit.x >= mid, f"first word ink starts at x={lit.x}, left of the line middle {mid}"
-    assert not early[:, :mid].any()
-    assert final[:, line.x : mid].any()
-    assert final[:, mid : line.right].any()
+    events = [_event(karaoke([(SEEN3, 0), (MEEM3, 1_000), (BEH3, 2_000)], 0))]
+    shots = {
+        t: _ink(_still(render_tools, tmp_path / str(t), style, events, t))
+        for t in (500, 1_500, 2_500)
+    }
+    words = _column_runs(shots[2_500])
+    assert len(words) == 3, words
+    third, second, first = words  # left to right on screen
+
+    def lit(t: int, run: tuple[int, int]) -> bool:
+        return bool(shots[t][:, run[0] : run[1] + 1].any())
+
+    assert [lit(500, w) for w in (first, second, third)] == [True, False, False]
+    assert [lit(1_500, w) for w in (first, second, third)] == [True, True, False]
+    assert [lit(2_500, w) for w in (first, second, third)] == [True, True, True]
+    # A lit word is drawn whole: its ink matches the final frame's ink for that word.
+    x0, x1 = first
+    assert np.array_equal(shots[500][:, x0 : x1 + 1], shots[2_500][:, x0 : x1 + 1])
+
+
+def test_karaoke_leading_offset_delays_first_word(
+    render_tools: RenderTools, tmp_path: Path
+) -> None:
+    # The leading empty {\k25} syllable keeps the first word dark until 250 ms.
+    style = dataclasses.replace(_caption_style(Language.ENGLISH), secondary_alpha=0xFF)
+    text = karaoke([("one", 250), ("two", 1_000)], 0)
+    assert text.startswith("{\\k25}")
+    events = [_event(text)]
+    before = _ink(_still(render_tools, tmp_path / "a", style, events, 150))
+    after = _ink(_still(render_tools, tmp_path / "b", style, events, 500))
+    both = _ink(_still(render_tools, tmp_path / "c", style, events, 1_200))
+    assert not before.any()
+    assert len(_column_runs(after, gap=10)) == 1
+    assert len(_column_runs(both, gap=10)) == 2
+
+
+def _glyph_height_units(font_id: str, ch: str) -> tuple[float, int]:
+    """(ink height of `ch`'s glyph in font units, unitsPerEm)."""
+    font = TTFont(default_fonts().get(font_id).file)
+    try:
+        glyphs = font.getGlyphSet()
+        pen = BoundsPen(glyphs)
+        glyphs[font.getBestCmap()[ord(ch)]].draw(pen)
+        assert pen.bounds is not None
+        return pen.bounds[3] - pen.bounds[1], int(font["head"].unitsPerEm)
+    finally:
+        font.close()
+
+
+def _rendered_em(
+    tools: RenderTools, work: Path, language: Language, font_id: str, ch: str
+) -> float:
+    """The em in pixels libass used: a glyph's ink height over its height in em units."""
+    frame = _still(tools, work, _caption_style(language), [_event(ch)], 500)
+    height_px = _bbox(_ink(frame)).h
+    units, upem = _glyph_height_units(font_id, ch)
+    return height_px * upem / units
+
+
+def test_arabic_em_matches_english_em(render_tools: RenderTools, tmp_path: Path) -> None:
+    # Metric: the em libass actually rendered, recovered from one tall, plain glyph per
+    # script (Latin "H", Arabic alef: both about 0.71 em, no marks, no joining). Comparing
+    # the em, not raw letter heights, separates the font scale from the type design.
+    en = _rendered_em(render_tools, tmp_path / "en", Language.ENGLISH, "notosans-bold", "H")
+    ar = _rendered_em(render_tools, tmp_path / "ar", Language.ARABIC, "amiri-bold", ALEF)
+    assert abs(en - 39.5) <= 0.1 * 39.5, en
+    assert abs(ar / en - 1) <= 0.10, (ar, en)
 
 
 def test_english_caption_two_lines_inside_caption_band(
@@ -144,7 +229,7 @@ def test_english_caption_two_lines_inside_caption_band(
     assert len(" ".join(texts)) == 28
     scene = _scene(texts)
     assert len(caption_pages(scene.words)) == 1
-    events = caption_events(scene)
+    events = caption_events(scene, Language.ENGLISH)
     assert len(events) == 1
     frame = _still(render_tools, tmp_path, _caption_style(Language.ENGLISH), events, 800)
     ink = _ink(frame)
@@ -154,10 +239,14 @@ def test_english_caption_two_lines_inside_caption_band(
 
 
 def test_arabic_caption_inside_caption_band(render_tools: RenderTools, tmp_path: Path) -> None:
-    assert len(" ".join(ARABIC_SIX)) == 28
-    scene = _scene(ARABIC_SIX)
-    assert len(caption_pages(scene.words)) == 1
-    events = caption_events(scene)
-    frame = _still(render_tools, tmp_path, _caption_style(Language.ARABIC), events, 800)
-    box = _bbox(_ink(frame))
-    assert CAPTIONS.contains(box), f"caption ink {box} leaves {CAPTIONS}"
+    style = _caption_style(Language.ARABIC)
+    for name, texts in (("prose", ARABIC_SIX), ("wide", ARABIC_WIDE)):
+        assert len(" ".join(texts)) == CAPTION_MAX_CHARS_AR
+        scene = _scene(texts)
+        assert len(caption_pages(scene.words, CAPTION_MAX_CHARS_AR)) == 1
+        events = caption_events(scene, Language.ARABIC)
+        frame = _still(render_tools, tmp_path / name, style, events, 800)
+        box = _bbox(_ink(frame))
+        assert CAPTIONS.contains(box), f"{name}: caption ink {box} leaves {CAPTIONS}"
+        # One line: a second line would start a whole line height (= Fontsize) lower.
+        assert box.h < style.size, f"{name}: ink {box.h} px tall, wrapped to two lines?"

@@ -132,11 +132,20 @@ copy of that index inside the installed `narratoflow` package, not the repositor
 
 System requirement: `ffmpeg` on `PATH`.
 
+## Where settings live
+
+| Kind | Lives in | Examples |
+|---|---|---|
+| Secrets, machine paths, log level | environment or `.env` (`Settings`, `NARRATOFLOW_*`) | `*_API_KEY`, `DATA_DIR`, `FFMPEG`, `LOG_LEVEL`, `OLLAMA_URL` |
+| Channel choices | channel TOML (`ChannelConfig`; defaults in code) | style, voice, llm, embed, vision, `spending_limit_usd`, `approval_list`, part lengths, `riwaya`, `diacritizer` |
+| Per-run choices | CLI options | `--part`, `--out`, `--workers`, `--yes`, `--replace` |
+| Prices / platform rules | `data/prices.toml` / `data/platform_rules.toml`, each overridable in `NARRATOFLOW_DATA_DIR` | |
+| Output contract | code constants pinned by Plans 4-6 | 1080x1920, 30 fps, -14 LUFS |
+
 ## Layout
 
 ```
 docs/                PRD, SRD, REVIEW (suggestions), adr/
-configs/             default.toml: engine selection, voices, render settings
 src/narratoflow/
   models.py          storyboard.json IR (Project → Scene → Narration / Visual / Layout)
   interfaces.py      Protocols: Diacritizer, TTSEngine, Aligner, LLM, VisualProvider, Renderer

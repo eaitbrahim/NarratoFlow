@@ -201,3 +201,39 @@ def test_unknown_fallback_rejected(channel_file: Path) -> None:
     )
     with pytest.raises(ChannelConfigError, match="fallback"):
         load_channel(channel_file)
+
+
+def test_typo_in_spending_limit_is_an_error(channel_file: Path) -> None:
+    channel_file.write_text("spending_limt_usd = 2\n" + channel_file.read_text())
+    with pytest.raises(ChannelConfigError) as exc:
+        load_channel(channel_file)
+    assert "spending_limt_usd" in str(exc.value)
+    assert "Extra inputs are not permitted" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("table", "line"),
+    [
+        ("style", "line_weigth_px = 3"),
+        ("voice", 'fallbak = ["edge"]'),
+        ("llm", 'efort = "low"'),
+        ("embed", 'modle = "x"'),
+        ("vision", 'provder = "none"'),
+    ],
+)
+def test_unknown_nested_key_is_an_error(channel_file: Path, table: str, line: str) -> None:
+    text = channel_file.read_text()
+    header = f"[{table}]"
+    if header in text:
+        text = text.replace(header, f"{header}\n{line}", 1)
+    else:
+        text += f"\n{header}\n{line}\n"
+    channel_file.write_text(text)
+    with pytest.raises(ChannelConfigError) as exc:
+        load_channel(channel_file)
+    key = line.split(" ")[0]
+    assert f"{table}.{key}" in str(exc.value)
+
+
+def test_fixture_channel_still_loads(channel_file: Path) -> None:
+    assert load_channel(channel_file).riwaya == "hafs"

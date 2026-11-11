@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from narratoflow.errors import ChannelConfigError
 from narratoflow.llm.base import Effort
@@ -17,6 +17,7 @@ from narratoflow.models import AspectRatio, Language
 
 
 class StyleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     reference_sketch: Path
     instructions: str = Field(min_length=1)
     image_provider: str
@@ -39,6 +40,8 @@ class VoiceConfig(BaseModel):
     `piper_model` is resolved relative to the channel TOML by `load_channel`.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     provider: str
     model: str = ""
     voice_id: str
@@ -53,6 +56,7 @@ class VoiceConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     provider: str
     model: str
     effort: Effort = "medium"
@@ -61,6 +65,7 @@ class LlmConfig(BaseModel):
 
 
 class EmbedConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     provider: str = "voyage"
     model: str = "voyage-multilingual-2"
 
@@ -75,11 +80,14 @@ class VisionConfig(BaseModel):
     """Vision-check model (see `vision_model`); both unset means the channel's LLM
     when its provider is vision capable, else no vision check."""
 
+    model_config = ConfigDict(extra="forbid")
+
     provider: str | None = None
     model: str | None = None
 
 
 class ChannelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     slug: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
     language: Language

@@ -97,18 +97,24 @@ def test_estimate_planning_cost_english(prices: PriceTable, channel_file: Path) 
     ideas = _usd(calls * 600 + 1000, calls * 80)
     expected = (segment + ideas) * Decimal("1.2")
     assert estimate_planning_cost(text, ch, prices, **_SYS) == expected
-    # small catalogs are shown whole: 15 tokens per candidate line in every idea call
-    with_catalog = (segment + _usd(calls * (600 + 300 * 15) + 1000, calls * 80)) * Decimal("1.2")
-    assert estimate_planning_cost(text, ch, prices, **_SYS, catalog_size=300) == with_catalog
-    # large ones are narrowed to the top 5 and embedded
-    big = estimate_planning_cost(text, ch, prices, **_SYS, catalog_size=301)
-    narrowed = segment + _usd(calls * (600 + 5 * 15) + 1000, calls * 80)
+    # the caller passes the real token count of the candidate block each idea call carries
+    with_block = (segment + _usd(calls * (600 + 300) + 1000, calls * 80)) * Decimal("1.2")
+    assert (
+        estimate_planning_cost(text, ch, prices, **_SYS, catalog_size=300, candidate_tokens=300)
+        == with_block
+    )
+    # segmentation makes one call per stretch, each carrying the segment system prompt
+    many = (_usd(3 * 100 + 1000, 1200) + ideas) * Decimal("1.2")
+    assert estimate_planning_cost(text, ch, prices, **_SYS, segment_calls=3) == many
+    # large catalogs are embedded
+    big = estimate_planning_cost(text, ch, prices, **_SYS, catalog_size=301, candidate_tokens=75)
+    narrowed = segment + _usd(calls * (600 + 75) + 1000, calls * 80)
     embed = Decimal(301 * 20 + 1000) * Decimal("0.12") / 1_000_000
     assert big == (narrowed + embed) * Decimal("1.2")
     free = ch.model_copy(update={"embed": EmbedConfig(provider="ollama", model="x")})
-    assert estimate_planning_cost(text, free, prices, **_SYS, catalog_size=301) == (
-        narrowed * Decimal("1.2")
-    )
+    assert estimate_planning_cost(
+        text, free, prices, **_SYS, catalog_size=301, candidate_tokens=75
+    ) == (narrowed * Decimal("1.2"))
 
 
 def test_estimate_planning_cost_arabic_tashkeel(prices: PriceTable, channel_file: Path) -> None:

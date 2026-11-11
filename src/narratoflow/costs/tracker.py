@@ -29,7 +29,6 @@ CATALOG_EMBED_THRESHOLD = 300
 CATALOG_DESCRIPTION_TOKENS = 20
 WORDS_PER_SCENE = 30
 CANDIDATE_TOP_K = 5
-CANDIDATE_LINE_TOKENS = 15
 IDEA_OUTPUT_TOKENS = 80
 _TASHKEEL_OUTPUT_FACTOR = Decimal("2.5")
 PLANNING_MARGIN = Decimal("1.2")
@@ -92,13 +91,16 @@ def estimate_planning_cost(
     ideas_system_tokens: int,
     tashkeel_system_tokens: int,
     catalog_size: int = 0,
+    candidate_tokens: int = 0,
+    segment_calls: int = 1,
 ) -> Decimal:
     """Estimate every planning call, times `PLANNING_MARGIN`.
 
     With T text tokens and n = max(1, ceil(words / 30)) scenes:
-    - segmentation: one pass, segment system + T in, 1.2 x T out;
-    - ideas: n calls, each ideas system + candidate lines (the catalog up to 300
-      entries, else the top 5; 15 tokens each) + T / n in, 80 out;
+    - segmentation: `segment_calls` calls (one per non-verse stretch), each
+      carrying the segment system prompt, plus T in and 1.2 x T out in all;
+    - ideas: n calls, each ideas system + `candidate_tokens` (the real token
+      count of the rendered candidate block one call carries) + T / n in, 80 out;
     - tashkeel (Arabic with the LLM diacritizer only): n calls, n x tashkeel
       system + T in, 2.5 x T out;
     - embeddings when `catalog_size` exceeds 300: the catalog descriptions
@@ -109,14 +111,14 @@ def estimate_planning_cost(
     """
     text_tokens = estimate_tokens(text)
     calls = max(1, math.ceil(len(text.split()) / WORDS_PER_SCENE))
-    shown = catalog_size if catalog_size <= CATALOG_EMBED_THRESHOLD else CANDIDATE_TOP_K
-    candidate_tokens = shown * CANDIDATE_LINE_TOKENS
     llm = channel.llm
 
     def cost(input_tokens: int, output_tokens: int) -> Decimal:
         return _llm_cost(prices, llm.provider, llm.model, input_tokens, output_tokens)
 
-    total = cost(segment_system_tokens + text_tokens, math.ceil(text_tokens * _OUTPUT_FACTOR))
+    total = cost(
+        segment_calls * segment_system_tokens + text_tokens, math.ceil(text_tokens * _OUTPUT_FACTOR)
+    )
     total += cost(
         calls * (ideas_system_tokens + candidate_tokens) + text_tokens,
         calls * IDEA_OUTPUT_TOKENS,

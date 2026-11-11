@@ -12,12 +12,13 @@ from rich.markup import escape
 
 from narratoflow.channels.config import load_channel, style_fingerprint
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
-from narratoflow.errors import CorruptInputError, LibraryError, NarratoFlowError
+from narratoflow.errors import CorruptInputError, LibraryError, NarratoFlowError, PlanningError
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import SketchStatus
 from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project, Series
-from narratoflow.planning.approval import format_usd, needs_approval, render_approval_list
+from narratoflow.money import format_usd
+from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.pipeline import plan_series
 from narratoflow.settings import get_settings
 from narratoflow.text.quality import require_clean
@@ -102,8 +103,10 @@ def plan(
 ) -> None:
     """Plan a script into a series of parts; checks rights, keys and budget before any spend."""
     channel = load_channel(channel_toml)
-    series = plan_series(script, channel, get_settings())
     target = out if out is not None else script.with_name("series.json")
+    if not target.parent.is_dir():
+        raise PlanningError(f"output directory {target.parent} does not exist; nothing was spent")
+    series = plan_series(script, channel, get_settings())
     if needs_approval(series, channel):
         series.save(target)
         _out.print(render_approval_list(series))
@@ -134,7 +137,8 @@ def approve(
     series = Series.load(series_json)
     _out.print(render_approval_list(series))
     if not yes and not typer.confirm("Approve this series for production?"):
-        _out.print("Not approved; the series is unchanged.")
+        state = "stays approved" if series.approved else "is still not approved"
+        _out.print(f"Unchanged; the series {state}.")
         return
     series.approved = True
     series.save(series_json)

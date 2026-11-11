@@ -347,6 +347,38 @@ def test_cli_approve_declined_leaves_unapproved(tmp_path: Path) -> None:
     assert Series.load(path).approved is False
 
 
+def test_cli_approve_declined_on_approved_series_says_it_stays_approved(tmp_path: Path) -> None:
+    path = tmp_path / "series.json"
+    approved = _planned_series()
+    approved.approved = True
+    approved.save(path)
+    result = runner.invoke(cli.app, ["approve", str(path)], input="n\n")
+    assert result.exit_code == 0, result.output
+    assert "stays approved" in result.output
+    assert "not approved" not in result.output.lower()
+    assert Series.load(path).approved is True
+
+
+def test_cli_plan_checks_out_dir_before_planning(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: object) -> Series:
+        raise AssertionError("planner must not run when --out cannot be written")
+
+    monkeypatch.setattr(cli, "plan_series", boom)
+    out = tmp_path / "missing-dir" / "series.json"
+    code = run_main(
+        monkeypatch,
+        "plan",
+        str(_script(tmp_path)),
+        "--channel",
+        str(channel_file),
+        "--out",
+        str(out),
+    )
+    assert code == 1
+
+
 def test_cli_approve_bad_file_exit_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

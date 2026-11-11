@@ -9,6 +9,7 @@ from rich.table import Table
 
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.models import Scene, SceneKind, Series, VerseRef
+from narratoflow.money import format_usd
 from narratoflow.planning.segment import UNMATCHED_BRACKETS_FLAG
 from narratoflow.text.tashkeel.engines import REJECTED_FLAG
 
@@ -18,7 +19,6 @@ APPROVAL_FLAGS = frozenset(
     {REJECTED_FLAG, "unfinished_ending", "over_max", UNMATCHED_BRACKETS_FLAG}
 )
 _MATCH_LABELS = {"reused": "reused", "bundled": "bundled", "new": "new (paid)"}
-_CENT = Decimal("0.01")
 
 
 def needs_approval(series: Series, channel: ChannelConfig) -> bool:
@@ -37,13 +37,6 @@ def needs_approval(series: Series, channel: ChannelConfig) -> bool:
             if scene.verse is not None and not scene.verse.certain:
                 return True
     return False
-
-
-def format_usd(amount: Decimal) -> str:
-    """Whole cents as `$0.12`; finer amounts to four decimals, e.g. `$0.0123`."""
-    if amount == amount.quantize(_CENT):
-        return f"${amount:.2f}"
-    return f"${amount:.4f}"
 
 
 def verse_label(ref: VerseRef) -> str:

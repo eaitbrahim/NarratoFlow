@@ -146,7 +146,8 @@ def validate_idea(out: IdeaOut) -> list[str]:
     return violations
 
 
-def _render_candidates(candidates: list[tuple[str, str]]) -> str:
+def render_candidates(candidates: list[tuple[str, str]]) -> str:
+    """The candidate block of an idea prompt, one `key - description` line each."""
     if not candidates:
         return "(none)"
     return "\n".join(f"{key} {_DASH} {description}" for key, description in candidates)
@@ -155,7 +156,7 @@ def _render_candidates(candidates: list[tuple[str, str]]) -> str:
 def _user_prompt(scene: Scene, candidates: list[tuple[str, str]]) -> str:
     return (
         f"Scene text:\n{scene.narration.source_text}\n\n"
-        f"Candidate keys (key {_DASH} description):\n{_render_candidates(candidates)}\n\n"
+        f"Candidate keys (key {_DASH} description):\n{render_candidates(candidates)}\n\n"
         "Reuse a candidate key if it fits (same object, same culture or period); "
         "propose a new key only when none fits."
     )

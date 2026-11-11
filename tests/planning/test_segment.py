@@ -10,7 +10,7 @@ from narratoflow.models import SceneKind, VerseRef
 from narratoflow.planning import prompts as prompts_module
 from narratoflow.planning import segment as segment_module
 from narratoflow.planning.prompts import SEGMENT_SYSTEM
-from narratoflow.planning.segment import SegmentOut, SegmentSpan, _collapse_ws, segment_script
+from narratoflow.planning.segment import SegmentOut, SegmentSpan, collapse_ws, segment_script
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.detect import VerseHit, detect_verses
 
@@ -270,7 +270,7 @@ def test_join_invariant_on_real_fixture() -> None:
     scenes = segment_script(text, hits, llm)
 
     joined = "".join(s.narration.source_text for s in scenes)
-    assert _collapse_ws(joined) == _collapse_ws(text)
+    assert collapse_ws(joined) == collapse_ws(text)
     assert joined == text
     assert not llm.responses
     assert [s.id for s in scenes] == [f"s{n:03d}" for n in range(1, len(scenes) + 1)]
@@ -289,8 +289,8 @@ def test_join_invariant_on_real_fixture() -> None:
     assert all(not s.flags for s in scenes)
 
 
-def test_collapse_ws() -> None:
-    assert _collapse_ws("  a \n\t b  ") == "a b"
+def testcollapse_ws() -> None:
+    assert collapse_ws("  a \n\t b  ") == "a b"
 
 
 def test_prompts_mention_verbatim_rule() -> None:

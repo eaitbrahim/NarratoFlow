@@ -2,6 +2,8 @@
 
 from decimal import Decimal
 
+from narratoflow.money import format_usd
+
 
 class NarratoFlowError(Exception):
     """Base class for all NarratoFlow errors."""
@@ -53,7 +55,9 @@ class BudgetExceededError(NarratoFlowError):
     def __init__(self, estimate_usd: Decimal, limit_usd: Decimal) -> None:
         self.estimate_usd = estimate_usd
         self.limit_usd = limit_usd
-        super().__init__(f"estimated cost ${estimate_usd} exceeds limit ${limit_usd}")
+        super().__init__(
+            f"estimated cost {format_usd(estimate_usd)} exceeds limit {format_usd(limit_usd)}"
+        )
 
 
 class SegmentationError(NarratoFlowError):

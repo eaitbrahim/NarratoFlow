@@ -15,6 +15,7 @@ from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import SpendTracker, TrackedLLM
 from narratoflow.errors import (
     BudgetExceededError,
+    ChannelConfigError,
     MissingApiKeyError,
     ScriptBlockedError,
 )
@@ -37,7 +38,7 @@ from narratoflow.planning import pipeline as pipeline_module
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.ideas import IdeaOut
 from narratoflow.planning.pipeline import plan_series
-from narratoflow.planning.segment import SegmentOut, _collapse_ws
+from narratoflow.planning.segment import SegmentOut, collapse_ws
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.script.source import load_script
 from narratoflow.settings import Settings
@@ -120,7 +121,7 @@ def test_plan_reference_script_1_end_to_end(
     assert (verse.surah, verse.ayah_start) == (31, 33)
     assert verse.uthmani_text == fixture_corpus().text_range(31, 33, verse.ayah_end)
     # narration is verbatim across all scenes and parts
-    assert _collapse_ws("".join(s.narration.source_text for s in scenes)) == _collapse_ws(body)
+    assert collapse_ws("".join(s.narration.source_text for s in scenes)) == collapse_ws(body)
     narration = [s for s in scenes if s.kind is SceneKind.NARRATION]
     assert narration
     assert all(s.idea_key for s in narration)
@@ -232,7 +233,7 @@ def test_planning_cost_is_tracker_spend_and_llm_is_built(
     assert series.est_planning_cost_usd == wrapped.tracker.spent > 0
     # the pre-call estimate covers every call the run really made
     _, body = load_script(write_script(tmp_path, read("clean_ar.txt")), Language.ARABIC)
-    estimate = pipeline_module.estimate_planning(body, paid, prices, catalog_size=0)
+    estimate = pipeline_module.estimate_planning(body, paid, prices, catalog=[], segment_calls=2)
     assert estimate >= wrapped.tracker.spent
     assert estimate < 3 * wrapped.tracker.spent  # and is not wildly inflated
 
@@ -519,3 +520,99 @@ def test_render_approval_list_rows_and_totals() -> None:
     assert "over_max" in text and "unfinished_ending" in text
     assert "$0.08" in text and "$0.04" in text
     assert "total" in text and "$0.12" in text and "$0.0123" in text
+
+
+def test_estimate_covers_actual_spend_with_seeded_catalog(
+    tmp_path: Path,
+    channel: ChannelConfig,
+    settings: Settings,
+    prices: PriceTable,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    english = channel.model_copy(
+        update={"language": Language.ENGLISH, "llm": PAID_LLM, "spending_limit_usd": Decimal(50)}
+    )
+    library = default_library(settings)
+    version = library.ensure_style_version(english.slug, style_fingerprint(english.style))
+    prov = Provenance(source="test", license="CC0", created_at=datetime(2026, 1, 1, tzinfo=UTC))
+    for i in range(20):
+        library.add_sketch(
+            version,
+            f"object-{i}|generic",
+            b"png",
+            ".png",
+            SketchOrigin.GENERATED,
+            SketchStatus.PASSED,
+            True,
+            prov,
+            description=f"a hand drawn picture of object number {i} on an old wooden table",
+        )
+    catalog = library.idea_catalog(version)
+    assert len(catalog) == 20
+    built: list[TrackedLLM] = []
+    scripted = ScriptedLLM()
+
+    def fake_make_llm(
+        ch: ChannelConfig, st: Settings, tracker: SpendTracker, pr: PriceTable
+    ) -> LLMClient:
+        wrapped = TrackedLLM(scripted, tracker, "anthropic", "claude-opus-5-5", pr)
+        built.append(wrapped)
+        return wrapped
+
+    monkeypatch.setattr(pipeline_module, "make_llm", fake_make_llm)
+    script = write_script(tmp_path, read("clean_en.txt"))
+    plan_series(script, english, settings, prices=prices)
+    [wrapped] = built
+    _, body = load_script(script, Language.ENGLISH)
+    estimate = pipeline_module.estimate_planning(body, english, prices, catalog=catalog)
+    actual = wrapped.tracker.spent
+    print(f"estimate={estimate} actual={actual}")
+    assert 0 < actual <= estimate
+    assert estimate < 3 * actual
+    # the prompts really carried the whole catalog
+    ideas = [u for _, u, o in scripted.calls if o is IdeaOut]
+    assert ideas and all("object-19|generic" in u for u in ideas)
+
+
+def test_estimate_counts_one_segment_system_per_call(
+    channel: ChannelConfig, prices: PriceTable
+) -> None:
+    paid = channel.model_copy(update={"llm": PAID_LLM})
+    one = pipeline_module.estimate_planning("a b c", paid, prices, catalog=[])
+    three = pipeline_module.estimate_planning("a b c", paid, prices, catalog=[], segment_calls=3)
+    assert three > one
+
+
+def test_large_catalog_estimate_uses_five_longest_lines(
+    channel: ChannelConfig, prices: PriceTable
+) -> None:
+    paid = channel.model_copy(update={"llm": PAID_LLM})
+    small = [(f"k{i}|generic", "x") for i in range(301)]
+    longer = small[:296] + [(f"k{i}|generic", "y" * 400) for i in range(5)]
+    low = pipeline_module.estimate_planning("a b c", paid, prices, catalog=small)
+    high = pipeline_module.estimate_planning("a b c", paid, prices, catalog=longer)
+    assert high > low
+
+
+def test_bundled_icons_load_before_any_spend(
+    tmp_path: Path,
+    channel: ChannelConfig,
+    settings: Settings,
+    prices: PriceTable,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken() -> BundledIcons:
+        raise ChannelConfigError("bundled icon index is broken")
+
+    monkeypatch.setattr(pipeline_module, "default_bundled_icons", broken)
+    fake = ScriptedLLM()
+    with pytest.raises(ChannelConfigError, match="bundled icon"):
+        plan_series(
+            write_script(tmp_path, read("clean_ar.txt")),
+            channel,
+            settings,
+            llm=fake,
+            corpus=fixture_corpus(),
+            prices=prices,
+        )
+    assert fake.calls == []

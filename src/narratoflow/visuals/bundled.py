@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from narratoflow.errors import InvalidIdeaKeyError
+from narratoflow.errors import ChannelConfigError, InvalidIdeaKeyError
 from narratoflow.library.keys import IdeaKey, parse_idea_key
 
 
@@ -23,6 +23,13 @@ class BundledIcons:
 
     @classmethod
     def from_index(cls, index_path: Path) -> "BundledIcons":
+        try:
+            return cls(cls._parse(index_path))
+        except (tomllib.TOMLDecodeError, KeyError, TypeError, OSError, UnicodeDecodeError) as exc:
+            raise ChannelConfigError(f"bundled icon index {index_path} is broken: {exc!r}") from exc
+
+    @staticmethod
+    def _parse(index_path: Path) -> dict[str, BundledIcon]:
         data = tomllib.loads(index_path.read_text(encoding="utf-8"))
         icons: dict[str, BundledIcon] = {}
         for raw_key, entry in data.get("icons", {}).items():
@@ -35,7 +42,7 @@ class BundledIcons:
                 license=entry["license"],
                 source=entry["source"],
             )
-        return cls(icons)
+        return icons
 
     def get(self, key: IdeaKey) -> BundledIcon | None:
         return self._icons.get(str(key))

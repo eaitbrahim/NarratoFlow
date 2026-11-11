@@ -45,7 +45,7 @@ class SegmentOut(BaseModel):
     scenes: list[SegmentSpan]
 
 
-def _collapse_ws(text: str) -> str:
+def collapse_ws(text: str) -> str:
     return _WS.sub(" ", text).strip()
 
 

@@ -8,6 +8,7 @@ the channel's spending limit. Only then is any LLM or embedding call made.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -32,7 +33,7 @@ from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.llm.base import LLMClient
 from narratoflow.llm.factory import make_llm
 from narratoflow.models import Language, Part, Scene, SceneKind, Series
-from narratoflow.planning.ideas import assign_ideas
+from narratoflow.planning.ideas import assign_ideas, render_candidates
 from narratoflow.planning.prompts import IDEAS_SYSTEM, SEGMENT_SYSTEM, TASHKEEL_SYSTEM
 from narratoflow.planning.segment import segment_script
 from narratoflow.planning.series import split_into_parts
@@ -52,8 +53,27 @@ _MATCH: dict[MatchKind, Literal["reused", "bundled", "new"]] = {
 }
 
 
+def _candidate_tokens(catalog: Sequence[tuple[str, str]]) -> int:
+    """Tokens of the candidate block one idea call carries, as `render_candidates` renders it.
+
+    A catalog up to the embed threshold is shown whole; a larger one is narrowed to the
+    top `CANDIDATE_TOP_K`, so its five longest lines are an upper bound.
+    """
+    if not catalog:
+        return 0
+    if len(catalog) <= CATALOG_EMBED_THRESHOLD:
+        return estimate_tokens(render_candidates(list(catalog)))
+    lines = sorted((estimate_tokens(render_candidates([entry])) for entry in catalog), reverse=True)
+    return sum(lines[:CANDIDATE_TOP_K])
+
+
 def estimate_planning(
-    text: str, channel: ChannelConfig, prices: PriceTable, *, catalog_size: int
+    text: str,
+    channel: ChannelConfig,
+    prices: PriceTable,
+    *,
+    catalog: Sequence[tuple[str, str]],
+    segment_calls: int = 1,
 ) -> Decimal:
     """The pre-call planning estimate for `text`, using the real system prompts."""
     return estimate_planning_cost(
@@ -63,7 +83,9 @@ def estimate_planning(
         segment_system_tokens=estimate_tokens(SEGMENT_SYSTEM),
         ideas_system_tokens=estimate_tokens(IDEAS_SYSTEM),
         tashkeel_system_tokens=estimate_tokens(TASHKEEL_SYSTEM),
-        catalog_size=catalog_size,
+        catalog_size=len(catalog),
+        candidate_tokens=_candidate_tokens(catalog),
+        segment_calls=segment_calls,
     )
 
 
@@ -125,24 +147,27 @@ def plan_series(
     tracker = SpendTracker(channel.spending_limit_usd)
     library = default_library(settings)
     version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
-    catalog_size = len(library.idea_catalog(version))
-    estimate = estimate_planning(text, channel, prices, catalog_size=catalog_size)
-    tracker.ensure_room(estimate, "planning")
-
-    if llm is None:
-        llm = make_llm(channel, settings, tracker, prices)
-    if embedder is None and catalog_size > CATALOG_EMBED_THRESHOLD:
-        embedder = make_embedder(channel, settings, tracker, prices)
+    catalog = library.idea_catalog(version)
+    bundled = default_bundled_icons()  # a broken index must fail before any spend
     arabic = channel.language is Language.ARABIC
-    diacritizer = _diacritizer(channel, llm) if arabic else None
     verses: list[VerseHit] = []
     if arabic:
         corpus = corpus if corpus is not None else default_corpus(settings)
         verses = detect_verses(text, corpus)
+    # segmentation makes one call per non-verse stretch: at most len(verses) + 1
+    estimate = estimate_planning(
+        text, channel, prices, catalog=catalog, segment_calls=len(verses) + 1
+    )
+    tracker.ensure_room(estimate, "planning")
+
+    if llm is None:
+        llm = make_llm(channel, settings, tracker, prices)
+    if embedder is None and len(catalog) > CATALOG_EMBED_THRESHOLD:
+        embedder = make_embedder(channel, settings, tracker, prices)
+    diacritizer = _diacritizer(channel, llm) if arabic else None
 
     scenes = segment_script(text, verses, llm)
     scenes = assign_ideas(scenes, _candidates(library, version, scenes, embedder), llm)
-    bundled = default_bundled_icons()
     scenes = [_match(library, version, s, bundled) for s in scenes]
     if diacritizer is not None:
         scenes = [vocalize_scene(s, diacritizer) for s in scenes]

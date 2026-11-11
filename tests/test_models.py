@@ -1,3 +1,4 @@
+import os
 from decimal import Decimal
 from pathlib import Path
 
@@ -138,7 +139,9 @@ def test_project_still_loads_v1(tmp_path: Path) -> None:
 
 def test_budget_error_message_has_values() -> None:
     e = BudgetExceededError(Decimal("1.20"), Decimal("1.00"))
-    assert "1.20" in str(e) and "1.00" in str(e)
+    assert "$1.20" in str(e) and "$1.00" in str(e)
+    fine = BudgetExceededError(Decimal("0.0123456"), Decimal("0.01"))
+    assert "$0.0123" in str(fine) and "$0.0123456" not in str(fine)
     assert e.estimate_usd == Decimal("1.20")
 
 
@@ -183,3 +186,19 @@ def test_series_load_missing_file(tmp_path: Path) -> None:
 def test_series_save_unwritable(tmp_path: Path) -> None:
     with pytest.raises(PlanningError, match="cannot write series"):
         _series().save(tmp_path / "no-such-dir" / "series.json")
+
+
+def test_series_save_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "series.json"
+    original = _series()
+    original.save(path)
+    before = path.read_text(encoding="utf-8")
+
+    def boom(src: object, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(PlanningError, match="cannot write series"):
+        original.model_copy(update={"title": "Other"}).save(path)
+    assert path.read_text(encoding="utf-8") == before
+    assert [p.name for p in tmp_path.iterdir()] == ["series.json"]

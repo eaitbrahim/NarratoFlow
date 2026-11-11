@@ -8,6 +8,8 @@ Bump `SCHEMA_VERSION` on breaking changes and add a migration.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -198,9 +200,18 @@ class Series(BaseModel):
     ai_disclosure: bool = True
 
     def save(self, path: Path) -> None:
+        """Write atomically: a temp file in the same directory, then `os.replace`."""
+        tmp_name: str | None = None
         try:
-            path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+            ) as tmp:
+                tmp_name = tmp.name
+                tmp.write(self.model_dump_json(indent=2))
+            os.replace(tmp_name, path)
         except OSError as exc:
+            if tmp_name is not None:
+                Path(tmp_name).unlink(missing_ok=True)
             raise PlanningError(f"cannot write series file {path}: {exc}") from exc
 
     @classmethod

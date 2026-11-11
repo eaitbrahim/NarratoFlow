@@ -138,12 +138,26 @@ def plan(
         Path | None,
         typer.Option("--out", help="Series file (default: series.json next to SCRIPT)."),
     ] = None,
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Re-plan over an existing series file "
+            "(discards its approval, sketches and recorded spend).",
+        ),
+    ] = False,
 ) -> None:
     """Plan a script into a series of parts; checks rights, keys and budget before any spend."""
     channel = load_channel(channel_toml)
     target = out if out is not None else script.with_name("series.json")
     if not target.parent.is_dir():
         raise PlanningError(f"output directory {target.parent} does not exist; nothing was spent")
+    if target.exists() and not replace:
+        raise PlanningError(
+            f"{target} already exists; nothing was spent. Continue with: "
+            f"narratoflow approve {target} (or the next stage), or re-plan with --replace, "
+            "which discards its approval, attached sketches and recorded spend"
+        )
     series = plan_series(script, channel, get_settings())
     if needs_approval(series, channel):
         series.save(target)

@@ -132,6 +132,16 @@ copy of that index inside the installed `narratoflow` package, not the repositor
 
 System requirement: `ffmpeg` on `PATH`.
 
+## Re-running after an error
+
+- `plan` refuses an existing series file; pass `--replace` to re-plan (this discards its approval, attached sketches and recorded spend).
+- `approve` is idempotent.
+- `sketch generate` keeps attached sketches and pays only for the missing ones.
+- `audio build` reuses each cached scene.
+- `render` re-renders the selected parts deterministically at no cost (pass `--part` for the unfinished ones it lists).
+- `review` asks with an estimate each time.
+- `publish` is free.
+
 ## Where settings live
 
 | Kind | Lives in | Examples |
@@ -149,7 +159,7 @@ docs/                PRD, SRD, REVIEW (suggestions), adr/
 src/narratoflow/
   models.py          storyboard.json IR (Project → Scene → Narration / Visual / Layout)
   interfaces.py      Protocols: Diacritizer, TTSEngine, Aligner, LLM, VisualProvider, Renderer
-  pipeline/          orchestrator + content-addressed stage cache
+  pipeline/          content-addressed stage cache
   text/              ingest, language/dialect, protected spans, tashkeel (+ skeleton guard), scene planner
   llm/               Ollama client (structured JSON output)
   tts/               edge-tts, Piper

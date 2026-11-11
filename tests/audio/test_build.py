@@ -591,6 +591,25 @@ def test_spent_written_back_and_cache_rerun_spends_zero(
     assert PartTimeline.load(rerun.parts[0].timeline_path).spent_usd == Decimal("0.50") + paid
 
 
+def test_editing_one_scene_revoices_only_that_scene(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    s = make_series([narr("s1", "alpha beta"), narr("s2", "gamma delta")])
+    out, _ = run(s, channel, settings, tmp_path, voices=[FakeVoice()], library=library, pack=pack)
+    scene = out.parts[0].scenes[1]
+    scene.narration.source_text = "gamma epsilon"  # the skeleton guard ties tts_text to it
+    scene.narration.tts_text = "gamma epsilon"
+    scene.narration.caption_text = "gamma epsilon"
+    again = FakeVoice()
+    _, rerun = run(out, channel, settings, tmp_path, voices=[again], library=library, pack=pack)
+    assert [r.text for r in again.requests] == ["gamma epsilon"]
+    assert rerun.spent_usd == cost("gamma epsilon")
+
+
 def test_missing_strokes_refused_before_spend(
     channel: ChannelConfig,
     settings: Settings,

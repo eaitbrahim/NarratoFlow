@@ -1,1 +1,1 @@
-"""Pipeline orchestration."""
+"""Content-addressed stage cache."""

@@ -390,6 +390,46 @@ def test_cli_plan_checks_out_dir_before_planning(
     assert code == 1
 
 
+def _existing_series(tmp_path: Path) -> tuple[Path, bytes]:
+    script = _script(tmp_path)
+    target = script.with_name("series.json")
+    _planned_series().save(target)
+    return script, target.read_bytes()
+
+
+def test_plan_refuses_to_overwrite_a_series(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def boom(*args: object) -> Series:
+        raise AssertionError("planner must not run when the series file exists")
+
+    monkeypatch.setattr(cli, "plan_series", boom)
+    script, before = _existing_series(tmp_path)
+    code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file))
+    err = " ".join(capsys.readouterr().err.split())  # stderr wraps at the terminal width
+    assert code == 1
+    assert "already exists; nothing was spent" in err
+    assert "--replace" in err
+    assert script.with_name("series.json").read_bytes() == before
+
+
+def test_plan_replace_overwrites(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, before = _existing_series(tmp_path)
+    fresh = _planned_series()
+    fresh.est_planning_cost_usd = Decimal("0.5")
+    _patch_plan(monkeypatch, fresh)
+    code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file), "--replace")
+    assert code == 0
+    target = script.with_name("series.json")
+    assert target.read_bytes() != before
+    assert Series.load(target).est_planning_cost_usd == Decimal("0.5")
+
+
 def test_cli_approve_bad_file_exit_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

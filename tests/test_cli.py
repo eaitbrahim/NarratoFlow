@@ -1336,3 +1336,279 @@ def test_render_interrupt_before_any_part(
     code = run_main(monkeypatch, *_render_args(path, channel_file))
     assert code == 130
     assert "no part finished" in capsys.readouterr().err
+
+
+# --- review / publish -------------------------------------------------------
+
+
+def _publish_part(
+    part: int, count: int, checks: list[tuple[str, str, str | None, str | None]], exported: bool
+) -> Any:
+    from narratoflow.publish.build import PartPublish
+    from narratoflow.publish.checks import CheckId, CheckResult, Severity, worst
+
+    results = [
+        CheckResult(
+            check=CheckId(c), severity=Severity(sev), reason="why", scene_id=scene, platform=plat
+        )
+        for c, sev, scene, plat in checks
+    ]
+    report = SimpleNamespace(
+        part_index=part, part_count=count, checks=results, verdict=worst(results)
+    )
+    return PartPublish(
+        index=part,
+        report=report,  # type: ignore[arg-type]
+        report_path=Path(f"/o/part-{part:02d}.publish.md"),
+        export_path=Path(f"/e/part-{part:02d}.mp4") if exported else None,
+    )
+
+
+def _patch_publish(monkeypatch: pytest.MonkeyPatch, result: Any = None) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+
+    def fake(series: Series, channel: ChannelConfig, settings: Settings, **kw: Any) -> Any:
+        seen.append(kw)
+        return result
+
+    monkeypatch.setattr(cli, "build_publish", fake)
+    return seen
+
+
+def _publish_args(path: Path, channel_file: Path, *extra: str) -> list[str]:
+    return ["publish", str(path), "--channel", str(channel_file), *extra]
+
+
+def test_publish_prints_verdicts_and_reasons_exit_0_when_none_blocked(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.publish.build import PublishResult
+
+    path = _approved_series(tmp_path)
+    before = path.read_bytes()
+    parts = [
+        _publish_part(1, 2, [("rules_file", "WARN", None, None)], True),
+        _publish_part(2, 2, [("render_current", "PASS", None, None)], True),
+    ]
+    _patch_publish(monkeypatch, PublishResult(parts, Path("/e/series.publish.md"), []))
+    out = runner.invoke(cli.app, _publish_args(path, channel_file))
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    assert "part 1/2: WARN (0 fail, 1 warn) -> /e/part-01.mp4" in text
+    assert "WARN rules_file: why" in text and "report: /o/part-01.publish.md" in text
+    assert "part 2/2: PASS (0 fail, 0 warn)" in text
+    assert "series summary: /e/series.publish.md" in text
+    assert path.read_bytes() == before
+
+
+def test_publish_blocked_exits_1_naming_parts(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.publish.build import PublishResult
+
+    path = _approved_series(tmp_path)
+    before = path.read_bytes()
+    part = _publish_part(
+        1,
+        1,
+        [("asset_provenance", "FAIL", "s001", "tiktok"), ("rules_file", "WARN", None, None)],
+        False,
+    )
+    _patch_publish(monkeypatch, PublishResult([part], Path("/e/series.publish.md"), [1]))
+    code = run_main(monkeypatch, *_publish_args(path, channel_file))
+    captured = capsys.readouterr()
+    text = " ".join(captured.out.split())
+    assert code == 1
+    assert "part 1/1: FAIL (1 fail, 1 warn) -> not exported" in text
+    assert "FAIL asset_provenance s001 tiktok: why" in text
+    assert "export blocked for part(s) 1: fix every FAIL above" in captured.err
+    assert "Traceback" not in captured.err
+    assert path.read_bytes() == before
+
+
+def test_publish_default_dirs_and_part_filter(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.publish.build import PublishResult
+
+    path = _approved_series(tmp_path)
+    seen = _patch_publish(monkeypatch, PublishResult([], Path("/e/s.md"), []))
+    out = runner.invoke(cli.app, _publish_args(path, channel_file, "--part", "2", "--part", "3"))
+    assert out.exit_code == 0, out.output
+    assert seen[0]["audio_dir"] == tmp_path / "audio" == seen[0]["render_dir"]
+    assert seen[0]["export_dir"] == tmp_path / "export" and seen[0]["parts"] == [2, 3]
+    runner.invoke(
+        cli.app,
+        _publish_args(
+            path,
+            channel_file,
+            "--audio",
+            str(tmp_path / "a"),
+            "--render",
+            str(tmp_path / "r"),
+            "--export",
+            str(tmp_path / "x"),
+        ),
+    )
+    assert seen[1]["audio_dir"] == tmp_path / "a" and seen[1]["render_dir"] == tmp_path / "r"
+    assert seen[1]["export_dir"] == tmp_path / "x" and seen[1]["parts"] is None
+    runner.invoke(cli.app, _publish_args(path, channel_file, "--audio", str(tmp_path / "a")))
+    assert seen[2]["render_dir"] == tmp_path / "a"
+
+
+def test_publish_missing_render_report_exits_1(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    before = path.read_bytes()
+    code = run_main(monkeypatch, *_publish_args(path, channel_file))
+    err = capsys.readouterr().err
+    assert code == 1 and "Traceback" not in err and err.strip()
+    assert path.read_bytes() == before
+    code = run_main(monkeypatch, *_publish_args(path, channel_file, "--part", "9"))
+    assert code == 1 and "no part 9" in capsys.readouterr().err
+
+
+def _review_channel(channel_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    text = channel_file.read_text(encoding="utf-8")
+    channel_file.write_text(
+        text.replace(
+            'provider = "ollama"\nmodel = "qwen2.5"',
+            'provider = "anthropic"\nmodel = "claude-haiku-5-5"',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NARRATOFLOW_LLM_API_KEY", "llm")
+
+
+def _patch_review(
+    monkeypatch: pytest.MonkeyPatch, result: Any = None, raises: BaseException | None = None
+) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+    client = object()
+    monkeypatch.setattr(cli, "build_llm_client", lambda cfg, settings: client)
+
+    def fake(series: Series, channel: ChannelConfig, settings: Settings, **kw: Any) -> Any:
+        seen.append({**kw, "client": client})
+        if raises is not None:
+            raise raises
+        return result
+
+    monkeypatch.setattr(cli, "review_series", fake)
+    return seen
+
+
+def _review_args(path: Path, channel_file: Path, *extra: str) -> list[str]:
+    return ["review", str(path), "--channel", str(channel_file), *extra]
+
+
+def test_review_asks_with_estimate_and_no_leaves_series_unchanged(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _review_channel(channel_file, monkeypatch)
+    path = _approved_series(tmp_path)
+    before = path.read_bytes()
+    seen = _patch_review(monkeypatch, (Series.load(path), None))
+    asked: list[str] = []
+
+    def no(text: str, *a: object, **k: object) -> bool:
+        asked.append(text)
+        return False
+
+    monkeypatch.setattr("typer.confirm", no)
+    out = runner.invoke(cli.app, _review_args(path, channel_file))
+    assert out.exit_code == 0, out.output
+    assert len(asked) == 1
+    assert asked[0].startswith("Review content rules for 1 part(s)? Estimated cost $")
+    assert "Unchanged." in out.output and seen == []
+    assert path.read_bytes() == before
+
+
+def test_review_yes_saves_findings_and_spend(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.publish.review import ReviewResult
+
+    _review_channel(channel_file, monkeypatch)
+    path = _approved_series(tmp_path)
+    updated = Series.load(path)
+    updated.parts[0].spent_usd = Decimal("0.02")
+    result = ReviewResult(
+        reviewed=[1],
+        findings=3,
+        spent_usd=Decimal("0.02"),
+        per_part=[(1, 1, 2, Decimal("0.02"))],
+    )
+    seen = _patch_review(monkeypatch, (updated, result))
+    out = runner.invoke(cli.app, _review_args(path, channel_file, "--yes", "--part", "1"))
+    assert out.exit_code == 0, out.output
+    assert "part 1: 3 finding(s) (1 fail, 2 warn), spent $0.02" in out.output
+    assert "total spent $0.02" in out.output
+    assert seen[0]["llm"] is seen[0]["client"] and seen[0]["parts"] == [1]
+    assert Series.load(path).parts[0].spent_usd == Decimal("0.02")
+
+
+def test_review_interrupted_saves_partial(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.publish.review import ReviewInterruptedError, ReviewResult
+
+    _review_channel(channel_file, monkeypatch)
+    path = _approved_series(tmp_path)
+    partial = Series.load(path)
+    partial.parts[0].spent_usd = Decimal("0.05")
+    done = ReviewResult(spent_usd=Decimal("0.05"))
+    exc = ReviewInterruptedError(BudgetExceededError(Decimal("2"), Decimal("1")), (partial, done))
+    _patch_review(monkeypatch, raises=exc)
+    code = run_main(monkeypatch, *_review_args(path, channel_file, "--yes"))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "progress so far is kept" in captured.err and "Traceback" not in captured.err
+    assert "total spent $0.05" in captured.out
+    assert Series.load(path).parts[0].spent_usd == Decimal("0.05")
+
+
+def test_review_missing_key_refused_before_prompt(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _review_channel(channel_file, monkeypatch)
+    monkeypatch.delenv("NARRATOFLOW_LLM_API_KEY", raising=False)
+    path = _approved_series(tmp_path)
+    asked = _no_confirm(monkeypatch)
+    code = run_main(monkeypatch, *_review_args(path, channel_file))
+    assert code == 1 and asked == []
+    assert "NARRATOFLOW_LLM_API_KEY" in capsys.readouterr().err
+
+
+def test_review_unapproved_refused_and_confirmed_run_proceeds(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.publish.review import ReviewResult
+
+    _review_channel(channel_file, monkeypatch)
+    plain = tmp_path / "plain.json"
+    _planned_series().save(plain)
+    asked = _no_confirm(monkeypatch)
+    seen = _patch_review(monkeypatch, (Series.load(plain), ReviewResult()))
+    assert run_main(monkeypatch, *_review_args(plain, channel_file)) == 1
+    assert "approve the series first" in capsys.readouterr().err
+    assert asked == [] and seen == []
+    path = _approved_series(tmp_path)
+    out = runner.invoke(cli.app, _review_args(path, channel_file))
+    assert out.exit_code == 0, out.output
+    assert len(asked) == 1 and len(seen) == 1

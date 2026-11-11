@@ -62,6 +62,7 @@ def test_request_shape_path_header_body_and_output_format() -> None:
     assert dict(r.url.params) == {"output_format": "mp3_44100_128"}
     assert r.headers["xi-api-key"] == KEY
     assert json.loads(r.content) == {"text": "ab", "model_id": "eleven_multilingual_v2"}
+    assert r.extensions["timeout"]["read"] == 120.0
     assert speech.audio == AUDIO
     assert (speech.provider, speech.model) == ("elevenlabs", "eleven_multilingual_v2")
 
@@ -167,3 +168,28 @@ def test_bad_voice_id_rejected_before_request(voice: str) -> None:
 
 def test_voice_id_regex_accepts_valid() -> None:
     assert ELEVENLABS_VOICE_ID_RE.fullmatch(VOICE)
+
+
+@pytest.mark.parametrize(("start", "end"), [(-0.1, 0.2), (0.5, 0.2), (0.0, 1e300), (0.0, 3600.5)])
+def test_out_of_range_times_raise(start: float, end: float) -> None:
+    bad = {
+        "characters": ["a"],
+        "character_start_times_seconds": [start],
+        "character_end_times_seconds": [end],
+    }
+    with pytest.raises(ProviderError, match="alignment"):
+        provider(ok(alignment=bad)).synthesize(req())
+
+
+def test_503_message_has_no_body_text() -> None:
+    h: Handler = lambda r: httpx.Response(503, text="upstream says ab")  # noqa: E731
+    with pytest.raises(ProviderError) as ei:
+        provider(h).synthesize(req())
+    assert "HTTP 503" in str(ei.value) and "upstream" not in str(ei.value)
+
+
+def test_non_json_200_body_raises_without_body_text() -> None:
+    h: Handler = lambda r: httpx.Response(200, text="<html>secret ab</html>")  # noqa: E731
+    with pytest.raises(ProviderError) as ei:
+        provider(h).synthesize(req())
+    assert "secret" not in str(ei.value)

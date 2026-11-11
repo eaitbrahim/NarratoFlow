@@ -30,6 +30,7 @@ from narratoflow.tts import Speech, SpeechRequest
 BASE_URL = "https://api.elevenlabs.io/v1"
 OUTPUT_FORMAT = "mp3_44100_128"
 TIMEOUT_S = 120.0
+MAX_SECONDS = 3600
 ELEVENLABS_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
 
 
@@ -110,9 +111,18 @@ def _audio(encoded: object) -> bytes:
 
 
 def _ms(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         raise ProviderError("ElevenLabs alignment has a non-numeric time")
+    if not math.isfinite(value) or abs(value) > MAX_SECONDS * 10:
+        raise ProviderError("ElevenLabs alignment times are out of range")
     return round(value * 1000)
+
+
+def _checked_ms(start: object, end: object) -> tuple[int, int]:
+    s, e = _ms(start), _ms(end)
+    if not 0 <= s <= e <= MAX_SECONDS * 1000:
+        raise ProviderError("ElevenLabs alignment times are out of range")
+    return s, e
 
 
 def _spans(alignment: object) -> tuple[TimedSpan, ...]:
@@ -130,6 +140,8 @@ def _spans(alignment: object) -> tuple[TimedSpan, ...]:
     if not all(isinstance(c, str) for c in chars):
         raise ProviderError("ElevenLabs alignment characters are not strings")
     return tuple(
-        TimedSpan(text=c, start_ms=_ms(s), end_ms=_ms(e))
-        for c, s, e in zip(chars, starts, ends, strict=True)
+        TimedSpan(text=c, start_ms=ms[0], end_ms=ms[1])
+        for c, ms in zip(
+            chars, (_checked_ms(s, e) for s, e in zip(starts, ends, strict=True)), strict=True
+        )
     )

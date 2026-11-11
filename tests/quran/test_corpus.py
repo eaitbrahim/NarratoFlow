@@ -101,3 +101,42 @@ def test_quran_sources_are_ascii() -> None:
     root = Path(corpus_module.__file__).parent
     for name in ("normalize.py", "corpus.py", "__init__.py"):
         (root / name).read_text(encoding="utf-8").encode("ascii")
+
+
+@pytest.mark.parametrize(
+    "mark", ["\u200c", "\u200d", "\u200e", "\u200f", "\u061c", "\ufeff", "\u0610", "\u061a"]
+)
+def test_normalize_strips_invisible_marks(mark: str) -> None:
+    assert match_normalize(f"ال{mark}حمد") == "الحمد"
+
+
+def test_normalize_strips_extended_marks() -> None:
+    assert match_normalize("ال\u08d3حم\u08ffد") == "الحمد"
+
+
+@pytest.mark.parametrize("punct", [":", "\u060c", "\u061b", "\u061f", "\u06d4", "\ufd3f", "."])
+def test_normalize_punctuation_becomes_space(punct: str) -> None:
+    assert match_normalize(f"قال{punct}والله") == "قال والله"
+
+
+def _write(path: Path, body: str) -> Path:
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_corpus_rejects_non_ascii_digits(tmp_path: Path) -> None:
+    bad = _write(tmp_path / "bad.txt", "\u0661\u0669|1|text\n")
+    with pytest.raises(VerseCorpusError, match="malformed"):
+        QuranCorpus.from_files(bad, bad)
+
+
+def test_corpus_rejects_duplicate_key(tmp_path: Path) -> None:
+    bad = _write(tmp_path / "dup.txt", "19|1|one\n19|1|two\n")
+    with pytest.raises(VerseCorpusError, match="duplicate"):
+        QuranCorpus.from_files(bad, bad)
+
+
+def test_text_range_reversed_raises() -> None:
+    c = QuranCorpus.from_files(SIMPLE, UTHMANI)
+    with pytest.raises(VerseCorpusError, match="start"):
+        c.text_range(19, 3, 1)

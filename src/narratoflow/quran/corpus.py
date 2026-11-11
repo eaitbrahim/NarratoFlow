@@ -23,6 +23,10 @@ class Ayah:
     norm_words: tuple[str, ...]
 
 
+def _is_number(field: str) -> bool:
+    return field.isascii() and field.isdigit()
+
+
 def _load(path: Path) -> dict[tuple[int, int], str]:
     try:
         raw = path.read_text(encoding="utf-8")
@@ -33,9 +37,12 @@ def _load(path: Path) -> dict[tuple[int, int], str]:
         if not line.strip() or line.startswith("#"):
             continue
         parts = line.split("|", 2)
-        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+        if len(parts) != 3 or not all(_is_number(p) for p in parts[:2]):
             raise VerseCorpusError(f"{path}:{number}: malformed corpus line")
-        rows[(int(parts[0]), int(parts[1]))] = parts[2].strip()
+        key = (int(parts[0]), int(parts[1]))
+        if key in rows:
+            raise VerseCorpusError(f"{path}:{number}: duplicate ayah {key[0]}:{key[1]}")
+        rows[key] = parts[2].strip()
     return rows
 
 
@@ -73,6 +80,8 @@ class QuranCorpus:
 
     def text_range(self, surah: int, start: int, end: int) -> str:
         """Joined Uthmani text of ayat start..end (inclusive) of a surah."""
+        if start > end:
+            raise VerseCorpusError(f"bad ayah range {surah}:{start}-{end}: start > end")
         return " ".join(self.ayah(surah, n).uthmani for n in range(start, end + 1))
 
 

@@ -70,3 +70,7 @@ class PlanningError(NarratoFlowError):
 
 class VerseCorpusError(NarratoFlowError):
     """The verse corpus is missing, corrupt or cannot resolve a reference."""
+
+
+class SketchRejectedError(NarratoFlowError):
+    """A generated sketch is not clean line art (empty, filled or hatched)."""

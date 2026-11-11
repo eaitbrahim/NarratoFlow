@@ -36,14 +36,14 @@ def check_rights(source: ScriptSource) -> None:
 
 
 def _split(raw: str) -> tuple[str, str]:
-    lines = raw.removeprefix("﻿").replace("\r\n", "\n").split("\n")
-    if lines[0].strip() != _FENCE:
+    lines = raw.removeprefix("\ufeff").replace("\r\n", "\n").split("\n")
+    if lines[0].rstrip() != _FENCE:
         raise ScriptBlockedError(
             f"declare the script source: the file must start with a front-matter block, "
             f"for example:\n{_EXAMPLE}"
         )
     for index in range(1, len(lines)):
-        if lines[index].strip() == _FENCE:
+        if lines[index].rstrip() == _FENCE:
             return "\n".join(lines[1:index]), "\n".join(lines[index + 1 :])
     raise ScriptBlockedError(f"front matter has no closing '{_FENCE}' line.")
 

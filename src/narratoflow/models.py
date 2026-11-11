@@ -13,7 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from narratoflow.errors import PlanningError
 
@@ -104,6 +104,8 @@ class RightsBasis(StrEnum):
 
 
 class ScriptSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     author: str
     work: str
     edition: str = ""

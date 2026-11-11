@@ -4,7 +4,8 @@ import pytest
 from conftest import FIXTURES
 
 from narratoflow.errors import CorruptInputError, ScriptBlockedError
-from narratoflow.models import Language, RightsBasis
+from narratoflow.models import Language, RightsBasis, ScriptSource
+from narratoflow.script import source as source_module
 from narratoflow.script.source import check_rights, load_script
 
 
@@ -101,6 +102,31 @@ def test_ai_transcribed_flag_kept(tmp_path: Path) -> None:
 
 
 def test_check_rights_direct() -> None:
-    from narratoflow.models import ScriptSource
-
     check_rights(ScriptSource(author="a", work="w", rights=RightsBasis.PUBLIC_DOMAIN))
+
+
+def test_unknown_key_rejected(tmp_path: Path) -> None:
+    p = write_script(tmp_path, "own", "body", 'permission_notes = "x"\n')
+    with pytest.raises(ScriptBlockedError, match="permission_notes"):
+        load_script(p, Language.ENGLISH)
+
+
+def test_indented_fence_not_accepted(tmp_path: Path) -> None:
+    p = tmp_path / "s.txt"
+    p.write_text(' +++\nauthor = "A"\n+++\nbody', encoding="utf-8")
+    with pytest.raises(ScriptBlockedError, match=r"\+\+\+"):
+        load_script(p, Language.ENGLISH)
+
+
+def test_bom_and_crlf_load(tmp_path: Path) -> None:
+    text = '+++\nauthor = "A"\nwork = "W"\nrights = "own"\n+++\n' + read("clean_en.txt")
+    p = tmp_path / "s.txt"
+    p.write_bytes(b"\xef\xbb\xbf" + text.replace("\n", "\r\n").encode("utf-8"))
+    source, body = load_script(p, Language.ENGLISH)
+    assert source.author == "A"
+    assert "\r" not in body
+
+
+def test_source_module_is_ascii() -> None:
+    path = Path(source_module.__file__ or "")
+    assert path.read_bytes().isascii()

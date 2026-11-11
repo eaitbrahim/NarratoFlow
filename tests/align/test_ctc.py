@@ -24,8 +24,11 @@ No model is downloaded and nothing touches the network.
 
 from __future__ import annotations
 
+import importlib.abc
 import importlib.machinery
 import sys
+import threading
+import time
 import types
 from collections.abc import Iterator
 from typing import Any
@@ -211,6 +214,63 @@ def test_missing_extra_raises_aligner_unavailable(
     assert str(exc.value) == "install the 'align' extra: uv sync --extra align"
     assert str(exc.value) == EXTRA_HINT
     assert not isinstance(exc.value, ImportError)
+
+
+class _BrokenFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Finds `ctc_forced_aligner` but fails while executing it, as librosa can."""
+
+    def find_spec(self, fullname: str, path: Any, target: Any = None) -> Any:
+        if fullname != "ctc_forced_aligner":
+            return None
+        return importlib.machinery.ModuleSpec(fullname, self)
+
+    def create_module(self, spec: Any) -> None:
+        return None
+
+    def exec_module(self, module: types.ModuleType) -> None:
+        raise OSError("SECRET sndfile library not found")
+
+
+def test_broken_library_import_raises_aligner_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fakes(monkeypatch)
+    monkeypatch.delitem(sys.modules, "ctc_forced_aligner")
+    monkeypatch.setattr(sys, "meta_path", [_BrokenFinder(), *sys.meta_path])
+    with pytest.raises(AlignerUnavailableError) as exc:
+        CtcAligner().align(SAMPLES, 48_000, "hello", Language.ENGLISH)
+    assert str(exc.value) == f"ctc aligner failed to import (OSError); {EXTRA_HINT}"
+    assert "SECRET" not in str(exc.value)
+    assert "ctc_forced_aligner" not in sys.modules
+
+
+def test_concurrent_first_calls_load_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = install_fakes(monkeypatch)
+    cfa = sys.modules["ctc_forced_aligner"]
+    real_ensure = cfa.ensure_onnx_model
+
+    def slow_ensure(model_path: str, url: str) -> None:
+        time.sleep(0.05)
+        real_ensure(model_path, url)
+
+    monkeypatch.setattr(cfa, "ensure_onnx_model", slow_ensure)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            CtcAligner().align(SAMPLES, 48_000, "hello", Language.ENGLISH)
+        except BaseException as err:  # pragma: no cover - reported below
+            errors.append(err)
+
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert errors == []
+    assert len(calls.named("InferenceSession")) == 1
+    assert len(calls.named("ensure_onnx_model")) == 1
+    assert len(calls.named("generate_emissions")) == 6
 
 
 def test_constructor_imports_nothing(monkeypatch: pytest.MonkeyPatch) -> None:

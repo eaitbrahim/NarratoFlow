@@ -153,8 +153,11 @@ def test_resample_to_16k_length(ffmpeg_bin: str) -> None:
     src = tone(2000)
     out = aio.resample(src, 16_000)
     assert out.dtype == np.float32
-    assert abs(len(out) - 32_000) <= 16_000 * 30 // 1000
-    assert float(np.sqrt(np.mean(out**2))) > 0.05
+    assert len(src) == 96_000
+    assert len(out) == 32_000
+    spectrum = np.abs(np.fft.rfft(out))
+    peak_hz = float(np.argmax(spectrum)) * 16_000 / len(out)
+    assert abs(peak_hz - 440) <= 2
 
 
 def test_resample_rejects_bad_rate() -> None:

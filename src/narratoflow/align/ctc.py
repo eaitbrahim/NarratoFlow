@@ -20,8 +20,9 @@ The aligner sees ``strip_diacritics(text)``. It returns the words of that text, 
 
 A missing extra (``ctc_forced_aligner``, ``onnxruntime`` or ``unidecode``) raises
 ``AlignerUnavailableError``: it is the one type callers catch for "aligner not
-installed". Every other library failure is a ``ProviderError`` naming only the
-exception type.
+installed"; an import that fails for another reason (librosa and numba can raise
+OSError and others) is one too, naming only the exception type. Every other
+library failure is a ``ProviderError`` naming only the exception type.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import functools
 import importlib
 import importlib.util
 import math
+import threading
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -60,7 +62,15 @@ def _modules() -> tuple[ModuleType, ModuleType]:
         loaded = [importlib.import_module(name) for name in REQUIRED_MODULES]
     except ImportError as err:
         raise AlignerUnavailableError(EXTRA_HINT) from err
+    except Exception as err:  # librosa/numba can fail at import with OSError and others
+        raise AlignerUnavailableError(
+            f"ctc aligner failed to import ({type(err).__name__}); {EXTRA_HINT}"
+        ) from err
     return loaded[0], loaded[1]
+
+
+_LOAD_LOCK = threading.Lock()
+"""Serializes the first model load: functools.cache alone lets concurrent callers each load."""
 
 
 @functools.cache
@@ -119,7 +129,8 @@ class CtcAligner:
         wave = resample(samples, ALIGN_RATE)
         path = str(self.model_path or default_model_path())
         try:
-            session, tokenizer = _load_model(path, self.device)
+            with _LOAD_LOCK:
+                session, tokenizer = _load_model(path, self.device)
             emissions, stride = cfa.generate_emissions(session, wave)
             tokens_starred, text_starred = cfa.preprocess_text(
                 bare, romanize=True, language=ISO_LANGUAGE[language]

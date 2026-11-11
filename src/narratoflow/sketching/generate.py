@@ -30,7 +30,12 @@ from narratoflow.channels.config import (
 )
 from narratoflow.channels.keys import check_provider_keys
 from narratoflow.costs.prices import PriceTable, default_prices
-from narratoflow.costs.tracker import SpendTracker, TrackedLLM, require_generation_prices
+from narratoflow.costs.tracker import (
+    SpendTracker,
+    TrackedLLM,
+    add_spend,
+    require_generation_prices,
+)
 from narratoflow.errors import (
     ChannelConfigError,
     NarratoFlowError,
@@ -589,9 +594,11 @@ def generate_missing(
             except NarratoFlowError as e:
                 part.scenes[i] = run.interrupted(scene)
                 part.spent_usd = tracker.spent
+                add_spend(part.spend, tracker)
                 result.spent_usd = delta()
                 raise GenerationInterruptedError(e, (out.model_copy(deep=True), result)) from e
         part.spent_usd = tracker.spent
+        add_spend(part.spend, tracker)
     result.spent_usd = delta()
     logger.info(
         "sketches: %d generated, %d reused, %d bundled, %d kept, %d quarantined",

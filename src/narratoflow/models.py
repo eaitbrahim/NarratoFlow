@@ -190,6 +190,12 @@ class Part(BaseModel):
     est_cost_usd: Decimal = Decimal(0)
     spent_usd: Decimal = Decimal(0)
     """Cumulative actual spend of paid stages against this part's limit."""
+    spend: dict[str, Decimal] = Field(default_factory=dict)
+    """Cumulative actual spend per charge line, keyed by the tracker's `what` (for
+    example "image openai/gpt-image-1", "voice elevenlabs/eleven_multilingual_v2",
+    "llm anthropic/<model>", "vision anthropic/<model>"). Series written before this
+    field existed may have `sum(spend) < spent_usd`; the report shows the difference
+    as unattributed."""
 
     @property
     def est_duration_s(self) -> float:

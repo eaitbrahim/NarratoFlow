@@ -18,6 +18,7 @@ from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import (
     SpendTracker,
     TrackedLLM,
+    add_spend,
     estimate_llm_call,
     estimate_part_cost,
     estimate_planning_cost,
@@ -476,3 +477,27 @@ def test_tracked_llm_refusal_still_charges_nothing(prices: PriceTable) -> None:
     with pytest.raises(ProviderRefusalError):
         llm.complete_structured(system="s", user="u", output=Out)
     assert t.spent == 0 and llm.cost_estimated is False
+
+
+def test_by_what_sums_entries_in_order() -> None:
+    tracker = SpendTracker(None, spent=Decimal("5"))  # the seed is not in the entries
+    tracker.charge(Decimal("0.1"), "image a/b")
+    tracker.charge(Decimal("0.2"), "voice c/d")
+    tracker.charge(Decimal("0.3"), "image a/b")
+    assert list(tracker.by_what().items()) == [
+        ("image a/b", Decimal("0.4")),
+        ("voice c/d", Decimal("0.2")),
+    ]
+    assert SpendTracker(None).by_what() == {}
+
+
+def test_add_spend_accumulates_across_stages() -> None:
+    ledger: dict[str, Decimal] = {"image a/b": Decimal("0.1")}
+    first = SpendTracker(None)
+    first.charge(Decimal("0.2"), "image a/b")
+    first.charge(Decimal("0.5"), "voice c/d")
+    add_spend(ledger, first)
+    second = SpendTracker(None)
+    second.charge(Decimal("0.05"), "voice c/d")
+    add_spend(ledger, second)
+    assert ledger == {"image a/b": Decimal("0.3"), "voice c/d": Decimal("0.55")}

@@ -8,11 +8,15 @@ never mutated.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from narratoflow.channels.config import ChannelConfig
+from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import PlanningError
+from narratoflow.images import ImageProvider
 from narratoflow.library.keys import parse_idea_key
+from narratoflow.library.repository import SketchLibrary
+from narratoflow.llm.base import LLMClient
 from narratoflow.models import Scene, SceneKind, Series, VisualSource
 from narratoflow.planning.ideas import IdeaOut, validate_idea
 from narratoflow.settings import Settings
@@ -82,21 +86,36 @@ def check_regenerable(series: Series, scene_id: str) -> str:
 
 
 def regenerate(
-    series: Series, scene_id: str, channel: ChannelConfig, settings: Settings, **deps: Any
+    series: Series,
+    scene_id: str,
+    channel: ChannelConfig,
+    settings: Settings,
+    *,
+    images: ImageProvider | None = None,
+    vision: LLMClient | Literal["auto"] | None = "auto",
+    library: SketchLibrary | None = None,
+    prices: PriceTable | None = None,
 ) -> tuple[Series, GenerationResult]:
     """Generate a new sketch for one quarantined scene (a paid call: confirm first).
 
     The scene's attempt counter goes up so the image seed differs from the earlier
     one. Returns the new series and the run's result: when the new sketch fails too
-    the scene is quarantined again (listed in `result.quarantined`). `deps` are
-    `generate_missing`'s `images`, `vision`, `library` and `prices`. Refuses what
+    the scene is quarantined again (listed in `result.quarantined`). `images`,
+    `vision`, `library` and `prices` are `generate_missing`'s. Refuses what
     `check_regenerable` refuses. May raise `GenerationInterruptedError` like
     `generate_missing`.
     """
     prepared = _resolved(series, scene_id, _regenerated)
     try:
         out, result = generate_missing(
-            prepared, channel, settings, only=frozenset({scene_id}), **deps
+            prepared,
+            channel,
+            settings,
+            images=images,
+            vision=vision,
+            library=library,
+            prices=prices,
+            only=frozenset({scene_id}),
         )
     except GenerationInterruptedError as e:
         # the creator confirmed this attempt only: a scene left without a sketch goes

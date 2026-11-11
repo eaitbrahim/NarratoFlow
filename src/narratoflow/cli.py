@@ -17,6 +17,7 @@ from narratoflow.costs.tracker import require_generation_prices
 from narratoflow.errors import CorruptInputError, LibraryError, NarratoFlowError, PlanningError
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import SketchStatus
+from narratoflow.llm.factory import build_llm_client, vision_llm_config
 from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
@@ -27,6 +28,7 @@ from narratoflow.sketching.generate import (
     GenerationInterruptedError,
     GenerationResult,
     generate_missing,
+    require_series_channel,
 )
 from narratoflow.sketching.resolve import (
     check_regenerable,
@@ -265,7 +267,11 @@ def sketch_resolve(
     # everything that can refuse without spend is checked before asking for money
     settings = get_settings()
     idea_key = check_regenerable(series, scene_id)
+    require_series_channel(series, channel)
     check_provider_keys(channel, settings)
+    vision_cfg = vision_llm_config(channel)
+    if vision_cfg is not None:
+        build_llm_client(vision_cfg, settings)  # refuses on a missing key; no network call
     prices = default_prices(settings)
     require_generation_prices(channel, prices, vision=True)
     if not yes:

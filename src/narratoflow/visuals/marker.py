@@ -96,8 +96,6 @@ def render_marker(
                     t = remaining / d if d > 0 else 0.0
                     cut.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
                     break
-            if len(cut) < 2:
-                break
         half = weight / 2.0
         for a, b in itertools.pairwise(cut):
             d = math.dist(a, b)

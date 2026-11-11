@@ -8,7 +8,7 @@ from fixtures import images as img
 from llm.fakes import FakeLLM
 
 from narratoflow.channels.config import ChannelConfig
-from narratoflow.errors import BudgetExceededError, PlanningError
+from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.models import Series, VisualSource
 from narratoflow.settings import Settings
@@ -223,6 +223,27 @@ def test_interrupted_regenerate_keeps_the_scene_quarantined(
     assert second == scenes_of(quarantined())[1]
     assert "progress so far is kept" in str(info.value)
     assert info.value.partial[1].quarantined == ["s001"]
+
+
+def test_interrupted_regenerate_after_a_failed_check_lists_the_scene_once(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    boom = ProviderError("vision down")
+    with pytest.raises(GenerationInterruptedError) as info:
+        regenerate(
+            quarantined(),
+            "s001",
+            channel,
+            settings,
+            images=FakeImages(),
+            vision=FakeLLM([boom]),
+            library=library,
+            prices=PRICES,
+        )
+    partial, result = info.value.partial
+    [first, _] = scenes_of(partial)
+    assert QUARANTINED_FLAG in first.flags and first.sketch_id is None
+    assert result.quarantined == ["s001"]
 
 
 def test_regenerate_refuses_scenes_generate_missing_would_skip(

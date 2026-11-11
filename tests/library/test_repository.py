@@ -327,6 +327,35 @@ def test_sketch_bytes_reads_the_stored_blob(library: SketchLibrary) -> None:
     assert library.sketch_bytes(a) == b"PNGDATA"
 
 
+def test_sketch_bytes_unreadable_blob_is_a_library_error(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    a = _add(library, v, "k|generic", b"PNGDATA")
+
+    def boom(self: Path) -> bytes:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    with pytest.raises(LibraryError, match="cannot read sketch blob"):
+        library.sketch_bytes(a)
+
+
+def test_get_strokes_unreadable_blob_is_a_library_error(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    a = _add(library, v, "k|generic", b"PNGDATA")
+    library.put_strokes(a.id, _strokes())
+
+    def boom(self: Path) -> bytes:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    with pytest.raises(LibraryError, match="cannot read strokes blob"):
+        library.get_strokes(a.id)
+
+
 def test_default_library_caches_engine_per_data_dir(tmp_path: Path) -> None:
     from narratoflow.library import repository
 

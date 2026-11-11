@@ -654,6 +654,61 @@ def test_sketch_resolve_regenerate_never_prompts_without_the_image_key(
     assert "NARRATOFLOW_IMAGE_API_KEY" in capsys.readouterr().err
 
 
+def test_sketch_resolve_regenerate_never_prompts_for_another_channels_series(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    other = Series.load(path)
+    other.channel_slug = "someone-else"
+    other.save(path)
+    calls = _patch_regenerate(monkeypatch)
+    asked = _no_confirm(monkeypatch)
+    code = run_main(
+        monkeypatch,
+        "sketch",
+        "resolve",
+        str(path),
+        "s001",
+        "--regenerate",
+        "--channel",
+        str(channel_file),
+    )
+    assert code == 1 and asked == [] and calls == []
+    assert "someone-else" in capsys.readouterr().err
+
+
+def test_sketch_resolve_regenerate_never_prompts_without_the_vision_key(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    text = channel_file.read_text(encoding="utf-8")
+    channel_file.write_text(
+        text + '\n[vision]\nprovider = "anthropic"\nmodel = "claude-haiku-5-5"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("NARRATOFLOW_LLM_API_KEY", raising=False)
+    path = _approved_series(tmp_path, quarantined=True)
+    calls = _patch_regenerate(monkeypatch)
+    asked = _no_confirm(monkeypatch)
+    code = run_main(
+        monkeypatch,
+        "sketch",
+        "resolve",
+        str(path),
+        "s001",
+        "--regenerate",
+        "--channel",
+        str(channel_file),
+    )
+    assert code == 1 and asked == [] and calls == []
+    assert "NARRATOFLOW_LLM_API_KEY" in capsys.readouterr().err
+
+
 def test_sketch_resolve_regenerate_estimate_has_no_vision_cost_when_off(
     channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -680,6 +735,7 @@ def test_sketch_resolve_regenerate_estimate_includes_the_vision_check_when_on(
         encoding="utf-8",
     )
     channel = load_channel(channel_file)
+    monkeypatch.setenv("NARRATOFLOW_LLM_API_KEY", "llm-key")
     path = _approved_series(tmp_path, quarantined=True)
     _patch_regenerate(monkeypatch)
     asked = _no_confirm(monkeypatch)

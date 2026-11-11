@@ -56,7 +56,8 @@ from narratoflow.visuals.strokes import extract_strokes
 logger = logging.getLogger(__name__)
 
 QUARANTINED_FLAG = "sketch_quarantined"
-MAX_REFERENCE_BYTES = 4 * 1024 * 1024
+# Anthropic limits the base64 payload to 5 MB; 3.5 MB raw encodes to about 4.7 MB
+MAX_REFERENCE_BYTES = 3_500_000
 MAX_REFERENCE_SIDE_PX = 2048
 REFERENCE_LONG_SIDE_PX = 1024
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -493,6 +494,15 @@ class _Run:
         return record
 
 
+def require_series_channel(series: Series, channel: ChannelConfig) -> None:
+    """`PlanningError` unless `series` belongs to `channel` (same slug). No spend."""
+    if series.channel_slug != channel.slug:
+        raise PlanningError(
+            f"series belongs to channel {series.channel_slug!r}, not {channel.slug!r}; "
+            "pass that channel's TOML with --channel"
+        )
+
+
 def generate_missing(
     series: Series,
     channel: ChannelConfig,
@@ -522,11 +532,7 @@ def generate_missing(
     """
     if not series.approved:
         raise PlanningError("approve the series first")
-    if series.channel_slug != channel.slug:
-        raise PlanningError(
-            f"series belongs to channel {series.channel_slug!r}, not {channel.slug!r}; "
-            "pass that channel's TOML with --channel"
-        )
+    require_series_channel(series, channel)
     _require_untracked(images, None if vision == "auto" else vision)
     check_provider_keys(channel, settings)
     prices = prices if prices is not None else default_prices(settings)

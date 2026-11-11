@@ -78,6 +78,8 @@ def _build(raw_key: str, key: IdeaKey, entry: object, index_path: Path, root: Pa
         raise ChannelConfigError(
             f"bundled icon index entry {raw_key!r}: file must be a relative path inside"
         )
+    if rel.suffix.lower() != ".png":
+        raise ChannelConfigError(f"bundled icon index entry {raw_key!r}: file must be a .png")
     path = index_path.parent / rel
     resolved = path.resolve()
     if not resolved.is_relative_to(root):

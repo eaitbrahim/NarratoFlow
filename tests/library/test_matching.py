@@ -36,11 +36,11 @@ def make_record(i: int) -> SketchRecord:
 
 
 def _write_index(tmp_path: Path, keys: list[str]) -> Path:
-    (tmp_path / "icon.svg").write_text("<svg/>")
+    (tmp_path / "icon.png").write_text("<svg/>")
     body = "[icons]\n" if not keys else ""
     for key in keys:
         body += (
-            f'[icons."{key}"]\nfile = "icon.svg"\nlicense = "MIT"\nsource = "https://example.com"\n'
+            f'[icons."{key}"]\nfile = "icon.png"\nlicense = "MIT"\nsource = "https://example.com"\n'
         )
     index = tmp_path / "index.toml"
     index.write_text(body)

@@ -725,6 +725,22 @@ def test_reference_is_normalized_to_png(
         assert abs(out.size[0] / out.size[1] - ratio) < 0.01
 
 
+def test_reference_just_over_the_threshold_is_normalized(channel: ChannelConfig) -> None:
+    import os
+
+    from narratoflow.sketching.generate import MAX_REFERENCE_BYTES
+
+    assert MAX_REFERENCE_BYTES == 3_500_000
+    noise = Image.frombytes("RGB", (1100, 1100), os.urandom(3_630_000))
+    raw = _encode(noise, "PNG")
+    assert len(raw) > MAX_REFERENCE_BYTES
+    channel.style.reference_sketch.write_bytes(raw)
+    data = load_reference(channel.style)
+    with Image.open(io.BytesIO(data)) as out:
+        assert max(out.size) == 1024
+    assert data != raw
+
+
 def test_small_png_reference_is_used_as_is(channel: ChannelConfig) -> None:
     raw = channel.style.reference_sketch.read_bytes()
     assert load_reference(channel.style) == raw

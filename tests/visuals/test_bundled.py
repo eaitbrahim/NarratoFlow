@@ -14,7 +14,7 @@ from narratoflow.visuals.bundled import BundledIcons, default_bundled_icons
 ROOT = Path(__file__).parents[2]
 
 
-def _index(tmp_path: Path, body: str, files: tuple[str, ...] = ("eye.svg",)) -> Path:
+def _index(tmp_path: Path, body: str, files: tuple[str, ...] = ("eye.png",)) -> Path:
     for name in files:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -26,7 +26,7 @@ def _index(tmp_path: Path, body: str, files: tuple[str, ...] = ("eye.svg",)) -> 
 
 def _entry(
     key: str = "eye|generic",
-    file: str = "eye.svg",
+    file: str = "eye.png",
     extra: str = 'license = "CC0"\nsource = "https://example.org"\n',
 ) -> str:
     return f'[icons."{key}"]\nfile = "{file}"\n{extra}'
@@ -36,7 +36,7 @@ def test_valid_index_loads(tmp_path: Path) -> None:
     index = _index(tmp_path, _entry("Eye|generic"))
     icon = BundledIcons.from_index(index).get(parse_idea_key("eye|generic"))
     assert icon is not None
-    assert icon.file == tmp_path / "eye.svg"
+    assert icon.file == tmp_path / "eye.png"
     assert icon.license == "CC0"
 
 
@@ -60,12 +60,12 @@ def test_shipped_index_loads() -> None:
         (_entry(extra='license = "CC0"\nsource = "  "\n'), "eye|generic"),
         (_entry(file=""), "eye|generic"),
         (_entry(file="/etc/passwd"), "eye|generic"),
-        (_entry(file="a/../eye.svg"), "eye|generic"),
-        (_entry(file="../eye.svg"), "eye|generic"),
-        (_entry(file="missing.svg"), "eye|generic"),
+        (_entry(file="a/../eye.png"), "eye|generic"),
+        (_entry(file="../eye.png"), "eye|generic"),
+        (_entry(file="missing.png"), "eye|generic"),
         (_entry(extra='license = "CC0"\nsource = "s"\nauthor = "me"\n'), "eye|generic"),
         (_entry("Eye|generic") + _entry("eye|generic"), "eye|generic"),
-        ('[icons]\n"eye|generic" = "eye.svg"\n', "eye|generic"),
+        ('[icons]\n"eye|generic" = "eye.png"\n', "eye|generic"),
     ],
 )
 def test_violation_raises_naming_the_entry(tmp_path: Path, body: str, named: str) -> None:
@@ -74,12 +74,24 @@ def test_violation_raises_naming_the_entry(tmp_path: Path, body: str, named: str
         BundledIcons.from_index(index)
 
 
+@pytest.mark.parametrize("name", ["eye.svg", "eye.jpg", "eye"])
+def test_non_png_icon_file_is_rejected(tmp_path: Path, name: str) -> None:
+    index = _index(tmp_path, _entry(file=name), files=(name,))
+    with pytest.raises(ChannelConfigError, match=r"eye\|generic.*\.png"):
+        BundledIcons.from_index(index)
+
+
+def test_png_suffix_is_case_insensitive(tmp_path: Path) -> None:
+    index = _index(tmp_path, _entry(file="EYE.PNG"), files=("EYE.PNG",))
+    assert BundledIcons.from_index(index).get(parse_idea_key("eye|generic")) is not None
+
+
 def test_symlink_escaping_the_directory_is_rejected(tmp_path: Path) -> None:
-    outside = tmp_path / "outside.svg"
+    outside = tmp_path / "outside.png"
     outside.write_text("<svg/>", encoding="utf-8")
     pack = tmp_path / "pack"
     pack.mkdir()
-    (pack / "eye.svg").symlink_to(outside)
+    (pack / "eye.png").symlink_to(outside)
     index = pack / "index.toml"
     index.write_text(_entry(), encoding="utf-8")
     with pytest.raises(ChannelConfigError, match=r"eye\|generic"):

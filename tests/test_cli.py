@@ -1,16 +1,27 @@
+import shutil
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from narratoflow import cli
-from narratoflow.channels.config import load_channel, style_fingerprint
+from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchStatus
-from narratoflow.models import Language, Project
-from narratoflow.settings import get_settings
+from narratoflow.models import (
+    Language,
+    Narration,
+    Part,
+    Project,
+    RightsBasis,
+    Scene,
+    ScriptSource,
+    Series,
+)
+from narratoflow.settings import Settings, get_settings
 
 runner = CliRunner()
 INPUTS = Path(__file__).parent / "fixtures" / "input"
@@ -203,4 +214,223 @@ def test_library_copy_to_quarantined_dedupe_exit_1(
     assert code == 1
     assert "quarantined" in captured.err and str(copy_id) in captured.err
     assert "bad lines" in captured.err
+    assert "Traceback" not in captured.err
+
+
+# --- plan / approve -------------------------------------------------------
+
+
+def _planned_series(*, flags: list[str] | None = None) -> Series:
+    return Series(
+        title="Scenes [of] Resurrection",
+        channel_slug="history",
+        language=Language.ENGLISH,
+        source=ScriptSource(author="A", work="W", rights=RightsBasis.OWN),
+        parts=[
+            Part(
+                index=1,
+                count=1,
+                hook_text="h",
+                est_cost_usd=Decimal("0.04"),
+                flags=flags or [],
+                scenes=[
+                    Scene(
+                        id="s001",
+                        narration=Narration(source_text="Hello world."),
+                        idea_key="scroll|generic",
+                        match="new",
+                        est_duration_s=61.2,
+                    )
+                ],
+            )
+        ],
+        est_planning_cost_usd=Decimal("0.0123"),
+    )
+
+
+def _script(tmp_path: Path, rights: str = "own") -> Path:
+    body = (INPUTS / "clean_ar.txt").read_text(encoding="utf-8")
+    path = tmp_path / "scripts" / "script.txt"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(f'+++\nauthor = "A"\nwork = "W"\nrights = "{rights}"\n+++\n{body}', "utf-8")
+    return path
+
+
+def _patch_plan(
+    monkeypatch: pytest.MonkeyPatch, series: Series, seen: list[ChannelConfig] | None = None
+) -> None:
+    def fake_plan(script: Path, channel: ChannelConfig, settings: Settings) -> Series:
+        if seen is not None:
+            seen.append(channel)
+        return series
+
+    monkeypatch.setattr(cli, "plan_series", fake_plan)
+
+
+def _set_toml(channel_file: Path, old: str, new: str) -> None:
+    text = channel_file.read_text(encoding="utf-8")
+    assert old in text
+    channel_file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def test_cli_plan_writes_series_and_prints_list(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[ChannelConfig] = []
+    _patch_plan(monkeypatch, _planned_series(), seen)
+    script = _script(tmp_path)
+    result = runner.invoke(cli.app, ["plan", str(script), "--channel", str(channel_file)])
+    assert result.exit_code == 0, result.output
+    [channel] = seen
+    assert channel.slug == "history" and channel.language is Language.ARABIC
+    target = script.parent / "series.json"
+    saved = Series.load(target)
+    assert saved.approved is False
+    assert "new (paid)" in result.output
+    assert "Scenes [of] Resurrection" in result.output
+    assert "narratoflow approve" in result.output
+
+
+def test_cli_plan_auto_approves_with_summary(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_toml(channel_file, 'slug = "history"', 'slug = "history"\napproval_list = false')
+    _patch_plan(monkeypatch, _planned_series())
+    out = tmp_path / "elsewhere.json"
+    result = runner.invoke(
+        cli.app, ["plan", str(_script(tmp_path)), "--channel", str(channel_file), "--out", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    assert Series.load(out).approved is True
+    assert not (tmp_path / "scripts" / "series.json").exists()
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert "1 part" in lines[0] and "61 s" in lines[0]
+    assert "$0.04" in lines[0] and "$0.0123" in lines[0]
+    assert "approved" in lines[0]
+
+
+def test_cli_plan_flag_forces_list(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_toml(channel_file, 'slug = "history"', 'slug = "history"\napproval_list = false')
+    _patch_plan(monkeypatch, _planned_series(flags=["over_max"]))
+    script = _script(tmp_path)
+    result = runner.invoke(cli.app, ["plan", str(script), "--channel", str(channel_file)])
+    assert result.exit_code == 0, result.output
+    assert "over_max" in result.output
+    assert Series.load(script.parent / "series.json").approved is False
+
+
+def test_cli_approve_yes(tmp_path: Path) -> None:
+    path = tmp_path / "series.json"
+    _planned_series().save(path)
+    result = runner.invoke(cli.app, ["approve", str(path), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "new (paid)" in result.output
+    assert Series.load(path).approved is True
+
+
+def test_cli_approve_confirm(tmp_path: Path) -> None:
+    path = tmp_path / "series.json"
+    _planned_series().save(path)
+    result = runner.invoke(cli.app, ["approve", str(path)], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert Series.load(path).approved is True
+
+
+def test_cli_approve_declined_leaves_unapproved(tmp_path: Path) -> None:
+    path = tmp_path / "series.json"
+    _planned_series().save(path)
+    result = runner.invoke(cli.app, ["approve", str(path)], input="n\n")
+    assert result.exit_code == 0, result.output
+    assert "not approved" in result.output.lower()
+    assert Series.load(path).approved is False
+
+
+def test_cli_approve_declined_on_approved_series_says_it_stays_approved(tmp_path: Path) -> None:
+    path = tmp_path / "series.json"
+    approved = _planned_series()
+    approved.approved = True
+    approved.save(path)
+    result = runner.invoke(cli.app, ["approve", str(path)], input="n\n")
+    assert result.exit_code == 0, result.output
+    assert "stays approved" in result.output
+    assert "not approved" not in result.output.lower()
+    assert Series.load(path).approved is True
+
+
+def test_cli_plan_checks_out_dir_before_planning(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: object) -> Series:
+        raise AssertionError("planner must not run when --out cannot be written")
+
+    monkeypatch.setattr(cli, "plan_series", boom)
+    out = tmp_path / "missing-dir" / "series.json"
+    code = run_main(
+        monkeypatch,
+        "plan",
+        str(_script(tmp_path)),
+        "--channel",
+        str(channel_file),
+        "--out",
+        str(out),
+    )
+    assert code == 1
+
+
+def test_cli_approve_bad_file_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "series.json"
+    path.write_text("{broken", encoding="utf-8")
+    code = run_main(monkeypatch, "approve", str(path), "--yes")
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "not valid JSON" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_budget_error_exit_1(
+    channel_file: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img")
+    monkeypatch.setenv("NARRATOFLOW_LLM_API_KEY", "llm")
+    # CI has no assets/quran: provide the fixture corpus where default_corpus looks first
+    quran = data_dir / "quran"
+    quran.mkdir(parents=True)
+    for name in ("quran-simple-clean.txt", "quran-uthmani.txt"):
+        shutil.copy(Path(__file__).parent / "fixtures" / "quran" / name, quran / name)
+    _set_toml(channel_file, 'slug = "history"', 'slug = "history"\nspending_limit_usd = 0.0001')
+    _set_toml(
+        channel_file,
+        'provider = "ollama"\nmodel = "qwen2.5"',
+        'provider = "anthropic"\nmodel = "claude-opus-5-5"',
+    )
+    script = _script(tmp_path)
+    code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "exceeds limit" in captured.err
+    assert "Traceback" not in captured.err
+    assert not (script.parent / "series.json").exists()
+
+
+def test_cli_plan_in_copyright_exit_1(
+    channel_file: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script = _script(tmp_path, rights="third_party_in_copyright")
+    code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "copyright" in captured.err
     assert "Traceback" not in captured.err

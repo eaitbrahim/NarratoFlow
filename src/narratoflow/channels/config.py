@@ -7,11 +7,12 @@ import json
 import tomllib
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from narratoflow.errors import ChannelConfigError
+from narratoflow.llm.base import Effort
 from narratoflow.models import AspectRatio, Language
 
 
@@ -40,6 +41,14 @@ class VoiceConfig(BaseModel):
 class LlmConfig(BaseModel):
     provider: str
     model: str
+    effort: Effort = "medium"
+    max_tokens: int = Field(default=16000, gt=0)
+    refusal_fallback: bool = True
+
+
+class EmbedConfig(BaseModel):
+    provider: str = "voyage"
+    model: str = "voyage-multilingual-2"
 
 
 class ChannelConfig(BaseModel):
@@ -49,6 +58,7 @@ class ChannelConfig(BaseModel):
     style: StyleConfig
     voice: VoiceConfig
     llm: LlmConfig
+    embed: EmbedConfig = EmbedConfig()
     outputs: list[AspectRatio] = Field(default_factory=lambda: [AspectRatio.PORTRAIT])
     spending_limit_usd: Decimal | None = Field(None, gt=0)
     approval_list: bool = True
@@ -56,6 +66,7 @@ class ChannelConfig(BaseModel):
     part_min_s: int = 60
     part_max_s: int = 90
     riwaya: str = "hafs"
+    diacritizer: Literal["llm", "mishkal"] = "llm"
 
     @model_validator(mode="after")
     def _part_bounds(self) -> ChannelConfig:

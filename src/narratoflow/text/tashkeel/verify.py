@@ -10,6 +10,11 @@ _DIACRITICS = frozenset(
 )
 
 
+def is_diacritic(ch: str) -> bool:
+    """True for an Arabic diacritic or tatweel character."""
+    return ch in _DIACRITICS
+
+
 def strip_diacritics(text: str) -> str:
     """Remove Arabic diacritics and tatweel, NFC-normalizing first."""
     normalized = unicodedata.normalize("NFC", text)

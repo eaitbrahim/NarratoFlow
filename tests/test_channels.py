@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from narratoflow.channels.config import load_channel, style_fingerprint
+from narratoflow.channels.config import (
+    EmbedConfig,
+    LlmConfig,
+    load_channel,
+    style_fingerprint,
+)
 from narratoflow.channels.keys import ProviderKind, check_provider_keys, required_key_env_vars
 from narratoflow.errors import ChannelConfigError, MissingApiKeyError
 from narratoflow.models import AspectRatio
@@ -67,12 +72,15 @@ def test_missing_key_fails_before_work(channel_file: Path) -> None:
 
 def test_all_missing_keys_listed_together(channel_file: Path) -> None:
     text = (
-        channel_file.read_text().replace('"edge"', '"elevenlabs"').replace('"ollama"', '"openai"')
+        channel_file.read_text()
+        .replace('"edge"', '"elevenlabs"')
+        .replace('"ollama"', '"voyage"', 1)
+        .replace('"ollama"', '"openai"')
     )
     channel_file.write_text(text, encoding="utf-8")
     with pytest.raises(MissingApiKeyError) as exc:
         check_provider_keys(load_channel(channel_file), get_settings())
-    for var in ("IMAGE", "VOICE", "LLM"):
+    for var in ("IMAGE", "VOICE", "LLM", "EMBED"):
         assert f"NARRATOFLOW_{var}_API_KEY" in str(exc.value)
 
 
@@ -94,3 +102,46 @@ def test_provider_names_case_insensitive(channel_file: Path) -> None:
     channel.voice.provider = "EDGE"
     assert ProviderKind.LLM not in required_key_env_vars(channel)
     assert ProviderKind.VOICE not in required_key_env_vars(channel)
+
+
+def test_llm_config_defaults() -> None:
+    llm = LlmConfig(provider="anthropic", model="claude-opus-5-5")
+    assert llm.effort == "medium"
+    assert llm.max_tokens == 16000
+    assert llm.refusal_fallback is True
+
+
+def test_llm_config_from_toml(channel_file: Path) -> None:
+    text = channel_file.read_text(encoding="utf-8")
+    text += 'effort = "xhigh"\nmax_tokens = 32000\nrefusal_fallback = false\n'
+    channel_file.write_text(text, encoding="utf-8")
+    llm = load_channel(channel_file).llm
+    assert (llm.effort, llm.max_tokens, llm.refusal_fallback) == ("xhigh", 32000, False)
+
+
+@pytest.mark.parametrize("field", ['effort = "extreme"', "max_tokens = 0"])
+def test_llm_config_rejects_bad_values(channel_file: Path, field: str) -> None:
+    channel_file.write_text(
+        channel_file.read_text(encoding="utf-8") + field + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ChannelConfigError):
+        load_channel(channel_file)
+
+
+def test_default_embed_provider_is_paid(
+    channel_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel = load_channel(channel_file).model_copy(update={"embed": EmbedConfig()})
+    assert required_key_env_vars(channel)[ProviderKind.EMBED] == "NARRATOFLOW_EMBED_API_KEY"
+    monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "x")
+    with pytest.raises(MissingApiKeyError, match="NARRATOFLOW_EMBED_API_KEY"):
+        check_provider_keys(channel, get_settings())
+    monkeypatch.setenv("NARRATOFLOW_EMBED_API_KEY", "e")
+    get_settings.cache_clear()
+    check_provider_keys(channel, get_settings())
+
+
+def test_fixture_embed_is_free_ollama(channel_file: Path) -> None:
+    channel = load_channel(channel_file)
+    assert channel.embed == EmbedConfig(provider="ollama", model="nomic-embed-text")
+    assert ProviderKind.EMBED not in required_key_env_vars(channel)

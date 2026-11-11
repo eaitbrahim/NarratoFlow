@@ -30,11 +30,6 @@ class Aligner(Protocol):
 
 
 @runtime_checkable
-class LLM(Protocol):
-    def complete_json(self, prompt: str, schema: dict[str, object]) -> dict[str, object]: ...
-
-
-@runtime_checkable
 class VisualProvider(Protocol):
     def produce(self, scene: Scene, out_dir: Path) -> Visual: ...
 

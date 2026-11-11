@@ -75,3 +75,13 @@ def test_all_project_errors_share_base() -> None:
 
 def test_setup_logging_runs() -> None:
     setup_logging("INFO")
+
+
+def test_embed_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert get_settings().embed_api_key is None
+    monkeypatch.setenv("NARRATOFLOW_EMBED_API_KEY", "pa-test-999")
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.embed_api_key is not None
+    assert s.embed_api_key.get_secret_value() == "pa-test-999"
+    assert "pa-test-999" not in repr(s)

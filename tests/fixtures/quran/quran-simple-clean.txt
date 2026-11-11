@@ -1,0 +1,44 @@
+19|1|بسم الله الرحمن الرحيم كهيعص
+19|2|ذكر رحمت ربك عبده زكريا
+19|3|إذ نادى ربه نداء خفيا
+19|4|قال رب إني وهن العظم مني واشتعل الرأس شيبا ولم أكن بدعائك رب شقيا
+19|5|وإني خفت الموالي من ورائي وكانت امرأتي عاقرا فهب لي من لدنك وليا
+19|6|يرثني ويرث من آل يعقوب واجعله رب رضيا
+19|7|يا زكريا إنا نبشرك بغلام اسمه يحيى لم نجعل له من قبل سميا
+19|8|قال رب أنى يكون لي غلام وكانت امرأتي عاقرا وقد بلغت من الكبر عتيا
+19|9|قال كذلك قال ربك هو علي هين وقد خلقتك من قبل ولم تك شيئا
+19|10|قال رب اجعل لي آية قال آيتك ألا تكلم الناس ثلاث ليال سويا
+19|11|فخرج على قومه من المحراب فأوحى إليهم أن سبحوا بكرة وعشيا
+19|12|يا يحيى خذ الكتاب بقوة وآتيناه الحكم صبيا
+19|13|وحنانا من لدنا وزكاة وكان تقيا
+19|14|وبرا بوالديه ولم يكن جبارا عصيا
+19|15|وسلام عليه يوم ولد ويوم يموت ويوم يبعث حيا
+31|33|يا أيها الناس اتقوا ربكم واخشوا يوما لا يجزي والد عن ولده ولا مولود هو جاز عن والده شيئا إن وعد الله حق فلا تغرنكم الحياة الدنيا ولا يغرنكم بالله الغرور
+# PLEASE DO NOT REMOVE OR CHANGE THIS COPYRIGHT BLOCK
+#====================================================================
+#
+#  Tanzil Quran Text (Simple Clean, Version 1.1)
+#  Copyright (C) 2007-2026 Tanzil Project
+#  License: Creative Commons Attribution 3.0
+#
+#  This copy of the Quran text is carefully produced, highly 
+#  verified and continuously monitored by a group of specialists 
+#  at Tanzil Project.
+#
+#  TERMS OF USE:
+#
+#  - Permission is granted to copy and distribute verbatim copies 
+#    of this text, but CHANGING IT IS NOT ALLOWED.
+#
+#  - This Quran text can be used in any website or application, 
+#    provided that its source (Tanzil Project) is clearly indicated, 
+#    and a link is made to tanzil.net to enable users to keep
+#    track of changes.
+#
+#  - This copyright notice shall be included in all verbatim copies 
+#    of the text, and shall be reproduced appropriately in all files 
+#    derived from or containing substantial portion of this text.
+#
+#  Please check updates at: http://tanzil.net/updates/
+#
+#====================================================================

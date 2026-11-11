@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from narratoflow.errors import InvalidIdeaKeyError
+from narratoflow.errors import ChannelConfigError, InvalidIdeaKeyError
 from narratoflow.library.keys import parse_idea_key
 from narratoflow.library.matching import MatchKind, choose_variant, match_idea
 from narratoflow.library.repository import SketchLibrary
@@ -144,3 +144,24 @@ def test_choose_variant_deterministic_and_varies() -> None:
 def test_choose_variant_empty_raises() -> None:
     with pytest.raises(ValueError):
         choose_variant([], "v", "s")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[icons\n",  # invalid TOML
+        '[icons."eye|generic"]\nlicense = "MIT"\nsource = "x"\n',  # no file
+        '[icons]\n"eye|generic" = 3\n',  # entry is not a table
+        '[icons]\n"eye|generic" = {file = 1, license = "MIT", source = "x"}\n',
+    ],
+)
+def test_broken_bundled_index_raises_config_error(tmp_path: Path, body: str) -> None:
+    index = tmp_path / "index.toml"
+    index.write_text(body)
+    with pytest.raises(ChannelConfigError, match="bundled icon index"):
+        BundledIcons.from_index(index)
+
+
+def test_unreadable_bundled_index_raises_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ChannelConfigError, match="bundled icon index"):
+        BundledIcons.from_index(tmp_path / "missing.toml")

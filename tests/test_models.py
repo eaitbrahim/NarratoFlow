@@ -1,3 +1,4 @@
+import json
 import os
 from decimal import Decimal
 from pathlib import Path
@@ -205,3 +206,12 @@ def test_series_save_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         original.model_copy(update={"title": "Other"}).save(path)
     assert path.read_text(encoding="utf-8") == before
     assert [p.name for p in tmp_path.iterdir()] == ["series.json"]
+
+
+def test_old_series_without_spend_loads(tmp_path: Path) -> None:
+    data = json.loads(_series().model_dump_json())
+    for part in data["parts"]:
+        del part["spend"]
+    path = tmp_path / "series.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert [p.spend for p in Series.load(path).parts] == [{}] * len(data["parts"])

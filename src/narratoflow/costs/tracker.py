@@ -65,12 +65,25 @@ class SpendTracker:
         self.spent += amount
         self.entries.append(SpendEntry(what, amount, datetime.now(UTC)))
 
+    def by_what(self) -> dict[str, Decimal]:
+        """Entries charged by this tracker (not the seed) summed by `what`, first-seen order."""
+        totals: dict[str, Decimal] = {}
+        for entry in self.entries:
+            totals[entry.what] = totals.get(entry.what, Decimal(0)) + entry.amount_usd
+        return totals
+
     def charge_llm(self, provider: str, model: str, usage: Usage, prices: PriceTable) -> Decimal:
         """Record the actual cost of a call; the limit is checked beforehand."""
         price_in, price_out = prices.llm(provider, model)
         cost = (usage.input_tokens * price_in + usage.output_tokens * price_out) / _MILLION
         self.charge(cost, f"llm {provider}/{model}")
         return cost
+
+
+def add_spend(ledger: dict[str, Decimal], tracker: SpendTracker) -> None:
+    """Add what `tracker` charged, by line, into `ledger` in place."""
+    for what, amount in tracker.by_what().items():
+        ledger[what] = ledger.get(what, Decimal(0)) + amount
 
 
 def estimate_tokens(text: str) -> int:

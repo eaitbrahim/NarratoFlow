@@ -1144,3 +1144,29 @@ def test_generate_seeds_tracker_from_part_spent(
     again, rerun = run(out, roomy, settings, library, FakeImages(), FakeLLM([]))
     assert rerun.spent_usd == 0
     assert [p.spent_usd for p in again.parts] == [3 * PER_SKETCH, PER_SKETCH]
+
+
+def test_generate_records_spend_by_provider(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    original = series([scene(1), scene(2)])
+    original.parts[0].spent_usd = Decimal("0.5")  # spent by an earlier stage, unattributed
+    out, result = run(original, channel, settings, library, FakeImages(), FakeLLM(clean(2)))
+    style = channel.style
+    ledger = out.parts[0].spend
+    image_line = f"image {style.image_provider}/{style.image_model}"
+    assert ledger[image_line] == 2 * Decimal("0.04")
+    assert sum(ledger.values()) == out.parts[0].spent_usd - Decimal("0.5") == result.spent_usd
+    assert original.parts[0].spend == {}  # the input is not mutated
+
+
+def test_generate_interrupted_keeps_ledger(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    limited = channel.model_copy(update={"spending_limit_usd": 2 * PER_SKETCH})
+    original = series([scene(1), scene(2), scene(3)])
+    with pytest.raises(GenerationInterruptedError) as info:
+        run(original, limited, settings, library, FakeImages(), FakeLLM(clean(3)))
+    partial, so_far = info.value.partial
+    ledger = partial.parts[0].spend
+    assert ledger and sum(ledger.values()) == partial.parts[0].spent_usd == so_far.spent_usd

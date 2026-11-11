@@ -35,7 +35,7 @@ from narratoflow.audio.timeline import AssetUse, PartTimeline, RecitationUsed
 from narratoflow.audio.words import tokens
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.costs.prices import PriceTable, default_prices
-from narratoflow.costs.tracker import SpendTracker, estimate_speech_cost
+from narratoflow.costs.tracker import SpendTracker, add_spend, estimate_speech_cost
 from narratoflow.errors import (
     AudioError,
     ChannelConfigError,
@@ -446,10 +446,12 @@ def build_audio(
                 built = run.part(part, tracker)
             except NarratoFlowError as exc:
                 part.spent_usd = tracker.spent
+                add_spend(part.spend, tracker)
                 result.spent_usd = delta()
                 partial = AudioBuildResult(parts=list(result.parts), spent_usd=result.spent_usd)
                 raise AudioInterruptedError(exc, (out.model_copy(deep=True), partial)) from exc
             part.spent_usd = tracker.spent
+            add_spend(part.spend, tracker)
             result.parts.append(built)
             logger.info("audio part %d: %d ms", part.index, built.timeline.duration_ms)
     result.spent_usd = delta()

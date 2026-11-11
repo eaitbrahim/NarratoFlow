@@ -44,14 +44,15 @@ class MediaProbe:
     audio_rate: int | None
 
 
-def run_tool(
+def run_tool_capture(
     tool: Path,
     args: list[str],
     *,
     cwd: Path | None = None,
     input: bytes | None = None,
     timeout_s: float = 120,
-) -> bytes:
+) -> tuple[bytes, str]:
+    """Run `tool`; return its stdout and decoded stderr, or raise `RenderError`."""
     try:
         proc = subprocess.run(  # noqa: S603
             [str(tool), *args],
@@ -65,10 +66,22 @@ def run_tool(
         raise RenderError(f"{tool.name} timed out after {timeout_s}s") from exc
     except OSError as exc:
         raise RenderError(f"cannot run {tool}: {exc}") from exc
+    stderr = proc.stderr.decode("utf-8", errors="replace")
     if proc.returncode != 0:
-        tail = "\n".join(proc.stderr.decode("utf-8", errors="replace").splitlines()[-5:])
+        tail = "\n".join(stderr.splitlines()[-5:])
         raise RenderError(f"{tool.name} failed (exit {proc.returncode}):\n{tail}")
-    return proc.stdout
+    return proc.stdout, stderr
+
+
+def run_tool(
+    tool: Path,
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    input: bytes | None = None,
+    timeout_s: float = 120,
+) -> bytes:
+    return run_tool_capture(tool, args, cwd=cwd, input=input, timeout_s=timeout_s)[0]
 
 
 def find_render_tools(settings: Settings) -> RenderTools:

@@ -15,6 +15,7 @@ from narratoflow.captions.ass import (
     AssEvent,
     AssStyle,
     ass_color,
+    ass_round_ms,
     ass_time,
     build_styles,
     caption_events,
@@ -22,6 +23,7 @@ from narratoflow.captions.ass import (
     caption_pages,
     escape_text,
     karaoke,
+    parse_events,
 )
 from narratoflow.errors import RenderError
 from narratoflow.models import Language, SceneKind, WordTiming
@@ -417,3 +419,55 @@ def test_arabic_caption_pages_weight_latin_like_truncate() -> None:
     assert [len(p) for p in caption_pages(latin, CAPTION_MAX_CHARS_AR, Language.ARABIC)] == [4, 2]
     arabic = [_w(SEEN3 + SEEN3[0], i * 100) for i in range(5)] + [_w(SEEN3, 500)]
     assert [len(p) for p in caption_pages(arabic, CAPTION_MAX_CHARS_AR, Language.ARABIC)] == [6]
+
+
+def test_ass_round_ms_is_what_ass_time_writes() -> None:
+    assert [ass_round_ms(ms) for ms in (0, 4, 5, 1004, 1005, 1994, 1995)] == [
+        0,
+        0,
+        10,
+        1000,
+        1010,
+        1990,
+        2000,
+    ]
+    assert ass_time(1005) == "0:00:01.01"
+
+
+def test_parse_events_roundtrip_with_commas_and_tags() -> None:
+    events = [
+        AssEvent(3004, 5005, "Caption", "{\\k10}a, b,{\\k5} c"),
+        AssEvent(0, 3_600_000 + 61_234, "Verse", "{\\an5\\pos(474,815)}" + SEEN3 + ", " + SEEN3),
+        AssEvent(0, 9, "VerseRef", "31:33", layer=2),
+        AssEvent(0, 1000, "TopLeft", "x,,y", layer=1),
+    ]
+    doc = AssDocument(
+        styles=build_styles(Language.ARABIC, "#000000", default_fonts()), events=events
+    )
+    want = [
+        AssEvent(ass_round_ms(e.start_ms), ass_round_ms(e.end_ms), e.style, e.text, e.layer)
+        for e in sorted(events, key=lambda e: (e.start_ms, e.layer))
+    ]
+    assert parse_events(doc.to_text()) == want
+
+
+def test_parse_events_ignores_lines_outside_events() -> None:
+    text = "[Script Info]\nDialogue: nonsense\n[Events]\nFormat: x\nComment: 0,bad\n\n"
+    text += "Dialogue: 0,0:00:01.00,0:00:02.50,Caption,,0,0,0,,hi\n[Fonts]\nDialogue: junk\n"
+    assert parse_events(text) == [AssEvent(1000, 2500, "Caption", "hi")]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Caption",
+        "Dialogue: x,0:00:01.00,0:00:02.00,Caption,,0,0,0,,hi",
+        "Dialogue: 0,0:00:01.0,0:00:02.00,Caption,,0,0,0,,hi",
+        "Dialogue: 0,0:00:01.00,0:0:02.00,Caption,,0,0,0,,hi",
+        "Dialogue: 0,0:00:01.00,0:00:61.00,Caption,,0,0,0,,hi",
+    ],
+)
+def test_parse_events_rejects_malformed_line(line: str) -> None:
+    with pytest.raises(ValueError, match="line 3") as info:
+        parse_events(f"[Events]\nFormat: x\n{line}\n")
+    assert line in str(info.value)

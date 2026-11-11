@@ -190,6 +190,15 @@ def measure(samples: Samples) -> Loudness:
         [*_loudnorm_args("loudnorm=I=-14:TP=-1:LRA=11:print_format=json"), "-f", "null", "-"],
         _raw(samples),
     )
+    too_short = len(samples) < ms_to_samples(MIN_GATED_MS)
+    return parse_loudnorm(stderr, gated=not too_short)
+
+
+def parse_loudnorm(stderr: str, *, gated: bool) -> Loudness:
+    """The last loudnorm JSON block in ffmpeg's `stderr` as a `Loudness`.
+
+    `gated` False (a clip too short for gating) drops the integrated value; non-finite
+    values become None (integrated, true peak) or 0.0 (the rest)."""
     blocks = re.findall(r"\{[^{}]*\}", stderr, flags=re.DOTALL)
     if not blocks:
         raise AudioError("ffmpeg loudnorm produced no measurement")
@@ -202,8 +211,7 @@ def measure(samples: Samples) -> Loudness:
         offset = _num(data["target_offset"])
     except (ValueError, KeyError, TypeError) as exc:
         raise AudioError("ffmpeg loudnorm measurement could not be parsed") from exc
-    too_short = len(samples) < ms_to_samples(MIN_GATED_MS)
-    gated = not too_short and math.isfinite(integrated)
+    gated = gated and math.isfinite(integrated)
     return Loudness(
         integrated if gated else None,
         peak if math.isfinite(peak) else None,

@@ -41,6 +41,8 @@ _HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 _NEWLINES = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 _ESCAPES = str.maketrans({"\\": "/", "{": "(", "}": ")"})  # glyphs every bundled font has
 _TAGS = re.compile(r"\{[^}]*\}")
+_TIME = re.compile(r"(\d+):([0-5]\d):([0-5]\d)\.(\d\d)")
+_DIALOGUE = "Dialogue:"
 
 _STYLE_FORMAT = (
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
@@ -63,6 +65,11 @@ def ass_color(hex_rgb: str, alpha: int = 0) -> str:
 def _cs(ms: int) -> int:
     """Milliseconds to centiseconds, rounded half up."""
     return (ms * 2 + 10) // 20
+
+
+def ass_round_ms(ms: int) -> int:
+    """The milliseconds `ass_time` writes for `ms` (rounded half up to centiseconds)."""
+    return _cs(ms) * 10
 
 
 def ass_time(ms: int) -> str:
@@ -225,6 +232,46 @@ class AssDocument:
             if tmp_name is not None:
                 Path(tmp_name).unlink(missing_ok=True)
             raise RenderError(f"cannot write subtitles {path}: {exc}") from exc
+
+
+def _parse_time(field: str) -> int:
+    m = _TIME.fullmatch(field.strip())
+    if m is None:
+        raise ValueError(f"bad ASS time {field!r}")
+    h, mi, sec, cs = (int(g) for g in m.groups())
+    return ((h * 60 + mi) * 60 + sec) * 1000 + cs * 10
+
+
+def parse_events(text: str) -> list[AssEvent]:
+    """The ``Dialogue:`` events of the ``[Events]`` section, in file order.
+
+    Inverts `AssEvent.line` (times come back at centisecond precision); the text field is
+    the tenth and may contain commas. A malformed line raises `ValueError` naming it.
+    """
+    events: list[AssEvent] = []
+    in_events = False
+    for n, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_events = line == "[Events]"
+            continue
+        if not in_events or not line.startswith(_DIALOGUE):
+            continue
+        fields = raw.lstrip()[len(_DIALOGUE) :].lstrip().split(",", 9)
+        try:
+            if len(fields) != 10:
+                raise ValueError(f"{len(fields)} fields, expected 10")
+            event = AssEvent(
+                start_ms=_parse_time(fields[1]),
+                end_ms=_parse_time(fields[2]),
+                style=fields[3].strip(),
+                text=fields[9],
+                layer=int(fields[0]),
+            )
+        except ValueError as exc:
+            raise ValueError(f"malformed ASS event on line {n}: {raw!r}: {exc}") from None
+        events.append(event)
+    return events
 
 
 # name: (font weight, em px, bold, alignment, (margin L, R, V)).

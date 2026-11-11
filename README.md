@@ -27,6 +27,8 @@ uv run narratoflow sketch generate series.json --channel channel.toml   # draw o
 uv run narratoflow sketch resolve series.json s003 --regenerate --channel channel.toml   # or --swap KEY --description TEXT, or --text-card
 uv run narratoflow audio build series.json --channel channel.toml   # narrate, mix and master each part; --part N (repeatable), --out DIR
 uv run narratoflow render series.json --channel channel.toml   # draw and encode each part to an MP4; --part N, --audio DIR, --out DIR, --workers N
+uv run narratoflow review series.json --channel channel.toml   # optional, paid, asks first: LLM check of each part's text against the content rules; --part N, --yes
+uv run narratoflow publish series.json --channel channel.toml   # free and offline: check each part, export the ones that pass; --part N, --audio DIR, --render DIR, --export DIR
 ```
 
 ### Script front matter
@@ -76,6 +78,27 @@ so run `brew install ffmpeg-full` and set `NARRATOFLOW_FFMPEG=$(brew --prefix ff
 gave it (`sketch resolve ... --text-card --card-text TEXT`); run the same command again to change
 the text of a scene that is already a text card.
 
+### Publish
+
+`publish` checks each rendered part against the platform rules (technical, licences and provenance,
+script source, exact verse text, AI disclosure, and the content review if you ran one) and writes
+`part-NN.publish.json` and `.md` plus `series.publish.json` and `.md` next to the render outputs.
+A part with no FAIL is copied to `export/` (default: next to `series.json`) as `part-NN.mp4`,
+`part-NN.disclosure.txt` and `part-NN.publish.md`, with `series.publish.md`. A FAIL blocks that
+part's export and cannot be overridden: there is no flag for it. Fix the cause and run `publish`
+again. `publish` exits 1 when any selected part is blocked, never spends money and never uses the
+network; it does not change `series.json`.
+
+`review` is optional and paid: it asks the channel's LLM to flag clear violations in each part's
+text, shows the estimated cost and asks before spending (`--yes` skips the question), and counts the
+spend against the part's limit. Without it `publish` only notes that no content review was run;
+a part edited after its review gets a "stale" warning. Run `review` again after editing.
+
+The platform rules live in `src/narratoflow/data/platform_rules.toml` (copy it to
+`$NARRATOFLOW_DATA_DIR/platform_rules.toml` to override). Updating it is a manual task: every value
+not fixed by the spec has a `verify` note with a source; re-check each one, then bump `version` and
+`checked`. A rules file checked more than 180 days ago gives a warning.
+
 ### Voices
 
 The channel's `[voice]` table picks the narrator: `provider` (`elevenlabs`, `edge` or `piper`),
@@ -124,6 +147,7 @@ src/narratoflow/
   align/             CTC forced alignment
   visuals/           icon library, line-art extraction, stroke ordering, diffusion
   audio/             SFX, ducking, loudness
+  publish/           platform checks, content review, export and publish reports
   render/            layouts + safe zones, camera, stroke reveal, FFmpeg encoder
   captions/          ASS subtitles (libass shapes Arabic natively)
   ui/                Gradio review station

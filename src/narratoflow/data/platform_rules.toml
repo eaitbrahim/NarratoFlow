@@ -1,0 +1,102 @@
+# Platform rules for `narratoflow publish`.
+#
+# Updating this file is a MANUAL task: re-check every `verify` note against the
+# listed sources, then bump `version` and `checked`. A copy named
+# platform_rules.toml in the data directory overrides this packaged file.
+
+version = "2026-11-11.1"
+checked = 2026-11-11
+
+[loudness]
+# No platform publishes a rejection limit; these are NarratoFlow's mastering targets.
+target_lufs = -14.0
+tolerance_lu = 1.0
+warn_true_peak_dbtp = -1.0
+fail_true_peak_dbtp = 0.0
+verify = "Re-check each platform's current loudness normalisation guidance; no rejection limit is published."
+
+[platforms.youtube-shorts]
+name = "YouTube Shorts"
+max_duration_s = 180
+width = 1080
+height = 1920
+fps = 30
+video_codecs = ["h264"]
+pix_fmts = ["yuv420p"]
+audio_codecs = ["aac"]
+audio_rate = 48000
+ai_label = "Altered or synthetic content"
+sources = [
+  "https://support.google.com/youtube/answer/15424877",
+  "https://support.google.com/youtube/answer/14328491",
+]
+verify = "Re-check the Shorts maximum length (3 minutes since 2024-10-15), the altered or synthetic content label rule, and that 1080x1920 at 30 fps is still accepted."
+
+[platforms.tiktok]
+name = "TikTok"
+max_duration_s = 600
+width = 1080
+height = 1920
+fps = 30
+video_codecs = ["h264"]
+pix_fmts = ["yuv420p"]
+audio_codecs = ["aac"]
+audio_rate = 48000
+ai_label = "AI-generated content"
+sources = [
+  "https://support.tiktok.com",
+  "https://support.tiktok.com/en/using-tiktok/creating-videos/ai-generated-content",
+]
+verify = "600 s is the in-app recording limit; uploads reportedly allow up to 60 minutes per third-party guides only. Check the TikTok help centre for the upload limit, the recommended 1080x1920 size and the AI-generated content label rule."
+
+[licences.assets]
+"CC0-1.0" = { verdict = "pass" }
+"MIT" = { verdict = "pass" }
+"ISC" = { verdict = "pass" }
+"Apache-2.0" = { verdict = "pass" }
+"OFL-1.1" = { verdict = "pass" }
+"CC-BY-4.0" = { verdict = "pass", attribution = true, note = "passes only with a recorded attribution" }
+
+[licences.generated]
+"openai-terms" = { verdict = "pass" }
+"local-model-license" = { verdict = "warn", note = "check the local model's licence allows commercial use of outputs" }
+
+[licences.voice]
+"elevenlabs-terms" = { verdict = "warn", note = "commercial use needs a paid ElevenLabs plan" }
+"edge-tts-terms" = { verdict = "warn", note = "Microsoft's read-aloud service grants no explicit commercial licence" }
+"piper-model-license" = { verdict = "warn", note = "depends on the licence of the voice model used" }
+
+[content.graphic_violence]
+description = "graphic or gratuitous violence"
+max_severity = "fail"
+policies = ["https://support.google.com/youtube/answer/2802008", "https://www.tiktok.com/community-guidelines"]
+
+[content.hate_speech]
+description = "hate speech or harassment of protected groups"
+max_severity = "fail"
+policies = ["https://support.google.com/youtube/answer/2801939", "https://www.tiktok.com/community-guidelines"]
+
+[content.harmful_misinformation]
+description = "harmful misinformation"
+max_severity = "fail"
+policies = ["https://support.google.com/youtube/answer/10834785", "https://www.tiktok.com/community-guidelines"]
+
+[content.dangerous_acts]
+description = "dangerous acts or challenges"
+max_severity = "fail"
+policies = ["https://support.google.com/youtube/answer/2801964", "https://www.tiktok.com/community-guidelines"]
+
+[content.sexual_content]
+description = "sexually explicit content"
+max_severity = "fail"
+policies = ["https://support.google.com/youtube/answer/2802002", "https://www.tiktok.com/community-guidelines"]
+
+[content.religious_discussion]
+description = "discussion or comparison of religions, scriptures, prophets or sects"
+max_severity = "warn"
+policies = ["https://www.tiktok.com/community-guidelines"]
+
+[content.other]
+description = "any other policy concern"
+max_severity = "warn"
+policies = ["https://www.tiktok.com/community-guidelines"]

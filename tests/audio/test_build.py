@@ -1004,3 +1004,20 @@ def test_reciter_refusal_names_the_first_verse_scene(
     s = make_series([narr("s1", "alpha beta")], [verse("v2"), verse("v3")])
     with pytest.raises(ReciterError, match=r"^scene v2 \(31:33\): "):
         run(s, channel, settings, tmp_path, voices=[FakeVoice()], library=library, pack=pack)
+
+
+def test_audio_build_records_voice_spend(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    s = make_series([narr("s1", "alpha beta gamma")])
+    s.parts[0].spent_usd = Decimal("0.50")  # from sketch generation
+    s.parts[0].spend = {"image x/y": Decimal("0.50")}
+    out, _ = run(s, channel, settings, tmp_path, voices=[FakeVoice()], library=library, pack=pack)
+    assert out.parts[0].spend == {
+        "image x/y": Decimal("0.50"),
+        "voice paid/m1": cost("alpha beta gamma"),
+    }

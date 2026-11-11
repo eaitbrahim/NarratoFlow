@@ -37,7 +37,7 @@ def _is_number(field: str) -> bool:
 def _load(path: Path) -> dict[tuple[int, int], str]:
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         raise VerseCorpusError(f"cannot read corpus file {path}: {e}") from e
     rows: dict[tuple[int, int], str] = {}
     for number, line in enumerate(raw.splitlines(), start=1):

@@ -15,7 +15,13 @@ from narratoflow.channels.config import ChannelConfig, load_channel, style_finge
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import require_generation_prices
-from narratoflow.errors import CorruptInputError, LibraryError, NarratoFlowError, PlanningError
+from narratoflow.errors import (
+    CorruptInputError,
+    LibraryError,
+    NarratoFlowError,
+    PlanningError,
+    PublishCheckFailedError,
+)
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import SketchStatus
 from narratoflow.llm.factory import build_llm_client, vision_llm_config
@@ -24,6 +30,16 @@ from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.pipeline import plan_series
+from narratoflow.publish.build import PublishResult, build_publish
+from narratoflow.publish.checks import Severity
+from narratoflow.publish.review import (
+    ReviewCancelledError,
+    ReviewInterruptedError,
+    ReviewResult,
+    estimate_review,
+    review_series,
+)
+from narratoflow.publish.rules import default_rules
 from narratoflow.render.build import PartVideo, RenderResult, build_render
 from narratoflow.settings import get_settings
 from narratoflow.sketching.generate import (
@@ -451,6 +467,140 @@ def render(
         _print_finished(done)  # the error itself is reported by main()
         raise
     _print_render(result)
+
+
+def _print_review(result: ReviewResult) -> None:
+    for index, fails, warns, spent in result.per_part:
+        _out.print(
+            f"part {index}: {fails + warns} finding(s) ({fails} fail, {warns} warn), "
+            f"spent {format_usd(spent)}",
+            highlight=False,
+        )
+    _out.print(f"total spent {format_usd(result.spent_usd)}", highlight=False)
+
+
+@app.command()
+def review(
+    series_json: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    part: Annotated[
+        list[int] | None,
+        typer.Option("--part", help="Part number to review; repeatable (default: all parts)."),
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Review without asking.")] = False,
+) -> None:
+    """Optional, paid: have the LLM review each part's text against the content rules."""
+    channel = load_channel(channel_toml)
+    series = Series.load(series_json)
+    settings = get_settings()
+    # everything that can refuse without spend is checked before asking for money
+    if not series.approved:
+        raise PlanningError("approve the series first")
+    require_series_channel(series, channel)
+    client = build_llm_client(channel.llm, settings)  # refuses on a missing key; no network call
+    prices = default_prices(settings)
+    rules = default_rules(settings)
+    prices.llm(channel.llm.provider.strip().lower(), channel.llm.model)
+    parts = part or None
+    if not yes:
+        count = len(series.parts) if parts is None else len(set(parts))
+        estimate = estimate_review(series, channel, prices, rules, parts)
+        if not typer.confirm(
+            f"Review content rules for {count} part(s)? Estimated cost {format_usd(estimate)}"
+        ):
+            _out.print("Unchanged.")
+            return
+    try:
+        updated, result = review_series(
+            series, channel, settings, parts=parts, llm=client, prices=prices, rules=rules
+        )
+    except ReviewInterruptedError as exc:
+        exc.partial[0].save(series_json)
+        _print_review(exc.partial[1])
+        raise
+    except ReviewCancelledError as exc:
+        exc.partial[0].save(series_json)
+        _err.print("[red]interrupted: review stopped; spend so far is saved[/red]")
+        _print_review(exc.partial[1])
+        raise typer.Exit(130) from None
+    updated.save(series_json)
+    _print_review(result)
+
+
+def _print_publish(result: PublishResult) -> None:
+    for built in result.parts:
+        rep = built.report
+        fails = [c for c in rep.checks if c.severity is Severity.FAIL]
+        warns = [c for c in rep.checks if c.severity is Severity.WARN]
+        target = "not exported" if built.export_path is None else escape(str(built.export_path))
+        _out.print(
+            f"part {rep.part_index}/{rep.part_count}: {rep.verdict.value} "
+            f"({len(fails)} fail, {len(warns)} warn) -> {target}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        for check in (*fails, *warns):
+            colour, name = (
+                ("red", "FAIL") if check.severity is Severity.FAIL else ("yellow", "WARN")
+            )
+            where = "".join(
+                f" {escape(x)}" for x in (check.scene_id, check.platform) if x is not None
+            )
+            _out.print(
+                f"  [{colour}]{name}[/{colour}] {check.check.value}{where}: {escape(check.reason)}",
+                highlight=False,
+                soft_wrap=True,
+            )
+        _out.print(f"  report: {escape(str(built.report_path))}", highlight=False, soft_wrap=True)
+    _out.print(
+        f"series summary: {escape(str(result.summary_path))}", highlight=False, soft_wrap=True
+    )
+
+
+@app.command()
+def publish(
+    series_json: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    part: Annotated[
+        list[int] | None,
+        typer.Option("--part", help="Part number to check and export; repeatable (default: all)."),
+    ] = None,
+    audio: Annotated[
+        Path | None,
+        typer.Option("--audio", help="Audio directory (default: audio/ next to SERIES_JSON)."),
+    ] = None,
+    render_dir: Annotated[
+        Path | None,
+        typer.Option("--render", help="Render directory (default: the audio directory)."),
+    ] = None,
+    export: Annotated[
+        Path | None,
+        typer.Option("--export", help="Export directory (default: export/ next to SERIES_JSON)."),
+    ] = None,
+) -> None:
+    """Check each rendered part against the platform rules and export the ones that pass.
+
+    Free and offline. A FAIL blocks that part's export and cannot be overridden.
+    """
+    channel = load_channel(channel_toml)
+    series = Series.load(series_json)
+    audio_dir = audio if audio is not None else series_json.parent / "audio"
+    result = build_publish(
+        series,
+        channel,
+        get_settings(),
+        render_dir=render_dir if render_dir is not None else audio_dir,
+        audio_dir=audio_dir,
+        export_dir=export if export is not None else series_json.parent / "export",
+        parts=part or None,
+    )
+    _print_publish(result)
+    if result.blocked:
+        listed = ", ".join(str(n) for n in result.blocked)
+        raise PublishCheckFailedError(
+            f"export blocked for part(s) {listed}: "
+            "fix every FAIL above and run narratoflow publish again"
+        )
 
 
 def main() -> None:

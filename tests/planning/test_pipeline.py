@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -11,7 +12,13 @@ from llm.fakes import FakeLLM
 from pydantic import SecretStr
 from rich.console import Console
 
-from narratoflow.channels.config import ChannelConfig, LlmConfig, load_channel, style_fingerprint
+from narratoflow.channels.config import (
+    ChannelConfig,
+    EmbedConfig,
+    LlmConfig,
+    load_channel,
+    style_fingerprint,
+)
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import SpendTracker, TrackedLLM
 from narratoflow.errors import (
@@ -40,6 +47,7 @@ from narratoflow.planning import pipeline as pipeline_module
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.ideas import IdeaOut
 from narratoflow.planning.pipeline import plan_series
+from narratoflow.planning.prompts import IDEAS_SYSTEM
 from narratoflow.planning.segment import SegmentOut, collapse_ws
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.script.source import load_script
@@ -89,12 +97,6 @@ def channel(channel_file: Path) -> ChannelConfig:
 @pytest.fixture
 def prices(settings: Settings) -> PriceTable:
     return default_prices(settings)
-
-
-@pytest.fixture(autouse=True)
-def no_bundled(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The shipped icon pack has `scroll|generic`; these tests plan against an empty pack.
-    monkeypatch.setattr(pipeline_module, "default_bundled_icons", lambda: BundledIcons({}))
 
 
 def _all_scenes(series: Series) -> list[Scene]:
@@ -665,3 +667,124 @@ def test_missing_vision_price_blocks_before_llm(
             prices=table,
         )
     assert fake.calls == []
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"icon"
+
+
+def _pack(tmp_path: Path, icons: dict[str, str]) -> BundledIcons:
+    """A bundled pack of real PNG files (key -> description) with matching sha256s."""
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    sha = hashlib.sha256(PNG).hexdigest()
+    body = ""
+    for n, (key, description) in enumerate(icons.items()):
+        (pack / f"i{n}.png").write_bytes(PNG)
+        body += (
+            f'[icons."{key}"]\nfile = "i{n}.png"\ndescription = "{description}"\n'
+            f'license = "MIT"\nsource = "https://example.org"\nsha256 = "{sha}"\n'
+        )
+    (pack / "index.toml").write_text(body, encoding="utf-8")
+    return BundledIcons.from_index(pack / "index.toml")
+
+
+def _english(channel: ChannelConfig) -> ChannelConfig:
+    return channel.model_copy(update={"language": Language.ENGLISH})
+
+
+def _idea_prompts(fake: ScriptedLLM) -> list[str]:
+    return [user for _, user, out in fake.calls if out is IdeaOut]
+
+
+class _Answers(ScriptedLLM):
+    """A ScriptedLLM that answers every idea call with `key`."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__()
+        self.key = key
+
+    def complete_structured(self, *, system, user, output, images=()):  # type: ignore[no-untyped-def]
+        result = super().complete_structured(system=system, user=user, output=output, images=images)
+        if output is IdeaOut:
+            value = result.value.model_copy(update={"idea_key": self.key})
+            return replace(result, value=value)
+        return result
+
+
+def test_bundled_icons_are_offered_to_the_planner(
+    tmp_path: Path,
+    channel: ChannelConfig,
+    settings: Settings,
+    prices: PriceTable,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = _pack(tmp_path, {"lightbulb|generic": "a glowing lightbulb", "eye|generic": "an eye"})
+    monkeypatch.setattr(pipeline_module, "default_bundled_icons", lambda: pack)
+    fake = _Answers("lightbulb|generic")
+    series = plan_series(
+        write_script(tmp_path, read("clean_en.txt")),
+        _english(channel),
+        settings,
+        llm=fake,
+        prices=prices,
+    )
+    prompts = _idea_prompts(fake)
+    assert prompts and all("lightbulb|generic \u2014 a glowing lightbulb" in p for p in prompts)
+    assert all("eye|generic \u2014 an eye" in p for p in prompts)
+    scenes = _all_scenes(series)
+    assert scenes and all(s.match == "bundled" for s in scenes)
+
+
+def test_channel_entry_wins_in_the_catalog(
+    tmp_path: Path,
+    channel: ChannelConfig,
+    settings: Settings,
+    prices: PriceTable,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = _pack(tmp_path, {"lightbulb|generic": "the bundled bulb"})
+    monkeypatch.setattr(pipeline_module, "default_bundled_icons", lambda: pack)
+    _seed(settings, channel, "lightbulb|generic")  # description "a drawing"
+    fake = _Answers("lightbulb|generic")
+    series = plan_series(
+        write_script(tmp_path, read("clean_en.txt")),
+        _english(channel),
+        settings,
+        llm=fake,
+        prices=prices,
+    )
+    prompts = _idea_prompts(fake)
+    assert prompts and all("lightbulb|generic \u2014 a drawing" in p for p in prompts)
+    assert not any("the bundled bulb" in p for p in prompts)
+    assert all(s.match == "reused" for s in _all_scenes(series))
+
+
+def test_bundled_icons_count_toward_the_embed_threshold(
+    tmp_path: Path,
+    channel: ChannelConfig,
+    settings: Settings,
+    prices: PriceTable,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack = _pack(tmp_path, {f"obj{n}|generic": f"object {n}" for n in range(301)})
+    monkeypatch.setattr(pipeline_module, "default_bundled_icons", lambda: pack)
+    script = write_script(tmp_path, read("clean_en.txt"))
+    english = _english(channel).model_copy(update={"embed": EmbedConfig()})  # voyage, paid
+
+    settings = settings.model_copy(update={"embed_api_key": SecretStr("embed-key")})
+    no_embed_price = PriceTable({k: v for k, v in prices._tables.items() if k != "embed"})
+    fake = ScriptedLLM()
+    with pytest.raises(PlanningError, match="price"):
+        plan_series(script, english, settings, llm=fake, prices=no_embed_price)
+    assert fake.calls == []
+
+    embedder = ConstantEmbedder()
+    fake = ScriptedLLM()
+    plan_series(script, english, settings, llm=fake, embedder=embedder, prices=prices)
+    assert embedder.calls
+    assert all(p.count("|generic \u2014 ") == 5 for p in _idea_prompts(fake))  # top 5
+
+
+def test_ideas_system_names_bundled_icons() -> None:
+    assert "bundled icons" in IDEAS_SYSTEM
+    assert "|generic" in IDEAS_SYSTEM

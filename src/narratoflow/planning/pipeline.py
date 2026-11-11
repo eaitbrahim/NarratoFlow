@@ -28,7 +28,7 @@ from narratoflow.costs.tracker import (
 )
 from narratoflow.embed import Embedder, make_embedder
 from narratoflow.interfaces import Diacritizer
-from narratoflow.library.candidates import candidate_keys
+from narratoflow.library.candidates import candidate_keys, merge_catalog
 from narratoflow.library.keys import parse_idea_key
 from narratoflow.library.matching import MatchKind, match_idea
 from narratoflow.library.repository import SketchLibrary, default_library
@@ -98,7 +98,11 @@ def _diacritizer(channel: ChannelConfig, llm: LLMClient) -> Diacritizer:
 
 
 def _candidates(
-    library: SketchLibrary, version: int, scenes: list[Scene], embedder: Embedder | None
+    library: SketchLibrary,
+    version: int,
+    scenes: list[Scene],
+    embedder: Embedder | None,
+    extra: Sequence[tuple[str, str]],
 ) -> list[list[tuple[str, str]]]:
     """Candidate lists parallel to `scenes`; verse scenes get none and are not embedded."""
     narration = [i for i, s in enumerate(scenes) if s.kind is SceneKind.NARRATION]
@@ -107,6 +111,7 @@ def _candidates(
         version,
         [scenes[i].narration.source_text for i in narration],
         embedder,
+        extra=extra,
         full_limit=CATALOG_EMBED_THRESHOLD,
         top_k=CANDIDATE_TOP_K,
     )
@@ -145,8 +150,8 @@ def plan_series(
     tracker = SpendTracker(channel.spending_limit_usd)
     library = default_library(settings)
     version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
-    catalog = library.idea_catalog(version)
     bundled = default_bundled_icons()  # a broken index must fail before any spend
+    catalog = merge_catalog(library.idea_catalog(version), bundled.catalog())
     arabic = channel.language is Language.ARABIC
     verses: list[VerseHit] = []
     if arabic:
@@ -166,7 +171,9 @@ def plan_series(
     diacritizer = _diacritizer(channel, llm) if arabic else None
 
     scenes = segment_script(text, verses, llm)
-    scenes = assign_ideas(scenes, _candidates(library, version, scenes, embedder), llm)
+    scenes = assign_ideas(
+        scenes, _candidates(library, version, scenes, embedder, bundled.catalog()), llm
+    )
     scenes = [_match(library, version, s, bundled) for s in scenes]
     if diacritizer is not None:
         scenes = [vocalize_scene(s, diacritizer) for s in scenes]

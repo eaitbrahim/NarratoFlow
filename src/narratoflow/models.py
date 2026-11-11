@@ -13,9 +13,17 @@ import tempfile
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from narratoflow.errors import PlanningError
 
@@ -179,6 +187,42 @@ class Project(BaseModel):
         return cls.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+MAX_FINDING_REASON = 200
+
+
+def _truncate_reason(value: object) -> object:
+    # The API drops maxLength from the schema, so a long reason must not fail parsing.
+    return value[:MAX_FINDING_REASON] if isinstance(value, str) else value
+
+
+class ContentFinding(BaseModel):
+    """One content-rules finding as the review model returned it (not yet clamped)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_id: str | None
+    category: str
+    clear_violation: bool
+    reason: Annotated[str, BeforeValidator(_truncate_reason), Field(max_length=MAX_FINDING_REASON)]
+
+
+class ContentReview(BaseModel):
+    """The stored result of `narratoflow review` for one part.
+
+    `text_sha256` is the sha256 of the reviewed text (`publish.content.review_text`);
+    a different hash or `rules_version` makes the review stale.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rules_version: str
+    provider: str
+    model: str
+    reviewed_at: AwareDatetime
+    text_sha256: str
+    findings: list[ContentFinding]
+
+
 class Part(BaseModel):
     index: int = Field(ge=1)
     count: int = Field(ge=1)
@@ -196,6 +240,8 @@ class Part(BaseModel):
     "llm anthropic/<model>", "vision anthropic/<model>"). Series written before this
     field existed may have `sum(spend) < spent_usd`; the report shows the difference
     as unattributed."""
+    content_review: ContentReview | None = None
+    """The last content-rules review; None until `narratoflow review` runs."""
 
     @property
     def est_duration_s(self) -> float:

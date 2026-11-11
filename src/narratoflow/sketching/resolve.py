@@ -13,7 +13,7 @@ from typing import Any
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.errors import PlanningError
 from narratoflow.library.keys import parse_idea_key
-from narratoflow.models import Scene, Series, VisualSource
+from narratoflow.models import Scene, SceneKind, Series, VisualSource
 from narratoflow.planning.ideas import IdeaOut, validate_idea
 from narratoflow.settings import Settings
 from narratoflow.sketching.generate import (
@@ -59,17 +59,30 @@ def regenerate(
     one. `deps` are `generate_missing`'s `images`, `vision`, `library` and `prices`.
     May raise `GenerationInterruptedError` like `generate_missing`.
     """
-    prepared = _resolved(
-        series,
-        scene_id,
-        lambda s: {"sketch_id": None, "match": "new", "sketch_attempt": s.sketch_attempt + 1},
-    )
+
+    def change(scene: Scene) -> dict[str, Any]:
+        if (
+            scene.kind is SceneKind.VERSE
+            or scene.idea_key is None
+            or scene.visual.source is VisualSource.TEXT_CARD
+        ):
+            raise PlanningError(f"scene {scene_id} has nothing to generate")
+        return {"sketch_id": None, "match": "new", "sketch_attempt": scene.sketch_attempt + 1}
+
+    prepared = _resolved(series, scene_id, change)
     try:
         out, _ = generate_missing(prepared, channel, settings, only=frozenset({scene_id}), **deps)
     except GenerationInterruptedError as e:
         # the creator confirmed this attempt only: a scene left without a sketch goes
         # back to quarantine so the next `sketch generate` does not spend on it
-        e.partial = (_requarantined(e.partial[0], scene_id), e.partial[1])
+        fixed, result = e.partial
+        fixed = _requarantined(fixed, scene_id)
+        flagged = any(
+            s.id == scene_id and QUARANTINED_FLAG in s.flags for p in fixed.parts for s in p.scenes
+        )
+        if flagged and scene_id not in result.quarantined:
+            result.quarantined.append(scene_id)
+        e.partial = (fixed, result)
         raise
     return out
 

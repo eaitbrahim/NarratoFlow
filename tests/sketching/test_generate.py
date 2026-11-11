@@ -554,6 +554,28 @@ def test_only_restricts_the_run_to_the_named_scenes(
     assert len(images.requests) == 1 and result.generated == 1
 
 
+def test_only_in_part_two_leaves_part_one_untouched_and_counts_one_scene(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s = series([scene(1)], [scene(2), scene(3)])
+    images = FakeImages()
+    out, result = generate_missing(
+        s,
+        channel,
+        settings,
+        images=images,
+        vision=FakeLLM(clean(1)),
+        library=library,
+        prices=PRICES,
+        only=frozenset({"s003"}),
+    )
+    first, second, third = scenes_of(out)
+    assert first == scenes_of(s)[0] and second == scenes_of(s)[1]
+    assert third.sketch_id is not None
+    assert len(images.requests) == 1 and result.generated == 1
+    assert result.spent_usd == PER_SKETCH
+
+
 def test_attempt_changes_the_seed_and_zero_keeps_it() -> None:
     assert marker_seed("v", "s1") == marker_seed("v", "s1", 0)
     assert marker_seed("v", "s1", 1) != marker_seed("v", "s1")

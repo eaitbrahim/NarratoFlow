@@ -206,3 +206,30 @@ def test_interrupted_regenerate_keeps_the_scene_quarantined(
     assert first.sketch_attempt == 1
     assert second == scenes_of(quarantined())[1]
     assert "progress so far is kept" in str(info.value)
+    assert info.value.partial[1].quarantined == ["s001"]
+
+
+def test_regenerate_refuses_scenes_generate_missing_would_skip(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    cases = [
+        scene(1, flags=[QUARANTINED_FLAG], kind="verse"),
+        scene(1, flags=[QUARANTINED_FLAG], idea_key=None),
+        scene(1, flags=[QUARANTINED_FLAG], visual={"source": "text_card"}),
+    ]
+    for sc in cases:
+        s = series([sc])
+        before = s.model_copy(deep=True)
+        images = FakeImages()
+        with pytest.raises(PlanningError, match="nothing to generate"):
+            regenerate(
+                s,
+                "s001",
+                channel,
+                settings,
+                images=images,
+                vision=None,
+                library=library,
+                prices=PRICES,
+            )
+        assert s == before and images.requests == []

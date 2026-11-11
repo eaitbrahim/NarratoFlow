@@ -17,6 +17,10 @@ class ChannelConfigError(NarratoFlowError):
     """A channel configuration is missing or invalid."""
 
 
+class ExtraMissingError(ChannelConfigError):
+    """An optional extra (e.g. 'tts-edge') is not installed; the message names it."""
+
+
 class InvalidIdeaKeyError(NarratoFlowError):
     """An idea key is malformed."""
 

@@ -218,8 +218,17 @@ def estimate_part_cost(
             if key not in bundled_seen:
                 bundled_seen.add(key)
                 total += check(key)
-    speech = Decimal(voice_chars) / 1000 * prices.voice(voice.provider, voice.model)
-    return total + speech
+    return total + estimate_speech_cost(prices, voice.provider, voice.model, voice_chars)
+
+
+def estimate_speech_cost(prices: PriceTable, provider: str, model: str, chars: int) -> Decimal:
+    """USD for `chars` characters of speech: `chars / 1000 x per_kchar`.
+
+    Free providers (`FREE_PROVIDERS`, e.g. edge and piper) cost 0 without a price
+    entry. Both the approval estimate (`estimate_part_cost`) and the limit check of
+    `TrackedSpeechProvider` use this one formula.
+    """
+    return Decimal(chars) / 1000 * prices.voice(provider, model)
 
 
 class TrackedLLM:

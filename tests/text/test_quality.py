@@ -47,6 +47,13 @@ def test_bom_crlf_and_bidi_marks_not_flagged() -> None:
     assert check_input(text, Language.ARABIC).ok
 
 
+def test_bidi_embeddings_and_isolates_removed() -> None:
+    marks = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+    assert normalize_input(f"\u0642\u0627\u0644{marks} abc") == "\u0642\u0627\u0644 abc"
+    text = read("clean_ar.txt").replace(" ", " \u2067", 5).replace(".", ".\u2069", 3)
+    assert check_input(text, Language.ARABIC).ok
+
+
 def test_normalize_keeps_diacritics() -> None:
     assert normalize_input("اَلْعِلْمُ\r\n") == "اَلْعِلْمُ\n"
 
@@ -78,13 +85,23 @@ def test_latin_stretching_and_replacement_char() -> None:
 
 
 def test_page_number_lines() -> None:
-    report = check_input("hello world\n31\n\u0663\u0667\n- \nbye now", Language.ENGLISH)
+    text = "hello world\n31\n\u0663\u0667\n- 12 -\n\u06f4\u06f5\nbye now"
+    report = check_input(text, Language.ENGLISH)
     pages = [(i.kind, i.line) for i in report.issues if i.kind is IssueKind.PAGE_NUMBER]
     assert pages == [
         (IssueKind.PAGE_NUMBER, 2),
         (IssueKind.PAGE_NUMBER, 3),
         (IssueKind.PAGE_NUMBER, 4),
+        (IssueKind.PAGE_NUMBER, 5),
     ]
+
+
+@pytest.mark.parametrize("scene_break", ["* * *", "---", "...", "\u06de", "- ", "***"])
+def test_scene_break_lines_pass(scene_break: str) -> None:
+    for name, lang in (("clean_en.txt", Language.ENGLISH), ("clean_ar.txt", Language.ARABIC)):
+        # Two copies of the script so one short break line stays under the fragment ratio.
+        text = f"{read(name).rstrip()}\n\n{scene_break}\n\n{read(name)}"
+        assert check_input(text, lang).ok, (name, scene_break)
 
 
 def test_fragmented_lines_reported_once() -> None:

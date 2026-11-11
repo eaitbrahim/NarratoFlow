@@ -13,12 +13,17 @@ _MAX_REPORTED = 10
 _FRAGMENT_SHORT = 3
 _FRAGMENT_RATIO = 0.2
 
-_INVISIBLE_AND_TATWEEL = dict.fromkeys(map(ord, "\u200e\u200f\u061c\u0640"))
+# LRM, RLM, ALM, tatweel, bidi embeddings/overrides U+202A-U+202E, isolates U+2066-U+2069.
+_INVISIBLE_AND_TATWEEL = dict.fromkeys(
+    [*map(ord, "\u200e\u200f\u061c\u0640"), *range(0x202A, 0x202F), *range(0x2066, 0x206A)]
+)
 # Harakat only: U+064B-U+065F and U+0670. Deliberately not tatweel or Qur'anic marks.
 _HARAKAT = re.compile("[\u064b-\u065f\u0670]")
 _ARABIC_STRETCH = re.compile("([\u0621-\u063a\u0641-\u064a])\\1{2,}")
 _LATIN_STRETCH = re.compile("([A-Za-z])\\1{3,}")
-_PAGE_NUMBER = re.compile("[\\d\u0660-\u0669\u06f0-\u06f9\\W_]+")
+_DIGIT = "0-9\u0660-\u0669\u06f0-\u06f9"
+# At least one Western or Arabic-Indic digit, and nothing but digits, punctuation and space.
+_PAGE_NUMBER = re.compile(f"(?=[^{_DIGIT}]*[{_DIGIT}])[{_DIGIT}\\W_]+")
 _PRIVATE_USE = re.compile("[\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
 
 

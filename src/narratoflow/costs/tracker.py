@@ -213,10 +213,17 @@ class TrackedLLM:
         self.tracker.charge_llm(self.provider, billed, result.usage, self.prices)
         if images:
             self.tracker.charge(
-                len(images) * self.prices.vision(self.provider, billed),
+                len(images) * self._vision_price(billed),
                 f"vision {self.provider}/{billed}",
             )
         return result
+
+    def _vision_price(self, billed: str) -> Decimal:
+        """Vision price of the billed model, else the configured model's."""
+        try:
+            return self.prices.vision(self.provider, billed)
+        except PlanningError:
+            return self.prices.vision(self.provider, self.model)
 
     def _billed_model(self, served: str) -> str:
         """The served model when it differs and is priced, else the configured one."""

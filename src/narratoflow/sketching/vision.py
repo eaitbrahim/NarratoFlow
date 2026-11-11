@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Annotated
+
+from pydantic import BaseModel, BeforeValidator, Field
 
 from narratoflow.channels.config import StyleConfig
+from narratoflow.library.keys import parse_idea_key
 from narratoflow.library.schemas import SketchStatus
 from narratoflow.llm.base import LLMClient
 from narratoflow.planning.prompts import VISION_SYSTEM
 
+MAX_REASON = 200
 NOT_CHECKED = "vision: not checked"
+
+
+def _truncate(value: object) -> object:
+    # The API drops maxLength from the schema, so a long reason must not fail parsing.
+    return value[:MAX_REASON] if isinstance(value, str) else value
 
 
 class VisionVerdict(BaseModel):
@@ -18,7 +27,7 @@ class VisionVerdict(BaseModel):
     logo_or_text: bool
     style_outlier: bool
     mirror_safe: bool
-    reason: str = Field(max_length=200)
+    reason: Annotated[str, BeforeValidator(_truncate), Field(max_length=MAX_REASON)]
 
 
 def _user_text(style: StyleConfig, idea_key: str, with_reference: bool) -> str:
@@ -49,12 +58,13 @@ def check_sketch(
     A human figure, face, logo or text FAILs; a style outlier alone is a WARN that
     still passes. LLM errors propagate to the caller.
     """
+    key = parse_idea_key(idea_key)
     if llm is None:
         return SketchStatus.UNCHECKED, NOT_CHECKED, False, None
     images = [png] if reference_png is None else [png, reference_png]
     result = llm.complete_structured(
         system=VISION_SYSTEM,
-        user=_user_text(style, idea_key, reference_png is not None),
+        user=_user_text(style, str(key), reference_png is not None),
         output=VisionVerdict,
         images=images,
     )

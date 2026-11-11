@@ -1,3 +1,4 @@
+import base64
 import json
 
 import httpx
@@ -152,8 +153,6 @@ def test_base_url_trailing_slash_is_tolerated() -> None:
 
 
 def test_images_are_sent_base64_on_the_user_message() -> None:
-    import base64
-
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

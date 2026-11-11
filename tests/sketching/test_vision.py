@@ -4,7 +4,7 @@ import pytest
 from llm.fakes import FakeLLM
 
 from narratoflow.channels.config import ChannelConfig, StyleConfig, VisionConfig
-from narratoflow.errors import ProviderError
+from narratoflow.errors import InvalidIdeaKeyError, ProviderError
 from narratoflow.library.schemas import SketchStatus
 from narratoflow.planning.prompts import VISION_SYSTEM
 from narratoflow.sketching.vision import VisionVerdict, check_sketch
@@ -123,9 +123,32 @@ def test_llm_errors_propagate() -> None:
         check_sketch(b"png", STYLE, "k|x", FakeLLM([ProviderError("down")]))
 
 
-def test_reason_is_capped_at_200_chars() -> None:
-    with pytest.raises(ValueError):
-        _verdict(reason="x" * 201)
+def test_long_reason_is_truncated_not_rejected() -> None:
+    v = VisionVerdict.model_validate(
+        {
+            "human_figure": False,
+            "face": True,
+            "logo_or_text": False,
+            "style_outlier": False,
+            "mirror_safe": True,
+            "reason": "x" * 250,
+        }
+    )
+    status, reason, _, verdict = check_sketch(b"png", STYLE, "k|x", FakeLLM([v]))
+    assert status is SketchStatus.FAILED
+    assert reason == "vision: face; " + "x" * 200
+    assert verdict is not None and len(verdict.reason) == 200
+
+
+def test_idea_key_is_normalized_in_the_user_text() -> None:
+    llm = FakeLLM([_verdict()])
+    check_sketch(b"png", STYLE, " Eye | Generic ", llm)
+    assert "Idea key: eye|generic" in llm.calls[0][1]
+
+
+def test_bad_idea_key_raises() -> None:
+    with pytest.raises(InvalidIdeaKeyError):
+        check_sketch(b"png", STYLE, "no-separator", FakeLLM([_verdict()]))
 
 
 def test_vision_system_carries_the_calibration() -> None:
@@ -137,7 +160,7 @@ def test_vision_system_carries_the_calibration() -> None:
         "heads",
         "torsos",
         "stick figures",
-        "silhouettes",
+        "silhouettes of people",
         "likeness",
         "logos",
         "trademarks",
@@ -147,6 +170,9 @@ def test_vision_system_carries_the_calibration() -> None:
         assert rejected in text
     for outlier in ("shading", "fills", "colour", "texture", "detail"):
         assert outlier in text
+    assert "human or animal" in text
+    assert "never flag these as human_figure or face" in text
+    assert "written symbols or signs" in text
     assert "mirror_safe" in text and "maps" in text and "direction" in text
 
 

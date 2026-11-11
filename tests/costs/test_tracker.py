@@ -16,7 +16,7 @@ from narratoflow.costs.tracker import (
     estimate_planning_cost,
     estimate_tokens,
 )
-from narratoflow.errors import BudgetExceededError, ProviderError
+from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.llm.base import Usage
 from narratoflow.models import Language, Narration, Part, Scene
 from narratoflow.settings import Settings
@@ -293,3 +293,22 @@ def test_tracked_llm_without_images_charges_no_vision(prices: PriceTable) -> Non
     )
     assert fake.images == [()]
     assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
+
+
+def test_tracked_llm_falls_back_to_configured_vision_price(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()], model="claude-served-x")
+    served_llm = prices.llm
+
+    class P:
+        def llm(self, provider: str, model: str) -> tuple[Decimal, Decimal]:
+            return served_llm("anthropic", "claude-opus-5-5")
+
+        def vision(self, provider: str, model: str) -> Decimal:
+            if model == "claude-served-x":
+                raise PlanningError("no vision price")
+            return prices.vision(provider, model)
+
+    t = SpendTracker(Decimal("10"))
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", P())  # type: ignore[arg-type]
+    llm.complete_structured(system="s", user="u", output=Out, images=[b"a"])
+    assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000 + Decimal("0.01")

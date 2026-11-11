@@ -1,3 +1,4 @@
+import base64
 import json
 from collections.abc import Callable
 from typing import Any
@@ -271,8 +272,6 @@ def test_malformed_body_raises_provider_error() -> None:
 
 
 def test_images_become_base64_blocks_before_the_text_block() -> None:
-    import base64
-
     seen: list[httpx2.Request] = []
     client = _make(_recording(_message([_text(SCENE_JSON)]), seen))
 
@@ -300,3 +299,13 @@ def test_images_become_base64_blocks_before_the_text_block() -> None:
         },
         {"type": "text", "text": "look"},
     ]
+
+
+def test_refusal_on_an_image_request_raises_the_same_refusal_error() -> None:
+    details = {"type": "refusal", "category": "cyber", "explanation": "declined"}
+    refusal = _message([], stop_reason="refusal", stop_details=details)
+    client = _make(_recording(refusal, []))
+
+    with pytest.raises(ProviderRefusalError) as info:
+        client.complete_structured(system="s", user="u", output=Scene, images=[b"png"])
+    assert info.value.category == "cyber"

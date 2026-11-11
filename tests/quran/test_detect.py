@@ -72,23 +72,72 @@ def test_unbracketed_quote_with_variant_spelling_detected(corpus: QuranCorpus) -
     "quote",
     [
         "وأتيناه الحكم صبيا وحنانا من لدنا وزكاة وكان تقيا",
-        "واتيناه الْحُكْمَ صَبِيًّا وَحَنَانًا مِن لَدُنَّا وزكوة وكان تقيا",
-        "وإتيناه الحكم صبيا وحنانا من لدنا وزكاه وكان تقيى",
+        "واتيناه الْحُكْمَ صَبِيًّا وَحَنَانًا مِن لَدُنَّا وَزَكَاةً وكان تقيا",
+        "وإتيناه الحكم صبيا وحنانا من لدنا وزكاه وكان تقيا",
     ],
 )
 def test_variant_alef_and_partial_harakat(corpus: QuranCorpus, quote: str) -> None:
-    text = f"قال: {quote}."
-    hits = detect_verses(text, corpus)
-    # "وزكوة" (waw spelling) breaks the run; the six words before it still match
-    assert hits
-    assert all(h.ref.surah == 19 for h in hits)
-    assert hits[0].ref.ayah_start == 12
+    text = f"قال: \u00ab{quote}\u00bb."
+    [hit] = detect_verses(text, corpus)
+    assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (
+        19,
+        12,
+        13,
+        True,
+    )
+    assert text[hit.start : hit.end] == quote
 
 
-def test_variant_spelling_full_run(corpus: QuranCorpus) -> None:
+def test_uthmani_waw_spelling_breaks_run(corpus: QuranCorpus) -> None:
+    # Uthmani waw spelling of zakah does not fold to the imla'i form (accepted v1 limit):
+    # the run breaks there, and the 3+3-word piece before it is trimmed below min_words.
+    text = "قال: وأتيناه الحكم صبيا وحنانا من لدنا وزكوة وكان تقيا."
+    assert detect_verses(text, corpus) == []
+
+
+def test_undelimited_short_start_piece_is_trimmed(corpus: QuranCorpus) -> None:
     quote = "وأتيناه الحكم صبيا وحنانا من لدنا وزكاة وكان تقيا"
     [hit] = detect_verses(quote, corpus)
-    assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.start, hit.end) == (12, 13, 0, len(quote))
+    # only 3 words of 19:12 and no opening quote: they stay the author's narration
+    assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (13, 13, True)
+    assert quote[hit.start : hit.end] == "وحنانا من لدنا وزكاة وكان تقيا"
+
+
+def test_narrator_word_after_ayah_is_not_swallowed(corpus: QuranCorpus) -> None:
+    for tail in ("قال", "قال رب", "قال رب إني"):
+        text = f"إذ نادى ربه نداء خفيا {tail} كذا"
+        [hit] = detect_verses(text, corpus)
+        assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (3, 3, True)
+        assert text[hit.start : hit.end] == "إذ نادى ربه نداء خفيا"
+        assert hit.ref.uthmani_text == corpus.ayah(19, 3).uthmani
+
+
+def test_four_words_into_next_ayah_are_kept(corpus: QuranCorpus) -> None:
+    text = "إذ نادى ربه نداء خفيا قال رب إني وهن"
+    [hit] = detect_verses(text, corpus)
+    assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.end) == (3, 4, len(text))
+
+
+def test_narrator_words_before_ayah_are_not_swallowed(corpus: QuranCorpus) -> None:
+    text = "ربك عبده زكريا إذ نادى ربه نداء خفيا"
+    [hit] = detect_verses(text, corpus)
+    assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (3, 3, True)
+    assert text[hit.start : hit.end] == "إذ نادى ربه نداء خفيا"
+
+
+def test_trim_below_min_words_drops_run(corpus: QuranCorpus) -> None:
+    assert detect_verses("ربك عبده زكريا إذ نادى", corpus) == []
+
+
+def test_ayah_number_digits_split_tokens(corpus: QuranCorpus) -> None:
+    text = "إذ نادى ربه نداء خفيا\u06dd\u0663"
+    [hit] = detect_verses(text, corpus)
+    assert (hit.ref.ayah_start, hit.ref.certain) == (3, True)
+    assert text[hit.start : hit.end] == "إذ نادى ربه نداء خفيا"
+    # numbers between ayat do not break a multi-ayah quote
+    text = "إذ نادى ربه نداء خفيا (\u0663) قال رب إني وهن العظم"
+    [hit] = detect_verses(text, corpus)
+    assert (hit.ref.ayah_start, hit.ref.ayah_end) == (3, 4)
 
 
 def test_short_overlap_is_uncertain(corpus: QuranCorpus) -> None:
@@ -185,9 +234,24 @@ def test_no_extension_across_surahs(tmp_path: Path) -> None:
 
 
 def test_extension_across_ayat_is_full_range(tmp_path: Path) -> None:
-    c = _corpus(tmp_path, ["4|1|بب تت", "4|2|ثث جج"])
-    [hit] = detect_verses("بب تت ثث جج", c)
+    c = _corpus(tmp_path, ["4|1|بب تت ثث جج", "4|2|خخ دد سس شش"])
+    [hit] = detect_verses("بب تت ثث جج خخ دد سس شش", c)
     assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (1, 2, True)
+
+
+def test_short_ayat_need_explicit_delimiters(tmp_path: Path) -> None:
+    c = _corpus(tmp_path, ["4|1|بب تت", "4|2|ثث جج"])
+    assert detect_verses("بب تت ثث جج", c) == []
+    text = "\ufd3fبب تت ثث جج\ufd3e"
+    [hit] = detect_verses(text, c)
+    assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (1, 2, True)
+
+
+def test_non_contiguous_ayat_do_not_join(tmp_path: Path) -> None:
+    c = _corpus(tmp_path, ["4|1|بب تت ثث جج", "4|5|خخ دد سس شش"])
+    hits = detect_verses("بب تت ثث جج خخ دد سس شش", c)
+    assert [(h.ref.ayah_start, h.ref.ayah_end) for h in hits] == [(1, 1), (5, 5)]
+    assert detect_verses("ثث جج خخ دد", c) == []
 
 
 def test_index_built_once_per_corpus(corpus: QuranCorpus) -> None:
@@ -229,9 +293,9 @@ def test_ambiguity_from_duplicated_fixture_ayah(tmp_path: Path) -> None:
     assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.certain) == (19, 3, False)
 
 
-def test_same_words_different_coverage_shape_stays_certain(tmp_path: Path) -> None:
+def test_duplicate_with_different_shape_is_uncertain(tmp_path: Path) -> None:
     six = "بب تت ثث جج خخ دد"
-    # 8:1 ends with the run (suffix), 8:2 starts with it (prefix): different shapes
-    c = _corpus(tmp_path, [f"8|1|سس {six}", f"8|2|{six} شش"])
+    # suffix of 8:1 and exactly 9:2: ambiguous, and the exact (full-ayah) location wins
+    c = _corpus(tmp_path, [f"8|1|سس {six}", f"9|2|{six}"])
     [hit] = detect_verses(six, c)
-    assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.certain) == (8, 1, True)
+    assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.certain) == (9, 2, False)

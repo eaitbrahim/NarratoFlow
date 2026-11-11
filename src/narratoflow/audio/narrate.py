@@ -5,7 +5,8 @@ the chain is tried in order for the *whole* part: a `ProviderError` (including a
 `BilledProviderError`), an `ExtraMissingError`, or audio that does not decode or
 is all silence, on any scene abandons that voice and the next one starts again
 from the first scene. Bad audio also drops that clip's cache entry; any spend
-already charged for it stays charged. Budget, key and other config
+already charged for it stays charged. Bad audio found in the cache is dropped and
+re-voiced with the same voice instead. Budget, key and other config
 errors propagate. Word timings come from the provider's spans, else the aligner,
 else an estimate over the clip's non-silent span; the voice never falls back
 because of timing.
@@ -254,17 +255,26 @@ def _voice_all(
     cache: StageCache,
     language: Language,
 ) -> dict[str, _Clip]:
-    """Voice (or reuse) every scene; bad audio fails the voice and drops its entry."""
+    """Voice (or reuse) every scene.
+
+    A bad cached clip is dropped and re-voiced with the same voice (the normal paid
+    path); only freshly synthesized bad audio fails the voice.
+    """
     out: dict[str, _Clip] = {}
     for scene in scenes:
         text = _spoken(scene)
         key = _key(choice, text)
         hit = _read(cache, key)
-        if hit is None:
-            speech = tracked.synthesize(SpeechRequest(text, choice.voice_id, language))
-            hit = _Voiced(speech.audio, tuple(speech.spans))
-            _store(cache, key, hit, speech.billed_chars)
-        out[scene.id] = _checked_clip(cache, key, scene, hit)
+        if hit is not None:
+            try:
+                out[scene.id] = _checked_clip(cache, key, scene, hit)
+                continue
+            except _BadVoiceAudio:
+                pass  # entry dropped; synthesize it again below
+        speech = tracked.synthesize(SpeechRequest(text, choice.voice_id, language))
+        fresh = _Voiced(speech.audio, tuple(speech.spans))
+        _store(cache, key, fresh, speech.billed_chars)
+        out[scene.id] = _checked_clip(cache, key, scene, fresh)
     return out
 
 

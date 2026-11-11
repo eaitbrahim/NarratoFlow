@@ -575,14 +575,50 @@ def test_bad_voice_audio_fails_the_voice(cache: StageCache, audio: bytes, why: s
     assert result.cost_estimated is True
 
 
-def test_bad_cached_audio_fails_the_voice_and_is_dropped(cache: StageCache) -> None:
+@pytest.mark.parametrize(
+    "bad",
+    [b"junk", to_wav_bytes(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))],
+    ids=["undecodable", "silent"],
+)
+def test_bad_cached_audio_is_revoiced_with_the_same_voice(cache: StageCache, bad: bytes) -> None:
+    part = make_part(narration("s1", "alpha beta"), narration("s2", "gamma delta epsilon"))
+    voice = FakeVoice()
+    p = VoiceChoice(voice, "p")
+    run(part, [p], cache)
+    audio_path = cache.root / "tts" / f"{key_for(p, 'alpha beta')}.audio"
+    audio_path.write_bytes(bad)
+    backup = FakeVoice("edge", "edge-tts")
+    result, tracker = run(part, [p, VoiceChoice(backup, "b")], cache)
+    v = voice_of(result)
+    assert (v.provider, v.fallback_from, v.fallback_reasons) == ("paid", None, [])
+    assert backup.requests == []
+    assert [r.text for r in voice.requests] == ["alpha beta", "gamma delta epsilon", "alpha beta"]
+    assert tracker.spent == Decimal(len("alpha beta")) / 1000 * Decimal("0.30")
+    assert audio_path.read_bytes() != bad  # the entry was rewritten with good audio
+    assert result.clips["s1"].timing_source is TimingSource.PROVIDER
+
+
+def test_bad_cached_audio_revoice_respects_budget(cache: StageCache) -> None:
+    part = make_part(narration("s1", "alpha beta"))
+    voice = FakeVoice()
+    p = VoiceChoice(voice, "p")
+    run(part, [p], cache)
+    (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.audio").write_bytes(b"junk")
+    with pytest.raises(BudgetExceededError):
+        run(part, [p], cache, tracker=SpendTracker(limit_usd=Decimal("0.0001")))
+    assert len(voice.requests) == 1
+
+
+def test_fresh_bad_audio_after_bad_cache_fails_the_voice(cache: StageCache) -> None:
     part = make_part(narration("s1", "alpha beta"))
     p = VoiceChoice(FakeVoice(), "p")
     run(part, [p], cache)
     (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.audio").write_bytes(b"junk")
+    still_bad = VoiceChoice(BadAudioVoice(b"junk", "alpha"), "p")
     backup = FakeVoice("edge", "edge-tts")
-    result, _ = run(part, [p, VoiceChoice(backup, "b")], cache)
+    result, _ = run(part, [still_bad, VoiceChoice(backup, "b")], cache)
     assert voice_of(result).provider == "edge"
+    assert voice_of(result).fallback_reasons[0].startswith("paid/p: scene s1: audio does not")
     assert not (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.json").exists()
 
 

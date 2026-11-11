@@ -29,6 +29,7 @@ from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
 from narratoflow.planning.approval import needs_approval, render_approval_list
+from narratoflow.planning.ideas import render_candidates
 from narratoflow.planning.pipeline import plan_series
 from narratoflow.publish.build import PublishResult, build_publish
 from narratoflow.publish.checks import Severity
@@ -56,6 +57,7 @@ from narratoflow.sketching.resolve import (
 )
 from narratoflow.sketching.vision import estimate_check_cost
 from narratoflow.text.quality import require_clean
+from narratoflow.visuals.bundled import default_bundled_icons
 
 app = typer.Typer(no_args_is_help=True, help="NarratoFlow whiteboard video engine.")
 channel_app = typer.Typer(no_args_is_help=True, help="Channel configuration commands.")
@@ -113,6 +115,31 @@ def library_keys(channel_toml: Path) -> None:
     version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
     for key in library.idea_keys(version):
         _out.print(key, markup=False, highlight=False)
+
+
+@library_app.command("icons")
+def library_icons(
+    words: Annotated[
+        list[str] | None,
+        typer.Argument(help="Words that must all appear in the key or description."),
+    ] = None,
+) -> None:
+    """Search the bundled icons for keys to use with sketch resolve --swap."""
+    wanted = words or []
+    matches = default_bundled_icons().search(wanted)
+    if not matches:
+        _out.print(
+            f"no bundled icon matches '{' '.join(wanted)}'; propose a new key with "
+            "sketch resolve --swap, or use --text-card",
+            markup=False,
+            highlight=False,
+        )
+        return
+    _out.print(
+        render_candidates([(i.key, i.description) for i in matches]),
+        markup=False,
+        highlight=False,
+    )
 
 
 @library_app.command("copy")

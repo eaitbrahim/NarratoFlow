@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ from narratoflow.models import (
 )
 from narratoflow.settings import Settings, get_settings
 from narratoflow.sketching.generate import GenerationInterruptedError, GenerationResult
+from narratoflow.visuals.bundled import BundledIcon, BundledIcons
 
 runner = CliRunner()
 INPUTS = Path(__file__).parent / "fixtures" / "input"
@@ -1692,3 +1694,51 @@ def test_review_unknown_part_refused_before_prompt_and_spend(
     assert code == 1 and asked == [] and seen == []
     assert "no part 9" in capsys.readouterr().err
     assert path.read_bytes() == before
+
+
+def _two_icons(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def icon(key: str, description: str) -> BundledIcon:
+        return BundledIcon(
+            key=key,
+            file=tmp_path / "x.png",
+            license="MIT",
+            source="x",
+            description=description,
+            sha256="0" * 64,
+        )
+
+    pack = BundledIcons(
+        {
+            "lightbulb|generic": icon("lightbulb|generic", "a bulb for an idea"),
+            "eye|generic": icon("eye|generic", "an open eye"),
+        }
+    )
+    monkeypatch.setattr(cli, "default_bundled_icons", lambda: pack)
+
+
+def test_library_icons_lists_matches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _two_icons(monkeypatch, tmp_path)
+    for name in list(os.environ):
+        if name.startswith("NARRATOFLOW_") and name.endswith("_KEY"):
+            monkeypatch.delenv(name)
+    result = runner.invoke(cli.app, ["library", "icons", "idea"])
+    assert result.exit_code == 0, result.output
+    assert "lightbulb|generic" in result.output
+    assert "eye|generic" not in result.output
+
+
+def test_library_icons_without_words_lists_all(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _two_icons(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["library", "icons"])
+    assert result.exit_code == 0, result.output
+    assert "lightbulb|generic" in result.output and "eye|generic" in result.output
+
+
+def test_library_icons_no_match_hint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _two_icons(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["library", "icons", "zzz"])
+    assert result.exit_code == 0, result.output
+    assert "no bundled icon matches 'zzz'" in result.output
+    assert "--text-card" in result.output

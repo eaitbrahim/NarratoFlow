@@ -272,6 +272,27 @@ def test_make_hand_is_deterministic() -> None:
     assert a.getpixel(mod.TIP)[3] > 0
 
 
+def _dark(px: tuple[int, ...]) -> bool:
+    return px[3] > 128 and max(px[:3]) < 100
+
+
+def test_make_hand_outline_is_open_at_the_wrist() -> None:
+    # The hand continues out of view: no ink edge runs along the image's right or bottom.
+    mod = _script("make_hand")
+    img = mod.draw()
+    w, h = img.size
+    for row in range(h - 3, h):
+        assert sum(_dark(img.getpixel((x, row))) for x in range(w)) < 12, row
+    for col in range(w - 3, w):
+        assert sum(_dark(img.getpixel((col, y))) for y in range(h)) < 16, col
+
+
+def test_committed_hand_matches_the_script() -> None:
+    mod = _script("make_hand")
+    committed = Image.open(mod.OUT / "hand-right.png").convert("RGBA")
+    assert committed.tobytes() == mod.draw().tobytes()
+
+
 def test_check_arabic_shaping_passes_with_bundled_amiri(
     render_tools: RenderTools, tmp_path: Path
 ) -> None:

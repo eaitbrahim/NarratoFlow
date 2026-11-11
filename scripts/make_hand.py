@@ -2,9 +2,10 @@
 
     uv run python scripts/make_hand.py
 
-A right hand from the wrist down gripping a marker, as fixed polygons: ink #111111 outline,
-white fill, grey marker. 320x440 RGBA, marker tip at the top-left (tip pixel printed and written
-to the index). No randomness. NarratoFlow's own work, Apache-2.0.
+A right hand from the wrist down gripping a marker, as fixed polygons: ink #111111 outline
+(open at the wrist, where the hand leaves the image), white fill, grey marker. 320x440 RGBA,
+marker tip at the top-left (tip pixel printed and written to the index). No randomness.
+NarratoFlow's own work, Apache-2.0.
 """
 
 from __future__ import annotations
@@ -42,7 +43,10 @@ def draw() -> Image.Image:
     for poly, fill in ((BODY, GREY), (NIB, INK), (CAP, GREY), (PALM, WHITE), (FINGERS, WHITE)):
         pts = _scaled(poly)
         pen.polygon(pts, fill=fill)
-        pen.line([*pts, pts[0]], fill=INK, width=LINE * SS, joint="curve")
+        # The palm is open at the wrist: the hand runs out of view, so no edge along the
+        # image's right and bottom borders (PALM's 4th to 6th points lie on them).
+        outline = [*pts[5:], *pts[:4]] if poly is PALM else [*pts, pts[0]]
+        pen.line(outline, fill=INK, width=LINE * SS, joint="curve")
     pts = _scaled(THUMB)
     pen.polygon(pts, fill=WHITE)
     pen.line([*pts, pts[0]], fill=INK, width=LINE * SS, joint="curve")

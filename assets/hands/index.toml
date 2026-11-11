@@ -4,4 +4,4 @@ license = "Apache-2.0"
 source = "scripts/make_hand.py"
 tip_x = 24
 tip_y = 24
-sha256 = "fee0462f290eedf2fc35ae4c962fcbcc5ecf4e7428a482e21e100530180b6025"
+sha256 = "908e3078186efbf604b2b58690ead3570f02d5cb6e47ffd87bac236a0cd70449"

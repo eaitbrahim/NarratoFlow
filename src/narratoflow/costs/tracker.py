@@ -22,7 +22,7 @@ from narratoflow.models import Part
 
 logger = logging.getLogger(__name__)
 
-_ARABIC = re.compile(r"[؀-ۿ]")
+_ARABIC = re.compile(r"[\u0600-\u06ff]")
 _MILLION = Decimal(1_000_000)
 _OUTPUT_FACTOR = Decimal("1.2")
 CATALOG_EMBED_THRESHOLD = 300
@@ -141,11 +141,18 @@ class TrackedLLM:
         self, *, system: str, user: str, output: type[T]
     ) -> StructuredResult[T]:
         tokens = estimate_tokens(system + user)
-        estimate = _llm_cost(self.prices, self.provider, self.model, tokens, max(1, tokens))
+        estimate = _llm_cost(
+            self.prices,
+            self.provider,
+            self.model,
+            tokens,
+            max(1, math.ceil(tokens * _OUTPUT_FACTOR)),
+        )
         self.tracker.ensure_room(estimate, f"llm {self.provider}/{self.model}")
         try:
             result = self.inner.complete_structured(system=system, user=user, output=output)
         except ProviderError as err:
+            # A failed call is charged nothing: no usage was returned to bill.
             logger.warning("LLM call failed (%s/%s): %s", self.provider, self.model, err)
             raise
         self.tracker.charge_llm(self.provider, self.model, result.usage, self.prices)

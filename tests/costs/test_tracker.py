@@ -159,3 +159,22 @@ def test_tracked_llm_provider_error_logs_str_only(
     assert "secret-prompt" not in caplog.text
     assert all(r.exc_info is None for r in caplog.records)
     assert t.spent == 0
+
+
+def test_tracked_llm_output_estimate_is_1_2x(prices: PriceTable) -> None:
+    tokens = 1000
+    system, user = "a" * 4000, ""
+    one_x = (Decimal(tokens) * 4 + Decimal(tokens) * 20) / 1_000_000
+    one_two = (Decimal(tokens) * 4 + Decimal(1200) * 20) / 1_000_000
+    limit = (one_x + one_two) / 2
+    fake = FakeLLM([Out()])
+    llm = TrackedLLM(fake, SpendTracker(limit), "anthropic", "claude-opus-5-5", prices)
+    with pytest.raises(BudgetExceededError):
+        llm.complete_structured(system=system, user=user, output=Out)
+    assert fake.calls == []
+
+
+def test_sources_are_ascii() -> None:
+    root = Path(__file__).parents[2] / "src" / "narratoflow"
+    for path in [*(root / "costs").glob("*.py"), root / "llm" / "factory.py"]:
+        path.read_bytes().decode("ascii")

@@ -80,7 +80,8 @@ class PriceTable:
         return cls._from_text(text, str(path))
 
     def _lookup(self, kind: str, provider: str, model: str) -> tuple[Decimal, ...]:
-        if provider.strip().lower() in FREE_PROVIDERS:
+        provider = provider.strip().lower()
+        if provider in FREE_PROVIDERS:
             return tuple(_ZERO for _ in _FIELDS[kind])
         found = self._tables.get(kind, {}).get(f"{provider}/{model}")
         if found is None:

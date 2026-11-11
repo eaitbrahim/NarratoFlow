@@ -66,3 +66,7 @@ def test_bad_values_rejected(tmp_path: Path, body: str) -> None:
 def test_load_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ChannelConfigError):
         PriceTable.load(tmp_path / "nope.toml")
+
+
+def test_provider_lookup_is_case_insensitive(prices: PriceTable) -> None:
+    assert prices.llm("Anthropic", "claude-opus-5-5") == prices.llm("anthropic", "claude-opus-5-5")

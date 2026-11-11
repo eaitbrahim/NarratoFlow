@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from narratoflow.errors import ChannelConfigError
 from narratoflow.llm.base import Effort
@@ -33,9 +33,23 @@ class StyleConfig(BaseModel):
 
 
 class VoiceConfig(BaseModel):
+    """The primary voice and its free fallback chain (`tts.factory.build_voice_chain`).
+
+    `edge_voice` None means the language default (`tts.edge.DEFAULT_EDGE_VOICES`);
+    `piper_model` is resolved relative to the channel TOML by `load_channel`.
+    """
+
     provider: str
     model: str = ""
     voice_id: str
+    fallback: list[Literal["edge", "piper"]] = ["edge"]  # pydantic copies the default
+    edge_voice: str | None = None
+    piper_model: Path | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def _lower_provider(cls, value: str) -> str:
+        return value.strip().lower()
 
 
 class LlmConfig(BaseModel):
@@ -81,12 +95,22 @@ class ChannelConfig(BaseModel):
     part_min_s: int = 60
     part_max_s: int = 90
     riwaya: str = "hafs"
+    reciter: str | None = None
+    """An allow-listed reciter id; None means the first allow-listed reciter of `riwaya`."""
     diacritizer: Literal["llm", "mishkal"] = "llm"
 
     @model_validator(mode="after")
     def _part_bounds(self) -> ChannelConfig:
         if self.part_min_s >= self.part_max_s:
             raise ValueError("part_min_s must be less than part_max_s")
+        return self
+
+    @model_validator(mode="after")
+    def _piper_model_set(self) -> ChannelConfig:
+        voice = self.voice
+        uses_piper = voice.provider == "piper" or "piper" in voice.fallback
+        if uses_piper and voice.piper_model is None:
+            raise ValueError("piper needs voice.piper_model")
         return self
 
 
@@ -120,6 +144,9 @@ def load_channel(path: Path) -> ChannelConfig:
             style["reference_sketch"] = str(
                 (path.parent / str(style["reference_sketch"])).resolve()
             )
+        voice = raw.get("voice")
+        if isinstance(voice, dict) and isinstance(voice.get("piper_model"), str):
+            voice["piper_model"] = str((path.parent / voice["piper_model"]).resolve())
         return ChannelConfig.model_validate(raw)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError) as e:
         raise ChannelConfigError(f"Invalid channel config {path}: {e}") from e

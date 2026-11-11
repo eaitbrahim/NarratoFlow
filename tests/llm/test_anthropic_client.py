@@ -8,7 +8,7 @@ import httpx2
 import pytest
 from pydantic import BaseModel, SecretStr
 
-from narratoflow.errors import ProviderError, ProviderRefusalError
+from narratoflow.errors import BilledProviderError, ProviderError, ProviderRefusalError
 from narratoflow.llm.anthropic_client import AnthropicClient
 from narratoflow.llm.base import LLMClient, Usage
 
@@ -309,3 +309,35 @@ def test_refusal_on_an_image_request_raises_the_same_refusal_error() -> None:
     with pytest.raises(ProviderRefusalError) as info:
         client.complete_structured(system="s", user="u", output=Scene, images=[b"png"])
     assert info.value.category == "cyber"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        ["not", "a", "message"],
+        _message([]),
+        _message([_text('{"title": "x"}')]),
+        _message([_text('{"title": "The w')], stop_reason="max_tokens"),
+    ],
+)
+def test_failures_after_2xx_are_billed(response: Any) -> None:
+    client = _make(_recording(response, []))
+    with pytest.raises(BilledProviderError):
+        client.complete_structured(system="s", user="u", output=Scene)
+
+
+def test_refusal_is_not_billed() -> None:
+    refusal = _message([_text("{")], stop_reason="refusal", stop_details={"category": "cyber"})
+    with pytest.raises(ProviderRefusalError) as info:
+        _make(_recording(refusal, [])).complete_structured(system="s", user="u", output=Scene)
+    assert not isinstance(info.value, BilledProviderError)
+
+
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_http_errors_are_not_billed(status: int) -> None:
+    body = _error_body("api_error", "x")
+    with pytest.raises(ProviderError) as info:
+        _make(_recording(body, [], status=status)).complete_structured(
+            system="s", user="u", output=Scene
+        )
+    assert not isinstance(info.value, BilledProviderError)

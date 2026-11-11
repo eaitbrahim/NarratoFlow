@@ -17,7 +17,12 @@ from pydantic import BaseModel
 
 from narratoflow.channels.config import ChannelConfig, vision_model
 from narratoflow.costs.prices import PriceTable
-from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
+from narratoflow.errors import (
+    BilledProviderError,
+    BudgetExceededError,
+    PlanningError,
+    ProviderError,
+)
 from narratoflow.library.keys import parse_idea_key
 from narratoflow.llm.base import LLMClient, StructuredResult, Usage
 from narratoflow.models import Language, Part, SceneKind
@@ -53,7 +58,7 @@ class SpendTracker:
     def ensure_room(self, estimate: Decimal, what: str) -> None:
         """Raise `BudgetExceededError` if `spent + estimate` would pass the limit."""
         if self.limit_usd is not None and self.spent + estimate > self.limit_usd:
-            raise BudgetExceededError(self.spent + estimate, self.limit_usd)
+            raise BudgetExceededError(estimate, self.limit_usd, spent_usd=self.spent, what=what)
         logger.debug("budget ok for %s", what)
 
     def charge(self, amount: Decimal, what: str) -> None:
@@ -180,10 +185,26 @@ def require_generation_prices(channel: ChannelConfig, prices: PriceTable, *, vis
         prices.vision(provider, model)
 
 
+def voice_chars(part: Part) -> int:
+    """Characters a voice speaks for `part`: `tts_text or source_text` of NARRATION scenes.
+
+    Verse scenes are recited, never voiced, so they count zero; hook, recap and
+    teaser texts are never spoken.
+    """
+    return sum(
+        len(s.narration.tts_text or s.narration.source_text)
+        for s in part.scenes
+        if s.kind is SceneKind.NARRATION
+    )
+
+
 def estimate_part_cost(
     part: Part, channel: ChannelConfig, prices: PriceTable, *, voice_chars: int
 ) -> Decimal:
     """What sketch generation may spend on `part`, plus voice characters x per-kchar price.
+
+    `voice_chars` is the part's spoken characters (`voice_chars(part)`: NARRATION
+    scenes only, never verses).
 
     Mirrors the pre-call budget checks of sketch generation, so the approval
     estimate is never below what the spending limit enforces:
@@ -218,12 +239,26 @@ def estimate_part_cost(
             if key not in bundled_seen:
                 bundled_seen.add(key)
                 total += check(key)
-    speech = Decimal(voice_chars) / 1000 * prices.voice(voice.provider, voice.model)
-    return total + speech
+    return total + estimate_speech_cost(prices, voice.provider, voice.model, voice_chars)
+
+
+def estimate_speech_cost(prices: PriceTable, provider: str, model: str, chars: int) -> Decimal:
+    """USD for `chars` characters of speech: `chars / 1000 x per_kchar`.
+
+    Free providers (`FREE_PROVIDERS`, e.g. edge and piper) cost 0 without a price
+    entry. Both the approval estimate (`estimate_part_cost`) and the limit check of
+    `TrackedSpeechProvider` use this one formula.
+    """
+    return Decimal(chars) / 1000 * prices.voice(provider, model)
 
 
 class TrackedLLM:
-    """Wraps an `LLMClient`: checks the budget before each call, charges after."""
+    """Wraps an `LLMClient`: checks the budget before each call, charges after.
+
+    A `BilledProviderError` (a 2xx response that was unusable, e.g. a schema
+    mismatch) charges the pre-call estimate, sets `cost_estimated`, and is
+    re-raised. Any other failure, a refusal included, charges nothing.
+    """
 
     def __init__(
         self,
@@ -239,6 +274,7 @@ class TrackedLLM:
         self.provider = provider
         self.model = model
         self.prices = prices
+        self.cost_estimated = False
         self._fallback_logged = False
 
     def complete_structured[T: BaseModel](
@@ -252,11 +288,18 @@ class TrackedLLM:
         estimate = estimate_llm_call(
             self.prices, self.provider, self.model, system + user, images=len(images)
         )
-        self.tracker.ensure_room(estimate, f"llm {self.provider}/{self.model}")
+        what = f"llm {self.provider}/{self.model}"
+        self.tracker.ensure_room(estimate, what)
         try:
             result = self.inner.complete_structured(
                 system=system, user=user, output=output, images=images
             )
+        except BilledProviderError as err:
+            # Billed but unusable: no usage came back, so charge the pre-call estimate.
+            logger.warning("LLM call failed (%s/%s): %s", self.provider, self.model, err)
+            self.cost_estimated = True
+            self.tracker.charge(estimate, what)
+            raise
         except ProviderError as err:
             # A failed call is charged nothing: no usage was returned to bill.
             logger.warning("LLM call failed (%s/%s): %s", self.provider, self.model, err)

@@ -24,8 +24,15 @@ from narratoflow.costs.tracker import (
     estimate_tokens,
     require_generation_prices,
     require_prices,
+    voice_chars,
 )
-from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
+from narratoflow.errors import (
+    BilledProviderError,
+    BudgetExceededError,
+    PlanningError,
+    ProviderError,
+    ProviderRefusalError,
+)
 from narratoflow.llm.base import Usage
 from narratoflow.models import Language, Narration, Part, Scene, SceneKind
 from narratoflow.settings import Settings
@@ -54,6 +61,19 @@ def test_ensure_room_accounts_for_spent_and_boundary() -> None:
     t.ensure_room(Decimal("0.5"), "b")
     with pytest.raises(BudgetExceededError):
         t.ensure_room(Decimal("0.51"), "b")
+
+
+def test_budget_refusal_names_what_spent_and_remaining() -> None:
+    t = SpendTracker(Decimal("0.08"), spent=Decimal("0.08"))
+    with pytest.raises(BudgetExceededError) as info:
+        t.ensure_room(Decimal("0.04"), "voice elevenlabs/eleven_multilingual_v2 part 2")
+    assert str(info.value) == (
+        "voice elevenlabs/eleven_multilingual_v2 part 2: estimated cost $0.04 exceeds the "
+        "remaining $0.00 (spent $0.08 of the $0.08 per-part limit; "
+        "raise spending_limit_usd in the channel file)"
+    )
+    assert info.value.spent_usd == Decimal("0.08")
+    assert info.value.what == "voice elevenlabs/eleven_multilingual_v2 part 2"
 
 
 def test_no_limit_never_blocks() -> None:
@@ -410,3 +430,49 @@ def test_tracked_llm_falls_back_to_configured_vision_price(prices: PriceTable) -
     llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", P())  # type: ignore[arg-type]
     llm.complete_structured(system="s", user="u", output=Out, images=[b"a"])
     assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000 + Decimal("0.01")
+
+
+def test_voice_chars_excludes_verses() -> None:
+    part = Part(
+        index=1,
+        count=1,
+        hook_text="HOOK never spoken",
+        recap_text="RECAP",
+        teaser_text="TEASER",
+        scenes=[
+            Scene(id="n1", narration=Narration(source_text="abcd")),
+            Scene(id="n2", narration=Narration(source_text="abcd", tts_text="abcdefg")),
+            Scene(
+                id="v1",
+                narration=Narration(source_text="verse text never voiced"),
+                kind=SceneKind.VERSE,
+            ),
+        ],
+    )
+    assert voice_chars(part) == 4 + 7
+
+
+def test_tracked_llm_billed_failure_charges_the_estimate_and_reraises(prices: PriceTable) -> None:
+    error = BilledProviderError("Anthropic output did not match Out")
+    fake = FakeLLM([error])
+    t = SpendTracker(None)
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    assert llm.cost_estimated is False
+    with pytest.raises(BilledProviderError) as info:
+        llm.complete_structured(system="s" * 40, user="u" * 40, output=Out, images=[b"a"])
+    assert info.value is error
+    estimate = estimate_llm_call(
+        prices, "anthropic", "claude-opus-5-5", "s" * 40 + "u" * 40, images=1
+    )
+    assert t.spent == estimate > 0
+    assert [e.what for e in t.entries] == ["llm anthropic/claude-opus-5-5"]
+    assert llm.cost_estimated is True
+
+
+def test_tracked_llm_refusal_still_charges_nothing(prices: PriceTable) -> None:
+    fake = FakeLLM([ProviderRefusalError("cyber")])
+    t = SpendTracker(None)
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    with pytest.raises(ProviderRefusalError):
+        llm.complete_structured(system="s", user="u", output=Out)
+    assert t.spent == 0 and llm.cost_estimated is False

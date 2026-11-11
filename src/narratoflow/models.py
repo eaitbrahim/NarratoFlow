@@ -186,6 +186,8 @@ class Part(BaseModel):
     scenes: list[Scene]
     flags: list[str] = Field(default_factory=list)
     est_cost_usd: Decimal = Decimal(0)
+    spent_usd: Decimal = Decimal(0)
+    """Cumulative actual spend of paid stages against this part's limit."""
 
     @property
     def est_duration_s(self) -> float:

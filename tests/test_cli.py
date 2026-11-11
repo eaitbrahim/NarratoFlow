@@ -3,11 +3,14 @@ import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from narratoflow import cli
+from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, PartAudio
+from narratoflow.audio.timeline import PartTimeline, SceneTiming, TimingSource, VoiceUsed
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint
 from narratoflow.errors import BudgetExceededError
 from narratoflow.library.repository import default_library
@@ -19,6 +22,7 @@ from narratoflow.models import (
     Project,
     RightsBasis,
     Scene,
+    SceneKind,
     ScriptSource,
     Series,
     VisualSource,
@@ -419,7 +423,7 @@ def test_cli_budget_error_exit_1(
     code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file))
     captured = capsys.readouterr()
     assert code == 1
-    assert "exceeds limit" in captured.err
+    assert "exceeds the remaining" in captured.err
     assert "Traceback" not in captured.err
     assert not (script.parent / "series.json").exists()
 
@@ -960,3 +964,173 @@ def test_sketch_resolve_regenerate_unknown_scene_skips_prompt_and_exits_1(
         str(channel_file),
     )
     assert code == 1
+
+
+# --- audio build ------------------------------------------------------------
+
+
+def _timeline(
+    index: int,
+    count: int,
+    *,
+    voice: VoiceUsed | None = None,
+    spent: str = "0",
+    estimated: bool = False,
+    warnings: list[str] | None = None,
+    lufs: float | None = -14.0,
+) -> PartTimeline:
+    return PartTimeline(
+        series_title="S",
+        channel_slug="history",
+        part_index=index,
+        part_count=count,
+        audio_file=f"part-{index:02d}.flac",
+        duration_ms=61_500,
+        integrated_lufs=lufs,
+        true_peak_dbtp=-1.5,
+        scenes=[
+            SceneTiming(
+                scene_id="s001",
+                kind=SceneKind.NARRATION,
+                start_ms=0,
+                end_ms=61_500,
+                speech_start_ms=0,
+                speech_end_ms=61_000,
+                words=[],
+                timing_source=TimingSource.ESTIMATED,
+            )
+        ],
+        sfx=[],
+        voice=voice,
+        recitations=[],
+        assets=[],
+        spent_usd=Decimal(spent),
+        cost_estimated=estimated,
+        warnings=warnings or [],
+    )
+
+
+def _part_audio(out: Path, timeline: PartTimeline) -> PartAudio:
+    stem = f"part-{timeline.part_index:02d}"
+    return PartAudio(
+        timeline.part_index, out / f"{stem}.flac", out / f"{stem}.timeline.json", timeline
+    )
+
+
+def _patch_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    result: AudioBuildResult,
+    updated: Series | None = None,
+    raises: AudioInterruptedError | None = None,
+) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+
+    def fake(
+        series: Series, channel: ChannelConfig, settings: Settings, **kw: Any
+    ) -> tuple[Series, AudioBuildResult]:
+        seen.append(kw)
+        if raises is not None:
+            raise raises
+        return (updated or series), result
+
+    monkeypatch.setattr(cli, "build_audio", fake)
+    return seen
+
+
+def _audio_args(path: Path, channel_file: Path, *extra: str) -> list[str]:
+    return ["audio", "build", str(path), "--channel", str(channel_file), *extra]
+
+
+def test_audio_build_prints_part_lines_and_warnings(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _approved_series(tmp_path)
+    out_dir = tmp_path / "audio"
+    paid = VoiceUsed(
+        provider="elevenlabs",
+        model="m",
+        voice_id="v1",
+        terms="t",
+        fallback_from="edge",
+        fallback_reasons=["timeout", "503"],
+    )
+    verse_only = _timeline(2, 2, spent="0")
+    first = _timeline(
+        1, 2, voice=paid, spent="0.30", estimated=True, warnings=["loudness off target: -16.0 LUFS"]
+    )
+    result = AudioBuildResult(
+        parts=[_part_audio(out_dir, first), _part_audio(out_dir, verse_only)],
+        spent_usd=Decimal("0.10"),
+    )
+    series = Series.load(path)
+    series.parts[0].spent_usd = Decimal("0.20")
+    series.save(path)
+    _patch_audio(monkeypatch, result)
+    out = runner.invoke(cli.app, _audio_args(path, channel_file))
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    assert "part 1/2: 61.5 s, -14.0 LUFS, voice elevenlabs/v1, spent $0.10 (estimated)" in text
+    assert "part total $0.30" in text and f"-> {out_dir / 'part-01.flac'}" in text
+    assert (
+        "part 2/2: 61.5 s, -14.0 LUFS, voice none (verse only), spent $0.00 (part total $0.00) -> "
+        in text
+    )
+    assert "estimated" not in text.split("part 2/2")[1]
+    assert f"timeline: {out_dir / 'part-01.timeline.json'}" in text
+    assert "warning: voice fell back from edge: timeout; 503" in text
+    assert "warning: part 1: loudness off target: -16.0 LUFS" in text
+    assert "total spent $0.10" in text
+
+
+def test_audio_build_saves_series_on_interruption(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    partial = Series.load(path)
+    partial.parts[0].spent_usd = Decimal("0.05")
+    done = AudioBuildResult(
+        parts=[_part_audio(tmp_path, _timeline(1, 1, spent="0.05"))], spent_usd=Decimal("0.05")
+    )
+    exc = AudioInterruptedError(BudgetExceededError(Decimal("2"), Decimal("1")), (partial, done))
+    _patch_audio(monkeypatch, AudioBuildResult(), raises=exc)
+    code = run_main(monkeypatch, *_audio_args(path, channel_file))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "progress so far is kept" in captured.err and "Traceback" not in captured.err
+    assert "part 1/1" in captured.out
+    assert Series.load(path).parts[0].spent_usd == Decimal("0.05")
+
+
+def test_audio_build_default_out_dir_and_part_filter(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _approved_series(tmp_path)
+    seen = _patch_audio(monkeypatch, AudioBuildResult())
+    out = runner.invoke(cli.app, _audio_args(path, channel_file, "--part", "2", "--part", "3"))
+    assert out.exit_code == 0, out.output
+    assert seen[0]["out_dir"] == tmp_path / "audio"
+    assert seen[0]["cache_root"] == tmp_path / ".cache"
+    assert seen[0]["parts"] == [2, 3]
+    runner.invoke(cli.app, _audio_args(path, channel_file, "--out", str(tmp_path / "x")))
+    assert seen[1]["out_dir"] == tmp_path / "x" and seen[1]["parts"] is None
+
+
+def test_audio_build_unknown_part_exits_1(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.audio import build as build_module
+
+    monkeypatch.setattr(build_module, "require_ffmpeg", lambda: Path("/usr/bin/ffmpeg"))
+    path = _approved_series(tmp_path)
+    before = path.read_text(encoding="utf-8")
+    code = run_main(monkeypatch, *_audio_args(path, channel_file, "--part", "9"))
+    assert code == 1
+    assert "no part 9" in capsys.readouterr().err
+    assert path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "audio").exists()

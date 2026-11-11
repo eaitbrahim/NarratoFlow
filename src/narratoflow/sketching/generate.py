@@ -5,7 +5,8 @@ run, reuse a stored sketch, copy a bundled icon into the channel library, or
 generate a new one. A new sketch (or a bundled icon on its first copy) passes the
 free density check before the paid vision check; a failure is stored FAILED
 (quarantined) and never attached to a scene. Every image and vision call is
-budget-checked on the part's own `SpendTracker`.
+budget-checked on the part's own `SpendTracker`, which starts at the part's
+cumulative `spent_usd` (the limit spans stages) and writes it back.
 """
 
 from __future__ import annotations
@@ -89,6 +90,7 @@ class GenerationResult:
     unchecked: list[str] = field(default_factory=list)
     """Scene ids whose sketch (new, bundled, reused or kept) is UNCHECKED (no vision)."""
     spent_usd: Decimal = Decimal(0)
+    """This run's spend; each `Part.spent_usd` holds the part's cumulative spend."""
 
 
 class GenerationInterruptedError(NarratoFlowError):
@@ -569,10 +571,16 @@ def generate_missing(
         result=result,
     )
     out = series.model_copy(deep=True)
-    trackers: list[SpendTracker] = []
+    # (tracker, seed): each part's tracker starts at the part's cumulative spend, so
+    # the limit spans stages; the result reports this run's delta only
+    trackers: list[tuple[SpendTracker, Decimal]] = []
+
+    def delta() -> Decimal:
+        return sum((t.spent - seed for t, seed in trackers), Decimal(0))
+
     for part in out.parts:
-        tracker = SpendTracker(channel.spending_limit_usd)
-        trackers.append(tracker)
+        tracker = SpendTracker(channel.spending_limit_usd, spent=part.spent_usd)
+        trackers.append((tracker, part.spent_usd))
         for i, scene in enumerate(part.scenes):
             if only is not None and scene.id not in only:
                 continue
@@ -580,9 +588,11 @@ def generate_missing(
                 part.scenes[i] = run.scene(scene, tracker)
             except NarratoFlowError as e:
                 part.scenes[i] = run.interrupted(scene)
-                result.spent_usd = sum((t.spent for t in trackers), Decimal(0))
+                part.spent_usd = tracker.spent
+                result.spent_usd = delta()
                 raise GenerationInterruptedError(e, (out.model_copy(deep=True), result)) from e
-    result.spent_usd = sum((t.spent for t in trackers), Decimal(0))
+        part.spent_usd = tracker.spent
+    result.spent_usd = delta()
     logger.info(
         "sketches: %d generated, %d reused, %d bundled, %d kept, %d quarantined",
         result.generated,

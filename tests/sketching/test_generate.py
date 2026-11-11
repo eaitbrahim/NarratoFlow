@@ -185,8 +185,13 @@ def test_budget_for_exactly_two_stops_the_third_and_rerun_reuses(
     assert all(sc.sketch_id is None for sc in scenes_of(original))
     assert len(library.idea_keys(1)) == 2
 
+    # the part's spend is cumulative: the same limit leaves no room for the third
+    assert partial.parts[0].spent_usd == 2 * PER_SKETCH
+    with pytest.raises(GenerationInterruptedError):
+        run(partial, limited, settings, library, FakeImages(), FakeLLM(clean(1)))
+    roomy = channel.model_copy(update={"spending_limit_usd": 3 * PER_SKETCH})
     again = FakeImages()
-    out, result = run(partial, limited, settings, library, again, FakeLLM(clean(1)))
+    out, result = run(partial, roomy, settings, library, again, FakeLLM(clean(1)))
     # the two attached scenes are kept as they are (still "new"); only the third is paid
     assert (result.kept, result.reused, result.generated) == (2, 0, 1)
     assert len(again.requests) == 1
@@ -1093,3 +1098,29 @@ def test_reused_and_kept_unchecked_sketches_are_listed_as_unchecked(
         series([scene(2, "thing-1|roman")]), channel, settings, library, images, FakeLLM([])
     )
     assert reused.reused == 1 and reused.unchecked == ["s002"] and images.requests == []
+
+
+def test_generate_seeds_tracker_from_part_spent(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    # an earlier stage already spent on part 1: the limit spans stages
+    limited = channel.model_copy(update={"spending_limit_usd": 2 * PER_SKETCH})
+    s = series([scene(1), scene(2)], [scene(3)])
+    s.parts[0].spent_usd = PER_SKETCH
+    with pytest.raises(GenerationInterruptedError) as info:
+        run(s, limited, settings, library, FakeImages(), FakeLLM(clean(2)))
+    assert isinstance(info.value.__cause__, BudgetExceededError)
+    partial, so_far = info.value.partial
+    # the run delta is reported; the part keeps its cumulative spend
+    assert so_far.spent_usd == PER_SKETCH and so_far.generated == 1
+    assert partial.parts[0].spent_usd == 2 * PER_SKETCH
+    assert s.parts[0].spent_usd == PER_SKETCH  # the input is not mutated
+
+    roomy = channel.model_copy(update={"spending_limit_usd": 3 * PER_SKETCH})
+    out, result = run(partial, roomy, settings, library, FakeImages(), FakeLLM(clean(2)))
+    assert result.spent_usd == 2 * PER_SKETCH  # this run's delta only
+    assert [p.spent_usd for p in out.parts] == [3 * PER_SKETCH, PER_SKETCH]
+
+    again, rerun = run(out, roomy, settings, library, FakeImages(), FakeLLM([]))
+    assert rerun.spent_usd == 0
+    assert [p.spent_usd for p in again.parts] == [3 * PER_SKETCH, PER_SKETCH]

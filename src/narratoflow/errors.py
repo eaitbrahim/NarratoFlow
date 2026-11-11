@@ -17,6 +17,17 @@ class ChannelConfigError(NarratoFlowError):
     """A channel configuration is missing or invalid."""
 
 
+class ExtraMissingError(ChannelConfigError):
+    """An optional extra (e.g. 'tts-edge') is not installed; the message names it."""
+
+
+class ProviderAuthError(ChannelConfigError):
+    """A provider rejected the configured key or names an unknown voice/model.
+
+    A configuration error, not an outage: it never triggers a voice fallback.
+    """
+
+
 class InvalidIdeaKeyError(NarratoFlowError):
     """An idea key is malformed."""
 
@@ -41,6 +52,10 @@ class ProviderError(NarratoFlowError):
     """A paid or local provider call failed."""
 
 
+class BilledProviderError(ProviderError):
+    """The provider accepted (and bills) the call, but its response was unusable."""
+
+
 class ProviderRefusalError(ProviderError):
     """The model refused the request."""
 
@@ -52,12 +67,35 @@ class ProviderRefusalError(ProviderError):
 class BudgetExceededError(NarratoFlowError):
     """An estimate exceeds the configured spending limit."""
 
-    def __init__(self, estimate_usd: Decimal, limit_usd: Decimal) -> None:
+    def __init__(
+        self,
+        estimate_usd: Decimal,
+        limit_usd: Decimal,
+        *,
+        spent_usd: Decimal | None = None,
+        what: str | None = None,
+    ) -> None:
+        """With `spent_usd`, `estimate_usd` is the call's own estimate and the message
+        names the remaining room; without it, `estimate_usd` is the projected total.
+        """
         self.estimate_usd = estimate_usd
         self.limit_usd = limit_usd
-        super().__init__(
-            f"estimated cost {format_usd(estimate_usd)} exceeds limit {format_usd(limit_usd)}"
-        )
+        self.spent_usd = spent_usd
+        self.what = what
+        if spent_usd is None:
+            message = (
+                f"estimated cost {format_usd(estimate_usd)} exceeds limit {format_usd(limit_usd)}"
+            )
+        else:
+            remaining = max(Decimal(0), limit_usd - spent_usd)
+            prefix = f"{what}: " if what else ""
+            message = (
+                f"{prefix}estimated cost {format_usd(estimate_usd)} exceeds the remaining "
+                f"{format_usd(remaining)} (spent {format_usd(spent_usd)} of the "
+                f"{format_usd(limit_usd)} per-part limit; "
+                "raise spending_limit_usd in the channel file)"
+            )
+        super().__init__(message)
 
 
 class SegmentationError(NarratoFlowError):
@@ -78,3 +116,15 @@ class SketchRejectedError(NarratoFlowError):
 
 class StrokeDataError(NarratoFlowError):
     """Stroke data is malformed (bad JSON, out-of-range points) or the ink mask is invalid."""
+
+
+class AudioError(NarratoFlowError):
+    """Audio decoding, encoding, loudness or assembly failed."""
+
+
+class ReciterError(AudioError):
+    """A verse recitation could not be resolved (no TTS fallback exists)."""
+
+
+class AlignerUnavailableError(AudioError):
+    """The forced aligner is not installed or cannot run."""

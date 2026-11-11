@@ -145,3 +145,59 @@ def test_fixture_embed_is_free_ollama(channel_file: Path) -> None:
     channel = load_channel(channel_file)
     assert channel.embed == EmbedConfig(provider="ollama", model="nomic-embed-text")
     assert ProviderKind.EMBED not in required_key_env_vars(channel)
+
+
+def test_voice_fallback_defaults_and_reciter(channel_file: Path) -> None:
+    ch = load_channel(channel_file)
+    assert ch.voice.fallback == ["edge"]
+    assert ch.voice.edge_voice is None
+    assert ch.voice.piper_model is None
+    assert ch.reciter is None
+
+
+def test_voice_provider_lowercased(channel_file: Path) -> None:
+    channel_file.write_text(
+        channel_file.read_text(encoding="utf-8").replace('"edge"', '" EDGE "'), encoding="utf-8"
+    )
+    assert load_channel(channel_file).voice.provider == "edge"
+
+
+def test_piper_model_resolved_relative(channel_file: Path) -> None:
+    channel_file.write_text(
+        channel_file.read_text(encoding="utf-8").replace(
+            'voice_id = "ar-SA-HamedNeural"',
+            'voice_id = "ar-SA-HamedNeural"\nfallback = ["piper"]\npiper_model = "voices/m.onnx"',
+        ),
+        encoding="utf-8",
+    )
+    ch = load_channel(channel_file)
+    assert ch.voice.piper_model == (channel_file.parent / "voices" / "m.onnx").resolve()
+    assert ch.voice.fallback == ["piper"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "extra"),
+    [("edge", 'fallback = ["piper"]'), ("Piper", "fallback = []"), ("piper", "")],
+)
+def test_piper_without_model_rejected_by_config(
+    channel_file: Path, provider: str, extra: str
+) -> None:
+    text = (
+        channel_file.read_text(encoding="utf-8")
+        .replace('provider = "edge"', f'provider = "{provider}"')
+        .replace('voice_id = "ar-SA-HamedNeural"', f'voice_id = "x"\n{extra}')
+    )
+    channel_file.write_text(text, encoding="utf-8")
+    with pytest.raises(ChannelConfigError, match=r"piper needs voice\.piper_model"):
+        load_channel(channel_file)
+
+
+def test_unknown_fallback_rejected(channel_file: Path) -> None:
+    channel_file.write_text(
+        channel_file.read_text(encoding="utf-8").replace(
+            'voice_id = "ar-SA-HamedNeural"', 'voice_id = "x"\nfallback = ["elevenlabs"]'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ChannelConfigError, match="fallback"):
+        load_channel(channel_file)

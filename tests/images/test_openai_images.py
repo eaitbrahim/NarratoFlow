@@ -13,7 +13,7 @@ import narratoflow.images as images_module
 import narratoflow.images.openai_images as openai_module
 import narratoflow.images.prompt as prompt_module
 from narratoflow.channels.config import StyleConfig
-from narratoflow.errors import ProviderError
+from narratoflow.errors import BilledProviderError, ProviderError
 from narratoflow.images import GeneratedImage, ImageProvider, ImageRequest
 from narratoflow.images.openai_images import OpenAIImageProvider
 from narratoflow.images.prompt import NEGATIVE_TERMS, build_prompt
@@ -229,3 +229,27 @@ def test_provider_satisfies_protocol() -> None:
 def test_sources_are_ascii() -> None:
     for module in (images_module, openai_module, prompt_module):
         assert Path(module.__file__ or "").read_bytes().isascii()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, content=b"<html>"),
+        httpx.Response(200, json=[1]),
+        httpx.Response(200, json={"data": []}),
+        httpx.Response(200, json={"data": [{"b64_json": "!!!"}]}),
+        httpx.Response(200, json=ok_body(b"not an image")),
+    ],
+)
+def test_failures_after_2xx_are_billed(response: httpx.Response) -> None:
+    with pytest.raises(BilledProviderError):
+        provider(lambda r: response).generate(ImageRequest(prompt="x", reference_png=None))
+
+
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_http_errors_are_not_billed(status: int) -> None:
+    with pytest.raises(ProviderError) as info:
+        provider(lambda r: httpx.Response(status, json={})).generate(
+            ImageRequest(prompt="x", reference_png=None)
+        )
+    assert not isinstance(info.value, BilledProviderError)

@@ -426,3 +426,11 @@ def test_normal_fade_start_unchanged(tiny_canvas: Canvas) -> None:
     assert frame_time_ms(first_fading) > start
     lighter = _stage(frames[first_fading], tiny_canvas).astype(np.int64).sum()
     assert lighter > _stage(frames[hold[-1]], tiny_canvas).astype(np.int64).sum()
+
+
+def test_paste_hand_fully_off_stage_leaves_stage_unchanged() -> None:
+    stage = np.full((20, 20, 3), 200, dtype=np.uint8)
+    sprite = np.full((8, 8, 4), 255, dtype=np.uint8)
+    for at in [(-50.0, 5.0), (500.0, 5.0), (5.0, -50.0), (5.0, 500.0)]:
+        compose._paste_hand(stage, sprite, (0, 0), at)
+    assert (stage == 200).all()

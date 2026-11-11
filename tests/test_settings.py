@@ -85,3 +85,9 @@ def test_embed_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.embed_api_key is not None
     assert s.embed_api_key.get_secret_value() == "pa-test-999"
     assert "pa-test-999" not in repr(s)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_ffmpeg_means_unset(monkeypatch: pytest.MonkeyPatch, blank: str) -> None:
+    monkeypatch.setenv("NARRATOFLOW_FFMPEG", blank)
+    assert get_settings().ffmpeg is None

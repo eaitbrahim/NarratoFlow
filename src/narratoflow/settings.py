@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     def _expand_data_dir(cls, value: Path) -> Path:
         return value.expanduser()
 
+    @field_validator("ffmpeg", mode="before")
+    @classmethod
+    def _blank_ffmpeg_is_unset(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator("ffmpeg")
     @classmethod
     def _expand_ffmpeg(cls, value: Path | None) -> Path | None:

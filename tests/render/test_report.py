@@ -115,3 +115,15 @@ def test_report_refuses_nan_and_bad_files(tmp_path: Path) -> None:
         RenderReport.load(tmp_path / "missing.json")
     with pytest.raises(RenderError, match="cannot write"):
         _report().save(tmp_path / "no-such-dir" / "r.json")
+
+
+def test_save_failure_is_render_error_and_leaves_no_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(src: object, dst: object) -> None:
+        raise OSError("cross-device")
+
+    monkeypatch.setattr("narratoflow.render.report.os.replace", boom)
+    with pytest.raises(RenderError, match="cannot write render report"):
+        _report().save(tmp_path / "part-01.render.json")
+    assert list(tmp_path.iterdir()) == []

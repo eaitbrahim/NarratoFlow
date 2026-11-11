@@ -1,3 +1,4 @@
+import shutil
 import stat
 import subprocess
 import sys
@@ -167,3 +168,40 @@ def test_render_ass_still_draws_ink(render_tools: RenderTools, tmp_path: Path) -
     img = F.render_ass_still(render_tools, tmp_path, "c.ass", (64, 48), 100)
     assert img.shape == (48, 64, 3) and img.dtype.name == "uint8"
     assert int(img.min()) < 255
+
+
+def _ok_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(tool: Path, args: list[str], **_: object) -> bytes:
+        if "-filters" in args:
+            return b" ... ass V->V\n"
+        if "-encoders" in args:
+            return b" V....D libx264\n V....D ffv1\n A....D aac\n"
+        return b"ffmpeg version x\n"
+
+    monkeypatch.setattr(F, "run_tool", fake_run)
+
+
+def test_ffmpeg_not_on_path_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(RenderError, match="ffmpeg not found; install it"):
+        find_render_tools(Settings())
+
+
+def test_ffprobe_taken_from_path_when_not_beside_ffmpeg(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "bin").mkdir()
+    ff = _fake_tool(tmp_path / "bin" / "ffmpeg", "true\n")
+    probe = _fake_tool(tmp_path / "ffprobe", "true\n")
+    _ok_run(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: str(probe) if name == "ffprobe" else None)
+    tools = find_render_tools(Settings(ffmpeg=ff))
+    assert tools.ffprobe == probe
+
+
+def test_ffprobe_missing_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ff = _fake_tool(tmp_path / "ffmpeg", "true\n")
+    _ok_run(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(RenderError, match="ffprobe not found beside ffmpeg or on PATH"):
+        find_render_tools(Settings(ffmpeg=ff))

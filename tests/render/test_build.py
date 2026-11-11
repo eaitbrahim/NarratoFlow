@@ -26,6 +26,7 @@ from fixtures.audio import speechlike, to_wav_bytes, tone
 
 from narratoflow.audio import io as aio
 from narratoflow.audio.build import build_audio
+from narratoflow.audio.recitation import display_words
 from narratoflow.audio.sfx import SfxAsset, SfxPack
 from narratoflow.audio.timeline import (
     AyahTiming,
@@ -35,7 +36,7 @@ from narratoflow.audio.timeline import (
     TimingSource,
 )
 from narratoflow.captions.part import build_part_ass
-from narratoflow.captions.verse import shown_text
+from narratoflow.captions.verse import VERSE_PAGE_MAX_WORDS, shown_text
 from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import LibraryError, PlanningError, RenderError, StaleTimelineError
@@ -1155,3 +1156,85 @@ def test_on_part_reports_each_finished_part(
             on_part=lambda p: done.append(p.index),
         )
     assert done == [1]
+
+
+def test_work_dir_oserror_becomes_render_error(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    probe_tools: RenderTools,
+    never_render: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series = make_series([narr("s1", "alpha")], language=Language.ENGLISH)
+    write_timelines(series, tmp_path / "audio", library)
+    real_mkdir = Path.mkdir
+
+    def mkdir(self: Path, *a: Any, **kw: Any) -> None:
+        if self.name.startswith(".render-"):
+            raise OSError("read-only")
+        real_mkdir(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    with pytest.raises(RenderError, match=r"cannot prepare the work directory .*read-only"):
+        render(series, channel, settings, tmp_path, probe_tools, library=library)
+
+
+def test_out_dir_oserror_becomes_render_error(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    probe_tools: RenderTools,
+    never_render: list[str],
+) -> None:
+    series = make_series([narr("s1", "alpha")], language=Language.ENGLISH)
+    write_timelines(series, tmp_path / "audio", library)
+    (tmp_path / "video").write_text("a file, not a directory")
+    with pytest.raises(RenderError, match="cannot create output directory"):
+        render(series, channel, settings, tmp_path, probe_tools, library=library)
+
+
+def test_sources_open_defaults_on_first_need(
+    settings: Settings, library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(build_module, "default_library", lambda s: library)
+    monkeypatch.setattr(build_module, "default_corpus", lambda s: CORPUS)
+    sources = build_module._Sources(settings, None, None)
+    assert sources.get_library() is library
+    assert sources.get_corpus() is CORPUS
+    assert sources.library is library and sources.corpus is CORPUS
+
+
+def test_verse_page_without_duration_refused_naming_part_scene_ayah(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    probe_tools: RenderTools,
+    never_render: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series = make_series([verse("v1"), narr("s1", "alpha")])
+    [timeline] = write_timelines(series, tmp_path / "audio", library)
+    v1 = timeline.scenes[0]
+    texts = display_words(CORPUS.ayah(31, 33).uthmani)
+    assert len(texts) > VERSE_PAGE_MAX_WORDS
+    # Every word starts together, so page 2 starts where page 1 starts: page 1 has no time.
+    words = [TimelineWord(text=t, start_ms=v1.start_ms, end_ms=v1.end_ms) for t in texts]
+    timed = v1.model_copy(
+        update={
+            "timing_source": TimingSource.SEGMENTS,
+            "ayat": [
+                AyahTiming(surah=31, ayah=33, start_ms=v1.start_ms, end_ms=v1.end_ms, words=words)
+            ],
+        }
+    )
+    timeline.model_copy(update={"scenes": [timed, *timeline.scenes[1:]]}).save(
+        tmp_path / "audio" / "part-01.timeline.json"
+    )
+    monkeypatch.setattr(build_module, "check_arabic_shaping", lambda *a: None)
+    with pytest.raises(RenderError, match=r"FAIL: part 1, scene v1, verse 31:33"):
+        render(series, channel, settings, tmp_path, probe_tools, library=library)
+    assert not (tmp_path / "video").exists()

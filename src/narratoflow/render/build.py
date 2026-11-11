@@ -33,7 +33,7 @@ import cv2
 from narratoflow.audio.timeline import PartTimeline, SceneTiming
 from narratoflow.captions.ass import AssDocument, style_font_id
 from narratoflow.captions.part import build_part_ass
-from narratoflow.captions.verse import VERSE_FONT, check_verse_text, shown_text
+from narratoflow.captions.verse import VERSE_FONT, check_verse_text, shown_text, verse_pages
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.errors import LibraryError, PlanningError, RenderError, StaleTimelineError
 from narratoflow.library.repository import SketchLibrary, default_library
@@ -247,12 +247,26 @@ def _plan_part(
         elif scene.kind is SceneKind.VERSE:
             corpus = sources.get_corpus()
             check_verse_text(scene, timing, corpus, fonts)
+            _check_verse_pages(part, scene, timing, corpus)
             verse_slots.append((scene, timing))
     doc, warnings = build_part_ass(
         series, part, timeline, corpus=corpus, fonts=fonts, ink=channel.style.ink
     )
     verses = [_verse(scene, timing, doc) for scene, timing in verse_slots]
     return _PartPlan(part, timeline, doc, warnings, sketches, verses)
+
+
+def _check_verse_pages(part: Part, scene: Scene, timing: SceneTiming, corpus: QuranCorpus) -> None:
+    """Refuse a verse page with no time on screen: its corpus words would be dropped silently."""
+    if scene.verse is None:
+        raise RenderError(f"FAIL: verse scene {scene.id} has no verse reference")
+    for page in verse_pages(timing, corpus, scene.verse):
+        if page.end_ms <= page.start_ms:
+            raise RenderError(
+                f"FAIL: part {part.index}, scene {scene.id}, verse {page.surah}:{page.ayah}: "
+                f"a verse page would last {page.end_ms - page.start_ms} ms "
+                f"(starts at {page.start_ms} ms); rebuild audio: narratoflow audio build"
+            )
 
 
 def _init_worker() -> None:

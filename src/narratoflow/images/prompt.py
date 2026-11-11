@@ -20,7 +20,7 @@ _FORBIDDEN_CONTENT = "people, faces, human figures, text, letters, logos"
 
 def build_prompt(style: StyleConfig, idea_key: str, description: str) -> str:
     """Style instructions, subject, ink look and one explicit 'No ...' sentence."""
-    text = description.strip()
+    text = description.strip().rstrip(".").rstrip()
     if not text:
         key = parse_idea_key(idea_key)
         text = f"{key.object}, {key.context}"

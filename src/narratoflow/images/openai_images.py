@@ -10,6 +10,7 @@ https://developers.openai.com/api/reference/resources/images/methods/edit
   allowed, so it is not sent.
 - Sizes for GPT image models: 1024x1024, 1536x1024, 1024x1536, auto. Only
   1024x1024 is requested here.
+Only gpt-image models are supported (the edits call relies on the ``image[]`` field).
 The request ``seed`` is not supported by this API and is ignored.
 """
 
@@ -43,6 +44,25 @@ class OpenAIImageProvider:
         secret = self._api_key.get_secret_value()
         return text.replace(secret, "***") if secret else text
 
+    def _http_error(self, response: httpx.Response) -> str:
+        """Status plus error.code/type only: the body may echo the key or the prompt."""
+        status = response.status_code
+        if status in (401, 403):
+            return f"OpenAI rejected the API key (HTTP {status})"
+        parts: list[str] = []
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = None
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict):
+            for field in ("code", "type"):
+                value = err.get(field)
+                if isinstance(value, str) and value:
+                    parts.append(self._scrub(value[:80]))
+        detail = f": {' / '.join(parts)}" if parts else ""
+        return f"OpenAI returned HTTP {status} for model {self.model!r}{detail}"
+
     def generate(self, req: ImageRequest) -> GeneratedImage:
         headers = {"Authorization": f"Bearer {self._api_key.get_secret_value()}"}
         fields = {"model": self.model, "prompt": req.prompt, "size": req.size}
@@ -63,10 +83,7 @@ class OpenAIImageProvider:
         except httpx.HTTPError as e:
             raise ProviderError(f"Cannot reach OpenAI images: {self._scrub(str(e))}") from e
         if not response.is_success:
-            raise ProviderError(
-                f"OpenAI returned HTTP {response.status_code} for model {self.model!r}: "
-                f"{self._scrub(response.text[:200])}"
-            )
+            raise ProviderError(self._http_error(response))
         try:
             body: Any = response.json()
         except ValueError as e:
@@ -98,5 +115,5 @@ def _to_png(encoded: str) -> bytes:
             out = io.BytesIO()
             img.save(out, format="PNG")
             return out.getvalue()
-    except (UnidentifiedImageError, OSError, ValueError) as e:
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as e:
         raise ProviderError("OpenAI payload is not a readable image") from e

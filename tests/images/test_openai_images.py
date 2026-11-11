@@ -109,6 +109,8 @@ def test_edit_request_is_multipart_with_reference() -> None:
     assert req.headers["content-type"].startswith("multipart/form-data")
     body = req.content
     assert b'name="image[]"' in body
+    assert b'filename="reference.png"' in body
+    assert b"Content-Type: image/png" in body
     assert ref in body
     for field in (b'name="prompt"', b'name="model"', b'name="size"'):
         assert field in body
@@ -158,6 +160,43 @@ def test_401_does_not_echo_key() -> None:
         provider(handler).generate(ImageRequest(prompt="x", reference_png=None))
     assert "401" in str(info.value)
     assert FAKE_KEY not in str(info.value)
+
+
+def test_error_bodies_never_echoed() -> None:
+    masked = "sk-proj-****abcd"
+    body = {"error": {"message": f"key {masked} prompt SECRETPROMPT", "code": "bad_x"}}
+    with pytest.raises(ProviderError) as info:
+        provider(lambda r: httpx.Response(400, json=body)).generate(
+            ImageRequest(prompt="SECRETPROMPT", reference_png=None)
+        )
+    msg = str(info.value)
+    assert "400" in msg
+    assert "bad_x" in msg
+    assert masked not in msg
+    assert "SECRETPROMPT" not in msg
+    with pytest.raises(ProviderError) as info2:
+        provider(lambda r: httpx.Response(401, text=f"{masked} SECRETPROMPT")).generate(
+            ImageRequest(prompt="x", reference_png=None)
+        )
+    assert str(info2.value) == "OpenAI rejected the API key (HTTP 401)"
+    with pytest.raises(ProviderError) as info3:
+        provider(lambda r: httpx.Response(500, text="oops SECRETPROMPT")).generate(
+            ImageRequest(prompt="x", reference_png=None)
+        )
+    assert "SECRETPROMPT" not in str(info3.value)
+    assert "500" in str(info3.value)
+
+
+def test_decompression_bomb_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+    p = provider(lambda r: httpx.Response(200, json=ok_body()))
+    with pytest.raises(ProviderError, match="readable image"):
+        p.generate(ImageRequest(prompt="x", reference_png=None))
+
+
+def test_prompt_strips_trailing_periods() -> None:
+    prompt = build_prompt(style(), "scale|justice", "a balance... ")
+    assert "Subject: a balance. Black" in prompt
 
 
 def test_timeout_maps_to_provider_error() -> None:

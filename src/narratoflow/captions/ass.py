@@ -244,6 +244,13 @@ _FONT_IDS = {
     },
 }
 _WHITE = "#FFFFFF"
+
+
+def style_font_id(language: Language, style: str) -> str:
+    """The font pack id a style renders with in `language`."""
+    return _FONT_IDS[language][_STYLE_TABLE[style][0]]
+
+
 _CAPTION_SECONDARY_ALPHA = 0x99
 
 

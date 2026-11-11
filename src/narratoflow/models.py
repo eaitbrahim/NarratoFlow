@@ -151,6 +151,8 @@ class Scene(BaseModel):
     """Regenerations asked for by the creator; varies the image seed."""
     est_duration_s: float = 0
     flags: list[str] = Field(default_factory=list)
+    card_text: str = ""
+    """On-screen text of a text card; empty uses the title, then the first words."""
 
 
 class Voice(BaseModel):

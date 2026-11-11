@@ -136,3 +136,11 @@ class RenderError(NarratoFlowError):
 
 class StaleTimelineError(RenderError):
     """The audio timeline no longer matches the sketch library."""
+
+
+class PublishError(NarratoFlowError):
+    """Publishing inputs are missing, stale or invalid (not a check result)."""
+
+
+class PublishCheckFailedError(PublishError):
+    """A part is blocked by at least one FAIL publishing check."""

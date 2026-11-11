@@ -29,6 +29,7 @@ from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
 from narratoflow.planning.approval import needs_approval, render_approval_list
+from narratoflow.planning.ideas import render_candidates
 from narratoflow.planning.pipeline import plan_series
 from narratoflow.publish.build import PublishResult, build_publish
 from narratoflow.publish.checks import Severity
@@ -56,6 +57,7 @@ from narratoflow.sketching.resolve import (
 )
 from narratoflow.sketching.vision import estimate_check_cost
 from narratoflow.text.quality import require_clean
+from narratoflow.visuals.bundled import default_bundled_icons
 
 app = typer.Typer(no_args_is_help=True, help="NarratoFlow whiteboard video engine.")
 channel_app = typer.Typer(no_args_is_help=True, help="Channel configuration commands.")
@@ -115,6 +117,31 @@ def library_keys(channel_toml: Path) -> None:
         _out.print(key, markup=False, highlight=False)
 
 
+@library_app.command("icons")
+def library_icons(
+    words: Annotated[
+        list[str] | None,
+        typer.Argument(help="Words that must all appear in the key or description."),
+    ] = None,
+) -> None:
+    """Search the bundled icons for keys to use with sketch resolve --swap."""
+    wanted = words or []
+    matches = default_bundled_icons().search(wanted)
+    if not matches:
+        _out.print(
+            f"no bundled icon matches '{' '.join(wanted)}'; propose a new key with "
+            "sketch resolve --swap, or use --text-card",
+            markup=False,
+            highlight=False,
+        )
+        return
+    _out.print(
+        render_candidates([(i.key, i.description) for i in matches]),
+        markup=False,
+        highlight=False,
+    )
+
+
 @library_app.command("copy")
 def library_copy(sketch_id: int, target_channel_toml: Path) -> None:
     """Copy a sketch into the target channel's current style version."""
@@ -138,12 +165,26 @@ def plan(
         Path | None,
         typer.Option("--out", help="Series file (default: series.json next to SCRIPT)."),
     ] = None,
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Re-plan over an existing series file "
+            "(discards its approval, sketches and recorded spend).",
+        ),
+    ] = False,
 ) -> None:
     """Plan a script into a series of parts; checks rights, keys and budget before any spend."""
     channel = load_channel(channel_toml)
     target = out if out is not None else script.with_name("series.json")
     if not target.parent.is_dir():
         raise PlanningError(f"output directory {target.parent} does not exist; nothing was spent")
+    if target.exists() and not replace:
+        raise PlanningError(
+            f"{target} already exists; nothing was spent. Continue with: "
+            f"narratoflow approve {target} (or the next stage), or re-plan with --replace, "
+            "which discards its approval, attached sketches and recorded spend"
+        )
     series = plan_series(script, channel, get_settings())
     if needs_approval(series, channel):
         series.save(target)

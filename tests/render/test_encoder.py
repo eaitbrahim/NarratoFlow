@@ -200,7 +200,7 @@ def _work(
     *,
     paper: bool = False,
 ) -> Path:
-    """A work dir as the orchestrator builds it: segments, segments.txt, captions.ass, fonts."""
+    """A work dir as render builds it: segments, segments.txt, captions.ass, fonts."""
     work = tmp_path / ".render-part-01"
     work.mkdir()
     fonts = default_fonts()

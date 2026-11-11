@@ -41,11 +41,48 @@ def test_log_level_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get_settings().log_level == "DEBUG"
 
 
-def test_unknown_key_in_dotenv_is_ignored(tmp_path: Path) -> None:
+def test_unknown_narratoflow_key_in_dotenv_is_an_error(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("NARRATOFLOW_IMAGE_APIKEY=sk-SECRET123\n", encoding="utf-8")
-    s = get_settings()
-    assert s.image_api_key is None
-    assert "sk-SECRET123" not in repr(s)
+    with pytest.raises(SettingsError) as exc:
+        get_settings()
+    assert "narratoflow_image_apikey" in str(exc.value).lower()
+    assert "sk-SECRET123" not in str(exc.value)
+    assert "sk-SECRET123" not in str(exc.value.__cause__)
+
+
+def test_unknown_narratoflow_env_var_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NARRATOFLOW_LLM_APIKEY", "sk-SECRET456")
+    with pytest.raises(SettingsError) as exc:
+        get_settings()
+    assert "NARRATOFLOW_LLM_APIKEY" in str(exc.value)
+    assert "NARRATOFLOW_LLM_API_KEY" in str(exc.value)
+    assert "sk-SECRET456" not in str(exc.value)
+
+
+def test_unknown_name_is_caught_in_any_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("narratoflow_llm_apikey", "sk-SECRET789")
+    with pytest.raises(SettingsError) as exc:
+        get_settings()
+    assert "narratoflow_llm_apikey" in str(exc.value).lower()
+    assert "sk-SECRET789" not in str(exc.value)
+
+
+def test_known_name_is_accepted_in_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("narratoflow_log_level", "DEBUG")
+    assert get_settings().log_level == "DEBUG"
+
+
+def test_foreign_keys_in_dotenv_are_ignored(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=x\nNARRATOFLOW_LOG_LEVEL=DEBUG\n", encoding="utf-8"
+    )
+    assert get_settings().log_level == "DEBUG"
+
+
+def test_environment_beats_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / ".env").write_text("NARRATOFLOW_LOG_LEVEL=DEBUG\n", encoding="utf-8")
+    monkeypatch.setenv("NARRATOFLOW_LOG_LEVEL", "ERROR")
+    assert get_settings().log_level == "ERROR"
 
 
 def test_invalid_value_error_hides_input(tmp_path: Path) -> None:

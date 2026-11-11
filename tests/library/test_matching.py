@@ -1,3 +1,4 @@
+import hashlib
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,10 +38,12 @@ def make_record(i: int) -> SketchRecord:
 
 def _write_index(tmp_path: Path, keys: list[str]) -> Path:
     (tmp_path / "icon.png").write_text("<svg/>")
+    digest = hashlib.sha256(b"<svg/>").hexdigest()
     body = "[icons]\n" if not keys else ""
     for key in keys:
         body += (
-            f'[icons."{key}"]\nfile = "icon.png"\nlicense = "MIT"\nsource = "https://example.com"\n'
+            f'[icons."{key}"]\nfile = "icon.png"\ndescription = "an icon"\nlicense = "MIT"\n'
+            f'source = "https://example.com"\nsha256 = "{digest}"\n'
         )
     index = tmp_path / "index.toml"
     index.write_text(body)
@@ -150,9 +153,9 @@ def test_choose_variant_empty_raises() -> None:
     "body",
     [
         "[icons\n",  # invalid TOML
-        '[icons."eye|generic"]\nlicense = "MIT"\nsource = "x"\n',  # no file
+        '[icons."eye|generic"]\ndescription = "d"\nsha256 = "x"\nlicense = "MIT"\nsource = "x"\n',
         '[icons]\n"eye|generic" = 3\n',  # entry is not a table
-        '[icons]\n"eye|generic" = {file = 1, license = "MIT", source = "x"}\n',
+        '[icons]\n"eye|generic" = {file = 1, description = "d", sha256 = "x", license = "M", source = "x"}\n',  # noqa: E501
     ],
 )
 def test_broken_bundled_index_raises_config_error(tmp_path: Path, body: str) -> None:

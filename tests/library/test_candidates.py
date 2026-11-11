@@ -1,11 +1,12 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 import pytest
 
 from narratoflow.errors import PlanningError
-from narratoflow.library.candidates import candidate_keys
+from narratoflow.library.candidates import candidate_keys, merge_catalog
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchStatus
 
@@ -212,7 +213,7 @@ def test_inconsistent_vectors_raise(library: SketchLibrary, bad: str) -> None:
     ("kwargs", "match"), [({"top_k": 0}, "top_k"), ({"full_limit": -1}, "full_limit")]
 )
 def test_bad_bounds_raise_value_error(
-    library: SketchLibrary, kwargs: dict[str, int], match: str
+    library: SketchLibrary, kwargs: dict[str, Any], match: str
 ) -> None:
     v = _seed(library, _THREE)
     with pytest.raises(ValueError, match=match):
@@ -249,3 +250,24 @@ def test_catalog_text_version_bump_invalidates_cache(
     embedder = FakeEmbedder()
     candidate_keys(library, v, ["lamp"], embedder, full_limit=2)
     assert [len(c) for c in embedder.calls] == [3, 1]
+
+
+def test_merge_catalog_channel_wins_and_fills_blank_description() -> None:
+    channel = [("a|generic", "channel a"), ("b|generic", "")]
+    bundled = [("b|generic", "bundled b"), ("a|generic", "bundled a"), ("c|generic", "bundled c")]
+    assert merge_catalog(channel, bundled) == [
+        ("a|generic", "channel a"),
+        ("b|generic", "bundled b"),
+        ("c|generic", "bundled c"),
+    ]
+
+
+def test_extra_entries_are_offered_and_counted(library: SketchLibrary) -> None:
+    v = _seed(library, _THREE[:2])
+    extra = [("object|sword", "a sword for battle")]
+    with pytest.raises(PlanningError, match="3 ideas"):
+        candidate_keys(library, v, ["battle"], None, extra=extra, full_limit=2)
+    embedder = FakeEmbedder()
+    result = candidate_keys(library, v, ["a battle"], embedder, extra=extra, full_limit=2, top_k=1)
+    assert result == [[extra[0]]]
+    assert candidate_keys(library, v, ["x"], None, extra=extra) == [sorted([*_THREE[:2], *extra])]

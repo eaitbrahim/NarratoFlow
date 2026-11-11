@@ -17,6 +17,7 @@ cp .env.example .env             # then fill in keys for any paid providers
                                  # (NARRATOFLOW_EMBED_API_KEY: Voyage embeddings default; or set [embed] provider = "ollama")
 uv run narratoflow channel check channel.toml          # fails fast naming a missing key
 uv run narratoflow library keys channel.toml           # reusable sketch idea keys
+uv run narratoflow library icons light   # bundled icon keys, e.g. for sketch resolve --swap on a quarantined scene
 uv run narratoflow library copy SKETCH_ID other.toml   # reuse a sketch in another channel
 uv run narratoflow check-input script.txt --language ar   # reject corrupt PDF copy-paste
 
@@ -132,15 +133,34 @@ copy of that index inside the installed `narratoflow` package, not the repositor
 
 System requirement: `ffmpeg` on `PATH`.
 
+## Re-running after an error
+
+- `plan` refuses an existing series file; pass `--replace` to re-plan (this discards its approval, attached sketches and recorded spend).
+- `approve` is idempotent.
+- `sketch generate` keeps attached sketches and pays only for the missing ones.
+- `audio build` reuses each cached scene.
+- `render` re-renders the selected parts deterministically at no cost (after an error it prints the finished parts; pass `--part` for the others).
+- `review` shows an estimate and asks before spending, unless `--yes` is given.
+- `publish` is free.
+
+## Where settings live
+
+| Kind | Lives in | Examples |
+|---|---|---|
+| Secrets, machine paths, log level | environment or `.env` (`Settings`, `NARRATOFLOW_*`) | `*_API_KEY`, `DATA_DIR`, `FFMPEG`, `LOG_LEVEL`, `OLLAMA_URL` |
+| Channel choices | channel TOML (`ChannelConfig`; defaults in code) | style, voice, llm, embed, vision, `spending_limit_usd`, `approval_list`, part lengths, `riwaya`, `diacritizer` |
+| Per-run choices | CLI options | `--part`, `--out`, `--workers`, `--yes`, `--replace` |
+| Prices / platform rules | `data/prices.toml` / `data/platform_rules.toml`, each overridable in `NARRATOFLOW_DATA_DIR` | |
+| Output contract | code constants pinned by Plans 4-6 | 1080x1920, 30 fps, -14 LUFS |
+
 ## Layout
 
 ```
 docs/                PRD, SRD, REVIEW (suggestions), adr/
-configs/             default.toml: engine selection, voices, render settings
 src/narratoflow/
   models.py          storyboard.json IR (Project → Scene → Narration / Visual / Layout)
   interfaces.py      Protocols: Diacritizer, TTSEngine, Aligner, LLM, VisualProvider, Renderer
-  pipeline/          orchestrator + content-addressed stage cache
+  pipeline/          content-addressed stage cache
   text/              ingest, language/dialect, protected spans, tashkeel (+ skeleton guard), scene planner
   llm/               Ollama client (structured JSON output)
   tts/               edge-tts, Piper

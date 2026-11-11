@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 from decimal import Decimal
 from pathlib import Path
@@ -231,7 +232,14 @@ def test_limit_is_per_part(
 def _bundled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, png: bytes) -> None:
     icon_file = tmp_path / "eye.png"
     icon_file.write_bytes(png)
-    icon = BundledIcon(key="eye|generic", file=icon_file, license="CC0-1.0", source="https://x")
+    icon = BundledIcon(
+        key="eye|generic",
+        file=icon_file,
+        license="CC0-1.0",
+        source="https://x",
+        description="an eye",
+        sha256=hashlib.sha256(png).hexdigest(),
+    )
     icons = BundledIcons({"eye|generic": icon})
     monkeypatch.setattr(generate_module, "default_bundled_icons", lambda: icons)
 

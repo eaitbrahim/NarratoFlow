@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from narratoflow.costs.tracker import CATALOG_EMBED_THRESHOLD
 from narratoflow.errors import PlanningError
 from narratoflow.library.repository import SketchLibrary
 
@@ -33,6 +34,17 @@ def cache_model_id(embedder: Embedder) -> str:
 def catalog_text(idea_key: str, description: str) -> str:
     """The text embedded for one catalog entry."""
     return f"{idea_key}: {description}" if description else idea_key
+
+
+def merge_catalog(channel: Sequence[Entry], bundled: Sequence[Entry]) -> list[Entry]:
+    """One entry per key, sorted by key; a channel entry wins over a bundled one.
+
+    A blank channel description is filled from the bundled entry of the same key.
+    """
+    merged = dict(bundled)
+    for key, description in channel:
+        merged[key] = description or merged.get(key, "")
+    return sorted(merged.items())
 
 
 def _matrix(vectors: Sequence[Sequence[float]], what: str) -> npt.NDArray[np.float64]:
@@ -74,14 +86,16 @@ def candidate_keys(
     scenes: Sequence[str],
     embedder: Embedder | None,
     *,
-    full_limit: int = 300,
+    extra: Sequence[Entry] = (),
+    full_limit: int = CATALOG_EMBED_THRESHOLD,
     top_k: int = 5,
 ) -> list[list[Entry]]:
     """Per scene, the (idea_key, description) entries the planner may pick from.
 
     With `full_limit` entries or fewer every scene gets the whole catalog and no
     embedding call is made. Above it, each scene gets its `top_k` nearest entries
-    by cosine similarity; ties keep catalog order.
+    by cosine similarity; ties keep catalog order. The catalog is the library's merged
+    with `extra` (the bundled icons); a library entry wins on the same key.
     """
     if top_k < 1:
         raise ValueError(f"top_k must be >= 1, got {top_k}")
@@ -89,7 +103,7 @@ def candidate_keys(
         raise ValueError(f"full_limit must be >= 0, got {full_limit}")
     if not scenes:
         return []
-    catalog = library.idea_catalog(style_version_id)
+    catalog = merge_catalog(library.idea_catalog(style_version_id), extra)
     if len(catalog) <= full_limit:
         return [list(catalog) for _ in scenes]
     if embedder is None:

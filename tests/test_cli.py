@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ from narratoflow.models import (
 )
 from narratoflow.settings import Settings, get_settings
 from narratoflow.sketching.generate import GenerationInterruptedError, GenerationResult
+from narratoflow.visuals.bundled import BundledIcon, BundledIcons
 
 runner = CliRunner()
 INPUTS = Path(__file__).parent / "fixtures" / "input"
@@ -70,6 +72,20 @@ def test_channel_check_missing_key_exit_1(
     assert code == 1
     assert "NARRATOFLOW_IMAGE_API_KEY" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_channel_check_never_prints_a_misplaced_secret(
+    channel_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    channel_file.write_text(
+        channel_file.read_text().replace("[llm]", '[llm]\napi_key = "sk-ant-SECRET999"', 1)
+    )
+    code = run_main(monkeypatch, "channel", "check", str(channel_file))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "llm.api_key" in captured.err
+    assert "sk-ant-SECRET999" not in captured.err
+    assert "sk-ant-SECRET999" not in captured.out
 
 
 def test_channel_check_ok(channel_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,7 +188,7 @@ def test_bad_dotenv_value_exit_1_without_leaking(
     assert "settings" in captured.err.lower()
 
 
-def test_dotenv_typo_key_ignored(
+def test_dotenv_typo_key_is_an_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (tmp_path / ".env").write_text(
@@ -180,7 +196,9 @@ def test_dotenv_typo_key_ignored(
     )
     code = run_main(monkeypatch, "check-input", str(INPUTS / "clean_en.txt"), "--language", "en")
     captured = capsys.readouterr()
-    assert code == 0, captured.err
+    assert code == 1
+    assert "NARRATOFLOW_IMAGE_APIKEY" in captured.err
+    assert "Traceback" not in captured.err
     assert "sk-SECRET123" not in captured.out + captured.err
 
 
@@ -386,6 +404,46 @@ def test_cli_plan_checks_out_dir_before_planning(
         str(out),
     )
     assert code == 1
+
+
+def _existing_series(tmp_path: Path) -> tuple[Path, bytes]:
+    script = _script(tmp_path)
+    target = script.with_name("series.json")
+    _planned_series().save(target)
+    return script, target.read_bytes()
+
+
+def test_plan_refuses_to_overwrite_a_series(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def boom(*args: object) -> Series:
+        raise AssertionError("planner must not run when the series file exists")
+
+    monkeypatch.setattr(cli, "plan_series", boom)
+    script, before = _existing_series(tmp_path)
+    code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file))
+    err = " ".join(capsys.readouterr().err.split())  # stderr wraps at the terminal width
+    assert code == 1
+    assert "already exists; nothing was spent" in err
+    assert "--replace" in err
+    assert script.with_name("series.json").read_bytes() == before
+
+
+def test_plan_replace_overwrites(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, before = _existing_series(tmp_path)
+    fresh = _planned_series()
+    fresh.est_planning_cost_usd = Decimal("0.5")
+    _patch_plan(monkeypatch, fresh)
+    code = run_main(monkeypatch, "plan", str(script), "--channel", str(channel_file), "--replace")
+    assert code == 0
+    target = script.with_name("series.json")
+    assert target.read_bytes() != before
+    assert Series.load(target).est_planning_cost_usd == Decimal("0.5")
 
 
 def test_cli_approve_bad_file_exit_1(
@@ -766,6 +824,7 @@ def test_sketch_generate_real_run_without_vision_warns_unchecked(
     from sketching.support import FakeImages
 
     from narratoflow.sketching import generate as generate_module
+    from narratoflow.visuals.bundled import BundledIcons
 
     monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img-key")
     images = FakeImages()
@@ -775,6 +834,8 @@ def test_sketch_generate_real_run_without_vision_warns_unchecked(
         raise AssertionError("vision is off: no vision client is built")
 
     monkeypatch.setattr(generate_module, "build_llm_client", no_vision)
+    # the shipped icon pack would cover the series' key; this run must draw it
+    monkeypatch.setattr(generate_module, "default_bundled_icons", lambda: BundledIcons({}))
     path = _approved_series(tmp_path)
     out = runner.invoke(cli.app, ["sketch", "generate", str(path), "--channel", str(channel_file)])
     assert out.exit_code == 0, out.output
@@ -1647,3 +1708,51 @@ def test_review_unknown_part_refused_before_prompt_and_spend(
     assert code == 1 and asked == [] and seen == []
     assert "no part 9" in capsys.readouterr().err
     assert path.read_bytes() == before
+
+
+def _two_icons(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def icon(key: str, description: str) -> BundledIcon:
+        return BundledIcon(
+            key=key,
+            file=tmp_path / "x.png",
+            license="MIT",
+            source="x",
+            description=description,
+            sha256="0" * 64,
+        )
+
+    pack = BundledIcons(
+        {
+            "lightbulb|generic": icon("lightbulb|generic", "a bulb for an idea"),
+            "eye|generic": icon("eye|generic", "an open eye"),
+        }
+    )
+    monkeypatch.setattr(cli, "default_bundled_icons", lambda: pack)
+
+
+def test_library_icons_lists_matches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _two_icons(monkeypatch, tmp_path)
+    for name in list(os.environ):
+        if name.startswith("NARRATOFLOW_") and name.endswith("_KEY"):
+            monkeypatch.delenv(name)
+    result = runner.invoke(cli.app, ["library", "icons", "idea"])
+    assert result.exit_code == 0, result.output
+    assert "lightbulb|generic" in result.output
+    assert "eye|generic" not in result.output
+
+
+def test_library_icons_without_words_lists_all(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _two_icons(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["library", "icons"])
+    assert result.exit_code == 0, result.output
+    assert "lightbulb|generic" in result.output and "eye|generic" in result.output
+
+
+def test_library_icons_no_match_hint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _two_icons(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["library", "icons", "zzz"])
+    assert result.exit_code == 0, result.output
+    assert "no bundled icon matches 'zzz'" in result.output
+    assert "--text-card" in result.output

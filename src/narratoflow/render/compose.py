@@ -143,9 +143,10 @@ def _sketch_frames(job: SceneJob) -> Iterator[np.ndarray]:
     reveal = RevealCanvas(prepared, events, art, job.ink)
     camera = CameraTrack(prepared, events, art, job.draw)
     sprite, tip = job.hand.image(canvas.scale)
-    fade_start = float(max(job.slot[1] - STAGE_FADE_MS, job.draw[1]))
-    # The fade ends on the slot's last frame (clamped like every frame time).
+    # The fade ends on the slot's last frame (clamped like every frame time). A draw
+    # that ends on or after that frame (draw_fraction 1.0) still ends on pure paper.
     last = min(frame_time_ms(job.frames[-1]), float(job.slot[1])) if job.frames else 0.0
+    fade_start = min(float(max(job.slot[1] - STAGE_FADE_MS, job.draw[1])), last)
     paper = np.array(PAPER, dtype=np.float32)
     for t in _frame_times(job):
         matrix = camera.affine(camera.at(t), (s.w, s.h))

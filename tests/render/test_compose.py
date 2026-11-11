@@ -4,6 +4,7 @@ from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
@@ -18,9 +19,17 @@ from narratoflow.render.compose import (
     render_segment,
     scene_frames,
 )
-from narratoflow.render.layout import Canvas, frame_range, frame_time_ms
+from narratoflow.render.layout import STAGE_PADDING_PX, Canvas, frame_range, frame_time_ms
 from narratoflow.render.reveal import RevealCanvas
-from narratoflow.render.variation import ZOOM_MAX, Variation, art_size, choose_variation
+from narratoflow.render.variation import (
+    ZOOM_MAX,
+    Variation,
+    art_size,
+    choose_variation,
+    sketch_to_art,
+)
+from narratoflow.visuals.marker import prepare_marker
+from narratoflow.visuals.schedule import draw_schedule
 from narratoflow.visuals.strokes import Stroke, StrokeSet
 
 SLOT = (0, 3800)
@@ -135,7 +144,7 @@ def test_constants() -> None:
 
 def test_job_is_picklable(tiny_canvas: Canvas) -> None:
     job = _job(tiny_canvas)
-    assert pickle.loads(pickle.dumps(job))  # noqa: S301 == job
+    assert pickle.loads(pickle.dumps(job)) == job  # noqa: S301
 
 
 def test_frame_count_equals_range(tiny_canvas: Canvas) -> None:
@@ -147,15 +156,29 @@ def test_frame_count_equals_range(tiny_canvas: Canvas) -> None:
         assert f.dtype == np.uint8
 
 
-def test_nothing_outside_stage_ever(tiny_canvas: Canvas) -> None:
+def test_nothing_outside_stage_ever(tiny_canvas: Canvas, monkeypatch: pytest.MonkeyPatch) -> None:
     strokes = _edge_sketch()
     variation = _plain_variation(len(strokes.strokes), dx=0.03, dy=0.03, scale=1.0)
     job = _job(tiny_canvas, strokes=strokes, variation=variation)
+    overflowed: list[bool] = []
+    real_paste = compose._paste_hand
+
+    def spy(
+        stage: np.ndarray, sprite: np.ndarray, tip: tuple[int, int], at: tuple[float, float]
+    ) -> None:
+        x0, y0 = round(at[0]) - tip[0], round(at[1]) - tip[1]
+        sh, sw = stage.shape[:2]
+        overflowed.append(x0 + sprite.shape[1] > sw or y0 + sprite.shape[0] > sh)
+        real_paste(stage, sprite, tip, at)
+
+    monkeypatch.setattr(compose, "_paste_hand", spy)
     saw_hand = False
     for frame in scene_frames(job):
         assert _outside_is_paper(frame, tiny_canvas)
         saw_hand = saw_hand or _hand(_stage(frame, tiny_canvas)) > 0
     assert saw_hand
+    # The unclipped sprite would reach past the stage, so the clip is exercised.
+    assert any(overflowed)
 
 
 def test_hand_visible_only_while_drawing(tiny_canvas: Canvas) -> None:
@@ -169,16 +192,35 @@ def test_hand_visible_only_while_drawing(tiny_canvas: Canvas) -> None:
             assert hand == 0, t
 
 
+def _overview_oracle(job: SceneJob) -> np.ndarray:
+    """The complete sketch on the art canvas, scaled straight onto the stage (zoom 1)."""
+    assert job.strokes is not None and job.variation is not None and job.draw is not None
+    canvas, strokes, v = job.canvas, job.strokes, job.variation
+    art = art_size(canvas)
+    to_art, combined = sketch_to_art(strokes, v, art, STAGE_PADDING_PX * float(canvas.scale))
+    prepared = prepare_marker(
+        strokes,
+        art,
+        line_weight_px=job.line_weight_px * v.line_weight_factor * ZOOM_MAX * float(canvas.scale),
+        seed=job.wobble_seed,
+        to_pixels=to_art,
+        reverse=[i in v.reversed_strokes for i in range(len(strokes.strokes))],
+        dot_px_per_unit=combined * strokes.width,
+    )
+    events = draw_schedule(strokes, *job.draw)
+    full = np.asarray(RevealCanvas(prepared, events, art, job.ink).at(float(job.draw[1])))
+    s = canvas.stage
+    matrix = np.array([[s.w / art[0], 0.0, 0.0], [0.0, s.h / art[1], 0.0]])
+    return cv2.warpAffine(full, matrix, (s.w, s.h), borderValue=PAPER)
+
+
 def test_hold_shows_complete_sketch_then_fades(tiny_canvas: Canvas) -> None:
     assert DRAW[1] + ZOOM_OUT_MS <= SLOT[1] - STAGE_FADE_MS
     job = _job(tiny_canvas)
     frames = dict(zip(job.frames, scene_frames(job), strict=True))
     hold_k = next(k for k in job.frames if frame_time_ms(k) >= DRAW[1] + ZOOM_OUT_MS)
-    # The same scene drawn too fast for the camera: always the overview.
-    short = replace(job, draw=(DRAW[0], DRAW[0] + 100))
-    overview = list(scene_frames(short))[hold_k - job.frames.start]
     got = _ink(_stage(frames[hold_k], tiny_canvas))
-    want = _ink(_stage(overview, tiny_canvas))
+    want = _ink(_overview_oracle(job))
     assert want > 0
     assert abs(got - want) <= 0.02 * want
     last = frames[job.frames[-1]]
@@ -261,7 +303,9 @@ def test_dots_scale_with_sketch() -> None:
     assert abs(areas[0] - areas[1]) <= 0.05 * areas[0]
     # The sketch is height-bound: its width on the art is about a quarter of its height.
     art = art_size(canvas)
-    sketch_w_stage = (art[1] - 2 * 12 * ZOOM_MAX) * 0.25 / ZOOM_MAX
+    sketch_w_stage = (
+        (art[1] - 2 * STAGE_PADDING_PX * float(canvas.scale) * ZOOM_MAX) * 0.25 / ZOOM_MAX
+    )
     want = math.pi / 4 * (0.2 * sketch_w_stage) ** 2
     assert want * 0.7 <= areas[0] <= want * 1.4
 
@@ -357,3 +401,28 @@ def test_render_segment_writes_every_frame(
     monkeypatch.setattr(compose, "FrameSink", FakeSink)
     job = _job(tiny_canvas, kind="paper", slot=(0, 300))
     assert render_segment(job) == len(job.frames) == len(written)
+
+
+@pytest.mark.parametrize("draw_end", [3800, 3790, 4500])
+def test_draw_to_slot_end_still_ends_on_paper(tiny_canvas: Canvas, draw_end: int) -> None:
+    """draw_fraction 1.0: draw_end >= the last frame's time; the last frame is still paper."""
+    job = _job(tiny_canvas, slot=SLOT, draw=(DRAW[0], draw_end))
+    frames = list(scene_frames(job))
+    assert frame_time_ms(job.frames[-1]) <= draw_end
+    assert _is_paper(frames[-1])
+    assert _hand(_stage(frames[-1], tiny_canvas)) == 0
+    assert _hand(_stage(frames[-2], tiny_canvas)) > 0
+
+
+def test_normal_fade_start_unchanged(tiny_canvas: Canvas) -> None:
+    """With draw_end before slot_end - STAGE_FADE_MS, the fade starts at slot_end - 200."""
+    job = _job(tiny_canvas)
+    start = SLOT[1] - STAGE_FADE_MS
+    frames = dict(zip(job.frames, scene_frames(job), strict=True))
+    hold = [k for k in job.frames if DRAW[1] + ZOOM_OUT_MS <= frame_time_ms(k) <= start]
+    assert len(hold) > 1
+    assert all(np.array_equal(frames[hold[0]], frames[k]) for k in hold)
+    first_fading = hold[-1] + 1
+    assert frame_time_ms(first_fading) > start
+    lighter = _stage(frames[first_fading], tiny_canvas).astype(np.int64).sum()
+    assert lighter > _stage(frames[hold[-1]], tiny_canvas).astype(np.int64).sum()

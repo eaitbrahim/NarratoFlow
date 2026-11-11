@@ -128,3 +128,11 @@ class ReciterError(AudioError):
 
 class AlignerUnavailableError(AudioError):
     """The forced aligner is not installed or cannot run."""
+
+
+class RenderError(NarratoFlowError):
+    """Rendering failed: missing tools, bad inputs or an ffmpeg failure."""
+
+
+class StaleTimelineError(RenderError):
+    """The audio timeline no longer matches the sketch library."""

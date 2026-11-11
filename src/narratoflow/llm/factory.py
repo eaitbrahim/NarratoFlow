@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from narratoflow.channels.config import ChannelConfig
+from narratoflow.channels.config import ChannelConfig, LlmConfig, vision_model
 from narratoflow.costs.prices import PriceTable
 from narratoflow.costs.tracker import SpendTracker, TrackedLLM
 from narratoflow.errors import ChannelConfigError, MissingApiKeyError
@@ -16,6 +16,22 @@ def make_llm(
     channel: ChannelConfig, settings: Settings, tracker: SpendTracker, prices: PriceTable
 ) -> LLMClient:
     cfg = channel.llm
+    provider = cfg.provider.strip().lower()
+    return TrackedLLM(build_llm_client(cfg, settings), tracker, provider, cfg.model, prices)
+
+
+def vision_llm_config(channel: ChannelConfig) -> LlmConfig | None:
+    """The channel LLM settings with the vision check's provider and model
+    (`vision_model`), or None when vision is off."""
+    ident = vision_model(channel)
+    if ident is None:
+        return None
+    provider, model = ident
+    return channel.llm.model_copy(update={"provider": provider, "model": model})
+
+
+def build_llm_client(cfg: LlmConfig, settings: Settings) -> LLMClient:
+    """The untracked client for `cfg`; callers wrap it in `TrackedLLM` before any call."""
     provider = cfg.provider.strip().lower()
     inner: LLMClient
     if provider == "anthropic":
@@ -33,4 +49,4 @@ def make_llm(
         inner = OllamaClient(base_url=settings.ollama_url, model=cfg.model)
     else:
         raise ChannelConfigError(f"unsupported LLM provider {cfg.provider!r}")
-    return TrackedLLM(inner, tracker, provider, cfg.model, prices)
+    return inner

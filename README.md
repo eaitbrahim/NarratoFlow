@@ -23,6 +23,8 @@ uv run narratoflow check-input script.txt --language ar   # reject corrupt PDF c
 uv run python scripts/fetch_quran.py                   # one-time: Tanzil Qur'an text for verse detection
 uv run narratoflow plan script.txt --channel channel.toml   # writes series.json next to the script
 uv run narratoflow approve series.json                 # review the list, then confirm (--yes skips the prompt)
+uv run narratoflow sketch generate series.json --channel channel.toml   # draw or reuse a sketch per scene; keeps progress on errors
+uv run narratoflow sketch resolve series.json s003 --regenerate --channel channel.toml   # or --swap KEY --description TEXT, or --text-card
 ```
 
 ### Script front matter
@@ -47,6 +49,13 @@ idea, whether its sketch is reused, bundled or new and paid, detected verses, fl
 per-part cost estimates) when `approval_list = true`, when a part's estimate is over the
 limit, or when something needs a human check. Otherwise it approves the series and
 prints a one-line summary.
+
+`sketch generate` checks every new sketch with a vision model (no people, faces, logos or
+text; style matches the reference sketch). Set it in the channel TOML with
+`[vision] provider = "anthropic"` and `model = "..."`. Without a `[vision]` table the channel's
+`[llm]` is used only when its provider can see images (`anthropic`). Otherwise, or with
+`[vision] provider = "none"`, vision is off. New sketches are then stored unchecked
+(`vision: not checked`), the command prints a warning, and no vision cost is estimated or charged.
 
 System requirement: `ffmpeg` on `PATH`.
 

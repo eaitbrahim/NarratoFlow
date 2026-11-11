@@ -7,19 +7,29 @@ import pytest
 from llm.fakes import FakeLLM
 from pydantic import BaseModel
 
-from narratoflow.channels.config import ChannelConfig, EmbedConfig, load_channel
+from narratoflow.channels.config import (
+    ChannelConfig,
+    EmbedConfig,
+    VisionConfig,
+    load_channel,
+    vision_model,
+)
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import (
     SpendTracker,
     TrackedLLM,
+    estimate_llm_call,
     estimate_part_cost,
     estimate_planning_cost,
     estimate_tokens,
+    require_generation_prices,
+    require_prices,
 )
-from narratoflow.errors import BudgetExceededError, ProviderError
+from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.llm.base import Usage
-from narratoflow.models import Language, Narration, Part, Scene
+from narratoflow.models import Language, Narration, Part, Scene, SceneKind
 from narratoflow.settings import Settings
+from narratoflow.sketching.vision import estimate_check_cost
 
 
 class Out(BaseModel):
@@ -155,17 +165,105 @@ def test_estimate_part_cost(prices: PriceTable, channel_file: Path) -> None:
         }
     )
 
-    def scene(i: int, match: Literal["reused", "bundled", "new"]) -> Scene:
-        return Scene(id=f"s{i}", narration=Narration(source_text="x"), match=match)
+    def scene(i: int, match: Literal["reused", "bundled", "new"], key: str = "") -> Scene:
+        return Scene(
+            id=f"s{i}",
+            narration=Narration(source_text="x"),
+            match=match,
+            idea_key=key or f"thing-{i}|roman",
+        )
 
+    verse = Scene(
+        id="s9",
+        narration=Narration(source_text="v"),
+        kind=SceneKind.VERSE,
+        match="new",
+        idea_key="book|generic",
+    )
+    no_key = Scene(id="s8", narration=Narration(source_text="n"), match="new")
     part = Part(
         index=1,
         count=1,
         hook_text="h",
-        scenes=[scene(1, "new"), scene(2, "new"), scene(3, "reused")],
+        scenes=[
+            scene(1, "new"),
+            scene(2, "new"),
+            scene(3, "reused"),
+            scene(4, "bundled", "eye|generic"),
+            scene(5, "bundled", "eye|generic"),  # second use: reused, no check
+            verse,
+            no_key,
+        ],
     )
-    cost = estimate_part_cost(part, ch, prices, voice_chars=2000)
-    assert cost == 2 * (Decimal("0.04") + Decimal("0.01")) + Decimal("0.60")
+    speech = Decimal("0.60")
+
+    def check(channel: ChannelConfig, key: str) -> Decimal:
+        # exactly what generate_one / the bundled first copy check before the call
+        ident = vision_model(channel)
+        assert ident is not None
+        provider, model = ident
+        return estimate_check_cost(channel.style, key, prices, provider, model, with_reference=True)
+
+    for vision in (None, VisionConfig(provider="anthropic", model="claude-haiku-5-5")):
+        c = ch.model_copy(update={"vision": vision or ch.vision})
+        cost = estimate_part_cost(part, c, prices, voice_chars=2000)
+        image = Decimal("0.04")
+        expected = (
+            image
+            + check(c, "thing-1|roman")
+            + image
+            + check(c, "thing-2|roman")
+            + check(c, "eye|generic")
+            + speech
+        )
+        assert cost == expected
+    # each check sends the candidate and the reference sketch: two vision images
+    # (opus 0.01 per image) on top of the prompt tokens
+    tokens_only = check(ch, "thing-1|roman") - 2 * Decimal("0.01")
+    assert tokens_only > 0
+    # vision off: images and voice only, no check is priced
+    off = ch.model_copy(update={"vision": VisionConfig(provider="none")})
+    assert estimate_part_cost(part, off, prices, voice_chars=2000) == 2 * image + speech
+
+
+def test_require_generation_prices_skips_vision_when_off(
+    prices: PriceTable, channel_file: Path
+) -> None:
+    base = load_channel(channel_file)
+    unpriced = base.model_copy(
+        update={"llm": base.llm.model_copy(update={"provider": "anthropic", "model": "unpriced"})}
+    )
+    with pytest.raises(PlanningError, match="anthropic/unpriced"):
+        require_generation_prices(unpriced, prices, vision=True)
+    off = unpriced.model_copy(update={"vision": VisionConfig(provider="none")})
+    require_generation_prices(off, prices, vision=True)
+
+
+def test_estimate_llm_call_matches_tracked_llm_check(prices: PriceTable) -> None:
+    text = "x" * 400  # 100 tokens in, 120 out
+    plain = estimate_llm_call(prices, "anthropic", "claude-opus-5-5", text)
+    assert plain == (100 * Decimal("4.00") + 120 * Decimal("20.00")) / 1_000_000
+    with_images = estimate_llm_call(prices, "anthropic", "claude-opus-5-5", text, images=2)
+    assert with_images == plain + 2 * Decimal("0.01")
+    assert estimate_llm_call(prices, "ollama", "llava", text, images=2) == 0
+
+
+def test_require_generation_prices_uses_vision_config(
+    prices: PriceTable, channel_file: Path
+) -> None:
+    base = load_channel(channel_file)  # ollama LLM, openai/gpt-image-1
+    require_generation_prices(base, prices, vision=True)
+    paid = base.model_copy(update={"vision": VisionConfig(provider="anthropic", model="unpriced")})
+    with pytest.raises(PlanningError, match="anthropic/unpriced"):
+        require_generation_prices(paid, prices, vision=True)
+    require_generation_prices(paid, prices, vision=False)
+    with pytest.raises(PlanningError, match="anthropic/unpriced"):
+        require_prices(paid, prices)
+    no_image = base.model_copy(
+        update={"style": base.style.model_copy(update={"image_model": "unpriced"})}
+    )
+    with pytest.raises(PlanningError, match="openai/unpriced"):
+        require_generation_prices(no_image, prices, vision=False)
 
 
 def _opus_channel(channel_file: Path) -> ChannelConfig:
@@ -264,3 +362,51 @@ def test_tracked_llm_same_model_charges_configured_without_log(
         llm.complete_structured(system="s", user="u", output=Out)
     assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
     assert "fallback" not in caplog.text
+
+
+def test_tracked_llm_forwards_images_and_charges_vision(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()])
+    t = SpendTracker(Decimal("10"))
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    llm.complete_structured(system="s", user="u", output=Out, images=[b"a", b"b"])
+    assert fake.images == [(b"a", b"b")]
+    tokens = (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
+    assert t.spent == tokens + 2 * Decimal("0.01")
+
+
+def test_tracked_llm_estimate_includes_vision_before_call(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()])
+    t = SpendTracker(Decimal("0.015"))  # room for one image check, not two
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    with pytest.raises(BudgetExceededError):
+        llm.complete_structured(system="s", user="u", output=Out, images=[b"a", b"b"])
+    assert fake.calls == []
+
+
+def test_tracked_llm_without_images_charges_no_vision(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()])
+    t = SpendTracker(Decimal("10"))
+    TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices).complete_structured(
+        system="s", user="u", output=Out
+    )
+    assert fake.images == [()]
+    assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
+
+
+def test_tracked_llm_falls_back_to_configured_vision_price(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()], model="claude-served-x")
+    served_llm = prices.llm
+
+    class P:
+        def llm(self, provider: str, model: str) -> tuple[Decimal, Decimal]:
+            return served_llm("anthropic", "claude-opus-5-5")
+
+        def vision(self, provider: str, model: str) -> Decimal:
+            if model == "claude-served-x":
+                raise PlanningError("no vision price")
+            return prices.vision(provider, model)
+
+    t = SpendTracker(Decimal("10"))
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", P())  # type: ignore[arg-type]
+    llm.complete_structured(system="s", user="u", output=Out, images=[b"a"])
+    assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000 + Decimal("0.01")

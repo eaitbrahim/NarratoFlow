@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydantic import BaseModel
 
 from narratoflow.llm.base import StructuredResult, Usage
@@ -18,11 +20,18 @@ class FakeLLM:
         self.responses = list(responses)
         self.model = model
         self.calls: list[tuple[str, str, type[BaseModel]]] = []
+        self.images: list[tuple[bytes, ...]] = []
 
     def complete_structured[T: BaseModel](
-        self, *, system: str, user: str, output: type[T]
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
         self.calls.append((system, user, output))
+        self.images.append(tuple(images))
         if not self.responses:
             raise AssertionError("FakeLLM has no queued responses left")
         item = self.responses.pop(0)

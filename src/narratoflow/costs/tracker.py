@@ -8,17 +8,19 @@ from __future__ import annotations
 import logging
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel
 
-from narratoflow.channels.config import ChannelConfig
+from narratoflow.channels.config import ChannelConfig, vision_model
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
+from narratoflow.library.keys import parse_idea_key
 from narratoflow.llm.base import LLMClient, StructuredResult, Usage
-from narratoflow.models import Language, Part
+from narratoflow.models import Language, Part, SceneKind
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ CANDIDATE_TOP_K = 5
 IDEA_OUTPUT_TOKENS = 80
 _TASHKEEL_OUTPUT_FACTOR = Decimal("2.5")
 PLANNING_MARGIN = Decimal("1.2")
+VISION_IMAGES_PER_CHECK = 2  # the candidate sketch plus the channel's reference sketch
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,22 @@ def _llm_cost(
 ) -> Decimal:
     price_in, price_out = prices.llm(provider, model)
     return (input_tokens * price_in + output_tokens * price_out) / _MILLION
+
+
+def estimate_llm_call(
+    prices: PriceTable, provider: str, model: str, text: str, *, images: int = 0
+) -> Decimal:
+    """Pre-call estimate of one LLM call over `text` (system + user), as `TrackedLLM` checks it.
+
+    Output is 1.2x the input tokens (at least 1); each image adds the vision price.
+    """
+    tokens = estimate_tokens(text)
+    estimate = _llm_cost(
+        prices, provider, model, tokens, max(1, math.ceil(tokens * _OUTPUT_FACTOR))
+    )
+    if images:
+        estimate += images * prices.vision(provider, model)
+    return estimate
 
 
 def estimate_planning_cost(
@@ -140,26 +159,67 @@ def require_prices(channel: ChannelConfig, prices: PriceTable, *, embed: bool = 
 
     Called before any paid call so a missing entry cannot surface after spend.
     """
-    llm, style, voice = channel.llm, channel.style, channel.voice
+    llm, voice = channel.llm, channel.voice
     prices.llm(llm.provider, llm.model)
-    prices.vision(llm.provider, llm.model)
-    prices.image(style.image_provider, style.image_model)
+    require_generation_prices(channel, prices, vision=True)
     prices.voice(voice.provider, voice.model)
     if embed:
         prices.embed(channel.embed.provider, channel.embed.model)
 
 
+def require_generation_prices(channel: ChannelConfig, prices: PriceTable, *, vision: bool) -> None:
+    """Raise `PlanningError` unless the image price and, with `vision`, the vision
+    model's LLM and per-image prices are known (`vision_model`; none when it is off).
+    """
+    style = channel.style
+    prices.image(style.image_provider, style.image_model)
+    ident = vision_model(channel) if vision else None
+    if ident is not None:
+        provider, model = ident
+        prices.llm(provider, model)
+        prices.vision(provider, model)
+
+
 def estimate_part_cost(
     part: Part, channel: ChannelConfig, prices: PriceTable, *, voice_chars: int
 ) -> Decimal:
-    """New sketches x (image + vision check) plus voice characters x per-kchar price."""
-    new = sum(1 for scene in part.scenes if scene.match == "new")
-    style, llm, voice = channel.style, channel.llm, channel.voice
-    per_sketch = prices.image(style.image_provider, style.image_model) + prices.vision(
-        llm.provider, llm.model
-    )
+    """What sketch generation may spend on `part`, plus voice characters x per-kchar price.
+
+    Mirrors the pre-call budget checks of sketch generation, so the approval
+    estimate is never below what the spending limit enforces:
+    - a "new" scene: image price + the vision check estimate (`estimate_check_cost`:
+      prompt tokens plus `VISION_IMAGES_PER_CHECK` images, candidate and reference);
+    - a "bundled" scene, on the first use of its key in the part: the vision check
+      of the copied icon (later uses reuse that copy);
+    - verse scenes and scenes without an idea key are never generated: zero.
+    The vision model is `vision_model(channel)`; when vision is off a check costs zero.
+    """
+    # imported here: sketching.vision imports this module for `estimate_llm_call`
+    from narratoflow.sketching.vision import estimate_check_cost
+
+    style, voice = channel.style, channel.voice
+    ident = vision_model(channel)
+    image = prices.image(style.image_provider, style.image_model)
+
+    def check(key: str) -> Decimal:
+        if ident is None:
+            return Decimal(0)
+        return estimate_check_cost(style, key, prices, *ident, with_reference=True)
+
+    total = Decimal(0)
+    bundled_seen: set[str] = set()
+    for scene in part.scenes:
+        if scene.kind is SceneKind.VERSE or scene.idea_key is None:
+            continue
+        if scene.match == "new":
+            total += image + check(scene.idea_key)
+        elif scene.match == "bundled":
+            key = str(parse_idea_key(scene.idea_key))
+            if key not in bundled_seen:
+                bundled_seen.add(key)
+                total += check(key)
     speech = Decimal(voice_chars) / 1000 * prices.voice(voice.provider, voice.model)
-    return new * per_sketch + speech
+    return total + speech
 
 
 class TrackedLLM:
@@ -182,27 +242,40 @@ class TrackedLLM:
         self._fallback_logged = False
 
     def complete_structured[T: BaseModel](
-        self, *, system: str, user: str, output: type[T]
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
-        tokens = estimate_tokens(system + user)
-        estimate = _llm_cost(
-            self.prices,
-            self.provider,
-            self.model,
-            tokens,
-            max(1, math.ceil(tokens * _OUTPUT_FACTOR)),
+        estimate = estimate_llm_call(
+            self.prices, self.provider, self.model, system + user, images=len(images)
         )
         self.tracker.ensure_room(estimate, f"llm {self.provider}/{self.model}")
         try:
-            result = self.inner.complete_structured(system=system, user=user, output=output)
+            result = self.inner.complete_structured(
+                system=system, user=user, output=output, images=images
+            )
         except ProviderError as err:
             # A failed call is charged nothing: no usage was returned to bill.
             logger.warning("LLM call failed (%s/%s): %s", self.provider, self.model, err)
             raise
-        self.tracker.charge_llm(
-            self.provider, self._billed_model(result.model), result.usage, self.prices
-        )
+        billed = self._billed_model(result.model)
+        self.tracker.charge_llm(self.provider, billed, result.usage, self.prices)
+        if images:
+            self.tracker.charge(
+                len(images) * self._vision_price(billed),
+                f"vision {self.provider}/{billed}",
+            )
         return result
+
+    def _vision_price(self, billed: str) -> Decimal:
+        """Vision price of the billed model, else the configured model's."""
+        try:
+            return self.prices.vision(self.provider, billed)
+        except PlanningError:
+            return self.prices.vision(self.provider, self.model)
 
     def _billed_model(self, served: str) -> str:
         """The served model when it differs and is priced, else the configured one."""

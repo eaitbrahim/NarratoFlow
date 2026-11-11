@@ -51,6 +51,20 @@ class EmbedConfig(BaseModel):
     model: str = "voyage-multilingual-2"
 
 
+VISION_CAPABLE_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
+"""LLM providers whose channel model can judge images when `[vision]` is unset."""
+VISION_OFF = "none"
+"""`[vision] provider = "none"` turns the vision check off."""
+
+
+class VisionConfig(BaseModel):
+    """Vision-check model (see `vision_model`); both unset means the channel's LLM
+    when its provider is vision capable, else no vision check."""
+
+    provider: str | None = None
+    model: str | None = None
+
+
 class ChannelConfig(BaseModel):
     name: str
     slug: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -59,6 +73,7 @@ class ChannelConfig(BaseModel):
     voice: VoiceConfig
     llm: LlmConfig
     embed: EmbedConfig = EmbedConfig()
+    vision: VisionConfig = VisionConfig()
     outputs: list[AspectRatio] = Field(default_factory=lambda: [AspectRatio.PORTRAIT])
     spending_limit_usd: Decimal | None = Field(None, gt=0)
     approval_list: bool = True
@@ -73,6 +88,27 @@ class ChannelConfig(BaseModel):
         if self.part_min_s >= self.part_max_s:
             raise ValueError("part_min_s must be less than part_max_s")
         return self
+
+
+def vision_model(channel: ChannelConfig) -> tuple[str, str] | None:
+    """`(provider, model)` of the vision check, or None when vision is off.
+
+    - `[vision] provider = "none"`: off;
+    - `[vision]` unset: the channel LLM when its provider is in
+      `VISION_CAPABLE_PROVIDERS` (a text-only model must not judge images), else off;
+    - otherwise `channel.vision`, each unset field taken from the channel LLM.
+
+    The provider is normalized (stripped, lower case) the way the factories use it.
+    Off means new sketches are stored UNCHECKED ("vision: not checked").
+    """
+    vision, llm = channel.vision, channel.llm
+    if vision.provider is None and vision.model is None:
+        provider = llm.provider.strip().lower()
+        return (provider, llm.model) if provider in VISION_CAPABLE_PROVIDERS else None
+    provider = (vision.provider or llm.provider).strip().lower()
+    if provider == VISION_OFF:
+        return None
+    return provider, vision.model or llm.model
 
 
 def load_channel(path: Path) -> ChannelConfig:

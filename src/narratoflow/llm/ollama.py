@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -25,13 +27,21 @@ class OllamaClient:
         self.timeout_s = self.http.timeout.read or DEFAULT_TIMEOUT_S
 
     def complete_structured[T: BaseModel](
-        self, *, system: str, user: str, output: type[T]
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
+        user_message: dict[str, Any] = {"role": "user", "content": user}
+        if images:
+            user_message["images"] = [base64.b64encode(i).decode("ascii") for i in images]
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                user_message,
             ],
             "format": output.model_json_schema(),
             "stream": False,

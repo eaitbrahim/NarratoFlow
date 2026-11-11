@@ -366,3 +366,34 @@ def test_orm_checks_mirror_migration_0002() -> None:
         "ck_sketch_status": migration._STATUS_CHECK,
         "ck_sketch_origin": migration._ORIGIN_CHECK,
     }
+
+
+def test_0003_adds_nullable_strokes_hash_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / "library.db"
+    _alembic(path, "upgrade", "0001")
+    conn = _connect(path)
+    _seed_0001(conn)
+    conn.close()
+    _alembic(path, "upgrade", "head")
+    conn = _connect(path)
+    try:
+        cols = {r[1]: r for r in conn.execute("PRAGMA table_info(sketch)")}
+        assert "strokes_hash" in cols and cols["strokes_hash"][3] == 0  # nullable
+        assert conn.execute("SELECT strokes_hash FROM sketch").fetchall() == [(None,), (None,)]
+        conn.execute("UPDATE sketch SET strokes_hash = 'abc' WHERE idea_key = 'object|lamp'")
+    finally:
+        conn.close()
+
+    _alembic(path, "downgrade", "0002")
+    _assert_sketch_table_intact(path)
+    conn = _connect(path)
+    try:
+        names = {r[1] for r in conn.execute("PRAGMA table_info(sketch)")}
+        assert "strokes_hash" not in names
+        with pytest.raises(sqlite3.IntegrityError, match="ck_sketch_status"):
+            conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", "generated", "bogus"))
+    finally:
+        conn.close()
+
+    _alembic(path, "upgrade", "head")
+    _assert_sketch_table_intact(path)

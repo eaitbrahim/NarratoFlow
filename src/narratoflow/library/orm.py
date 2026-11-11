@@ -111,6 +111,8 @@ class Sketch(Base):
     mirror_safe: Mapped[bool] = mapped_column(nullable=False)
     provenance: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
+    strokes_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    """Blob hash of the stroke set (suffix `.strokes.json`), once extracted."""
 
 
 class IdeaEmbedding(Base):

@@ -3,12 +3,12 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from narratoflow.channels.config import ChannelConfig, load_channel
+from narratoflow.channels.config import ChannelConfig, VisionConfig, load_channel, vision_model
 from narratoflow.costs.prices import default_prices
 from narratoflow.costs.tracker import SpendTracker, TrackedLLM
 from narratoflow.errors import ChannelConfigError, MissingApiKeyError
 from narratoflow.llm.anthropic_client import AnthropicClient
-from narratoflow.llm.factory import make_llm
+from narratoflow.llm.factory import build_llm_client, make_llm, vision_llm_config
 from narratoflow.llm.ollama import OllamaClient
 from narratoflow.settings import Settings
 
@@ -60,3 +60,43 @@ def test_make_llm_ollama_uses_settings_url(channel_file: Path) -> None:
 
 def test_ollama_url_default() -> None:
     assert Settings().ollama_url == "http://localhost:11434"
+
+
+def test_vision_model_unset_uses_a_vision_capable_channel_llm(channel_file: Path) -> None:
+    # a text-only free LLM is never asked to judge images: vision is off
+    assert vision_model(_channel(channel_file, " Ollama ", "qwen2.5")) is None
+    paid = _channel(channel_file, " Anthropic ", "claude-opus-5-5")
+    assert vision_model(paid) == ("anthropic", "claude-opus-5-5")
+
+
+def test_vision_provider_none_turns_vision_off(channel_file: Path) -> None:
+    paid = _channel(channel_file, "anthropic", "claude-opus-5-5")
+    for provider in ("none", " None "):
+        off = paid.model_copy(update={"vision": VisionConfig(provider=provider)})
+        assert vision_model(off) is None
+
+
+def test_vision_model_uses_the_vision_config(channel_file: Path) -> None:
+    base = _channel(channel_file, " Ollama ", "qwen2.5")
+    split = base.model_copy(
+        update={"vision": VisionConfig(provider="Anthropic", model="claude-haiku-5-5")}
+    )
+    assert vision_model(split) == ("anthropic", "claude-haiku-5-5")
+    only_model = base.model_copy(update={"vision": VisionConfig(model="llava")})
+    assert vision_model(only_model) == ("ollama", "llava")
+
+
+def test_vision_llm_config_keeps_llm_settings(channel_file: Path) -> None:
+    base = _channel(channel_file, "ollama", "qwen2.5")
+    base = base.model_copy(update={"llm": base.llm.model_copy(update={"max_tokens": 77})})
+    split = base.model_copy(
+        update={"vision": VisionConfig(provider="anthropic", model="claude-haiku-5-5")}
+    )
+    assert vision_llm_config(base) is None  # vision off: nothing to build
+    cfg = vision_llm_config(split)
+    assert cfg is not None
+    assert (cfg.provider, cfg.model, cfg.max_tokens) == ("anthropic", "claude-haiku-5-5", 77)
+    client = build_llm_client(cfg, Settings(llm_api_key=SecretStr("k")))
+    assert isinstance(client, AnthropicClient)
+    with pytest.raises(MissingApiKeyError):
+        build_llm_client(cfg, Settings(llm_api_key=None))

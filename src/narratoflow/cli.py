@@ -10,24 +10,42 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from narratoflow.channels.config import load_channel, style_fingerprint
+from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint, vision_model
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
+from narratoflow.costs.prices import PriceTable, default_prices
+from narratoflow.costs.tracker import require_generation_prices
 from narratoflow.errors import CorruptInputError, LibraryError, NarratoFlowError, PlanningError
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import SketchStatus
+from narratoflow.llm.factory import build_llm_client, vision_llm_config
 from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.pipeline import plan_series
 from narratoflow.settings import get_settings
+from narratoflow.sketching.generate import (
+    GenerationInterruptedError,
+    GenerationResult,
+    generate_missing,
+    require_series_channel,
+)
+from narratoflow.sketching.resolve import (
+    check_regenerable,
+    regenerate,
+    swap_idea,
+    use_text_card,
+)
+from narratoflow.sketching.vision import estimate_check_cost
 from narratoflow.text.quality import require_clean
 
 app = typer.Typer(no_args_is_help=True, help="NarratoFlow whiteboard video engine.")
 channel_app = typer.Typer(no_args_is_help=True, help="Channel configuration commands.")
 library_app = typer.Typer(no_args_is_help=True, help="Sketch library commands.")
+sketch_app = typer.Typer(no_args_is_help=True, help="Sketch generation commands.")
 app.add_typer(channel_app, name="channel")
 app.add_typer(library_app, name="library")
+app.add_typer(sketch_app, name="sketch")
 
 _out = Console()
 _err = Console(stderr=True)
@@ -143,6 +161,142 @@ def approve(
     series.approved = True
     series.save(series_json)
     _out.print(f"[green]Approved[/green] {escape(str(series_json))}", highlight=False)
+
+
+def _print_resolve_hint(scene_id: str, state: str, series_json: Path, channel_toml: Path) -> None:
+    _out.print(
+        f"{escape(scene_id)}: {state} - resolve with: narratoflow sketch resolve "
+        f"{escape(str(series_json))} {escape(scene_id)} --regenerate | "
+        f"--swap KEY --description TEXT | --text-card --channel {escape(str(channel_toml))}",
+        highlight=False,
+        soft_wrap=True,
+    )
+
+
+def _print_generation(result: GenerationResult, series_json: Path, channel_toml: Path) -> None:
+    _out.print(
+        f"generated {result.generated}, reused {result.reused}, bundled {result.bundled}, "
+        f"kept {result.kept}, quarantined {len(result.quarantined)}, "
+        f"unchecked {len(result.unchecked)}, spent {format_usd(result.spent_usd)}",
+        highlight=False,
+        soft_wrap=True,
+    )
+    for scene_id in result.quarantined:
+        _print_resolve_hint(scene_id, "quarantined", series_json, channel_toml)
+    _print_unchecked(result)
+
+
+def _print_unchecked(result: GenerationResult) -> None:
+    if result.unchecked:
+        _out.print(
+            f"[yellow]warning:[/yellow] {len(result.unchecked)} sketch(es) are unchecked: "
+            "vision checking was off for them",
+            highlight=False,
+            soft_wrap=True,
+        )
+
+
+@sketch_app.command("generate")
+def sketch_generate(
+    series_json: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+) -> None:
+    """Generate (or reuse) a sketch for every scene of an approved series."""
+    channel = load_channel(channel_toml)
+    series = Series.load(series_json)
+    try:
+        updated, result = generate_missing(series, channel, get_settings())
+    except GenerationInterruptedError as exc:
+        exc.partial[0].save(series_json)
+        _print_generation(exc.partial[1], series_json, channel_toml)
+        raise
+    updated.save(series_json)
+    _print_generation(result, series_json, channel_toml)
+
+
+def _regenerate_estimate(idea_key: str, channel: ChannelConfig, prices: PriceTable) -> Decimal:
+    """Image price plus the vision check (none when vision is off) for one sketch."""
+    style = channel.style
+    estimate = prices.image(style.image_provider, style.image_model)
+    ident = vision_model(channel)
+    if ident is not None:
+        estimate += estimate_check_cost(style, idea_key, prices, *ident, with_reference=True)
+    return estimate
+
+
+@sketch_app.command("resolve")
+def sketch_resolve(
+    series_json: Path,
+    scene_id: str,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    do_regenerate: Annotated[
+        bool, typer.Option("--regenerate", help="Draw a new sketch (paid, asks first).")
+    ] = False,
+    swap: Annotated[str | None, typer.Option("--swap", help="New idea key.")] = None,
+    description: Annotated[
+        str | None, typer.Option("--description", help="Description for --swap.")
+    ] = None,
+    text_card: Annotated[bool, typer.Option("--text-card", help="Show a text card.")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Regenerate without asking.")] = False,
+) -> None:
+    """Settle a quarantined scene: regenerate it, swap its idea, or use a text card."""
+    if (do_regenerate, swap is not None, text_card).count(True) != 1:
+        raise typer.BadParameter("give exactly one of --regenerate, --swap KEY, --text-card")
+    if swap is not None and description is None:
+        raise typer.BadParameter("--swap needs --description")
+    if description is not None and swap is None:
+        raise typer.BadParameter("--description only goes with --swap")
+    if yes and not do_regenerate:
+        raise typer.BadParameter("--yes only goes with --regenerate")
+    channel = load_channel(channel_toml)
+    series = Series.load(series_json)
+    if swap is not None and description is not None:
+        swapped = swap_idea(series, scene_id, swap, description)
+        swapped.save(series_json)
+        _out.print(
+            f"{escape(scene_id)}: idea is now {escape(swap)}; run narratoflow sketch generate "
+            f"{escape(str(series_json))} --channel {escape(str(channel_toml))} to draw it",
+            highlight=False,
+            soft_wrap=True,
+        )
+        return
+    if text_card:
+        use_text_card(series, scene_id).save(series_json)
+        _out.print(f"{escape(scene_id)}: now uses a text card", highlight=False)
+        return
+    # everything that can refuse without spend is checked before asking for money
+    settings = get_settings()
+    idea_key = check_regenerable(series, scene_id)
+    require_series_channel(series, channel)
+    check_provider_keys(channel, settings)
+    vision_cfg = vision_llm_config(channel)
+    if vision_cfg is not None:
+        build_llm_client(vision_cfg, settings)  # refuses on a missing key; no network call
+    prices = default_prices(settings)
+    require_generation_prices(channel, prices, vision=True)
+    if not yes:
+        estimate = _regenerate_estimate(idea_key, channel, prices)
+        if not typer.confirm(
+            f"Regenerate the sketch for {scene_id}? Estimated cost {format_usd(estimate)}"
+        ):
+            _out.print("Unchanged.")
+            return
+    try:
+        updated, result = regenerate(series, scene_id, channel, settings)
+    except GenerationInterruptedError as exc:
+        exc.partial[0].save(series_json)
+        _print_generation(exc.partial[1], series_json, channel_toml)
+        raise
+    updated.save(series_json)
+    attached = any(
+        s.id == scene_id and s.sketch_id is not None for p in updated.parts for s in p.scenes
+    )
+    if attached:
+        _out.print(f"{escape(scene_id)}: regenerated", highlight=False)
+    else:
+        _print_resolve_hint(scene_id, "quarantined again", series_json, channel_toml)
+    _out.print(f"spent {format_usd(result.spent_usd)}", highlight=False)
+    _print_unchecked(result)
 
 
 def main() -> None:

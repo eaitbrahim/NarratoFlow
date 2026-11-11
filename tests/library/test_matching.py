@@ -36,11 +36,11 @@ def make_record(i: int) -> SketchRecord:
 
 
 def _write_index(tmp_path: Path, keys: list[str]) -> Path:
-    (tmp_path / "icon.svg").write_text("<svg/>")
+    (tmp_path / "icon.png").write_text("<svg/>")
     body = "[icons]\n" if not keys else ""
     for key in keys:
         body += (
-            f'[icons."{key}"]\nfile = "icon.svg"\nlicense = "MIT"\nsource = "https://example.com"\n'
+            f'[icons."{key}"]\nfile = "icon.png"\nlicense = "MIT"\nsource = "https://example.com"\n'
         )
     index = tmp_path / "index.toml"
     index.write_text(body)
@@ -123,7 +123,7 @@ def test_generic_without_icon_is_new(library: SketchLibrary, bundled_empty: Bund
 
 
 def test_bundled_index_rejects_non_generic(tmp_path: Path) -> None:
-    with pytest.raises(InvalidIdeaKeyError):
+    with pytest.raises(ChannelConfigError, match=re.escape("scroll|roman")):
         BundledIcons.from_index(_write_index(tmp_path, ["scroll|roman"]))
 
 

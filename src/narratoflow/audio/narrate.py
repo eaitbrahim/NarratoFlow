@@ -2,8 +2,10 @@
 
 Only the `tts_text or source_text` of NARRATION scenes is ever spoken. Each voice of
 the chain is tried in order for the *whole* part: a `ProviderError` (including a
-`BilledProviderError`) or an `ExtraMissingError` on any scene abandons that voice
-and the next one starts again from the first scene. Budget, key and other config
+`BilledProviderError`), an `ExtraMissingError`, or audio that does not decode or
+is all silence, on any scene abandons that voice and the next one starts again
+from the first scene. Bad audio also drops that clip's cache entry; any spend
+already charged for it stays charged. Budget, key and other config
 errors propagate. Word timings come from the provider's spans, else the aligner,
 else an estimate over the clip's non-silent span; the voice never falls back
 because of timing.
@@ -18,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from narratoflow.align import Aligner
-from narratoflow.audio.io import SAMPLE_RATE, Samples, decode, trim_silence
+from narratoflow.audio.io import SAMPLE_RATE, Samples, decode, require_ffmpeg, trim_silence
 from narratoflow.audio.timeline import TimingSource, VoiceUsed
 from narratoflow.audio.words import TimedSpan, estimate_timings, timings_from_spans, tokens
 from narratoflow.costs.prices import PriceTable
@@ -34,6 +36,7 @@ from narratoflow.models import Language, Part, Scene, SceneKind, WordTiming
 from narratoflow.pipeline.cache import StageCache, cache_key
 from narratoflow.tts import SpeechRequest, VoiceChoice
 from narratoflow.tts.factory import TrackedSpeechProvider
+from narratoflow.tts.piper import PiperProvider
 
 ADAPTER_VERSION = "1"
 STAGE = "tts"
@@ -66,6 +69,20 @@ class _Voiced:
     spans: tuple[TimedSpan, ...]
 
 
+@dataclass(frozen=True)
+class _Clip:
+    """A voiced scene: decoded samples, provider spans and the non-silent span."""
+
+    samples: Samples
+    spans: tuple[TimedSpan, ...]
+    lead_ms: int
+    speech_ms: int
+
+
+class _BadVoiceAudio(AudioError):
+    """The voice returned audio that does not decode or is all silence."""
+
+
 @dataclass
 class _Timer:
     aligner: Aligner | None
@@ -86,13 +103,32 @@ def _caption(scene: Scene) -> str:
     return scene.narration.caption_text or scene.narration.source_text
 
 
+def _label(choice: VoiceChoice) -> str:
+    return f"{choice.provider.name}/{choice.voice_id}"
+
+
+def _model_file(provider: object) -> dict[str, object] | None:
+    """The identity of a local model file, so a replaced model never reuses clips."""
+    if not isinstance(provider, PiperProvider):
+        return None
+    path = provider.model_path.resolve()
+    try:
+        st = path.stat()
+    except OSError:
+        return {"path": str(path)}
+    return {"path": str(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
 def _key(choice: VoiceChoice, text: str) -> str:
-    payload = {
+    payload: dict[str, object] = {
         "provider": choice.provider.name,
         "model": choice.provider.model,
         "voice_id": choice.voice_id,
         "text": text,
     }
+    model_file = _model_file(choice.provider)
+    if model_file is not None:
+        payload["model_file"] = model_file
     return cache_key(STAGE, ADAPTER_VERSION, payload)
 
 
@@ -146,20 +182,48 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise AudioError(f"cannot write tts cache {path}: {exc}") from exc
 
 
+def _present(cache: StageCache, key: str) -> bool:
+    """A cheap stat-only check: both files exist and neither is empty."""
+    return all(_size(cache.root / STAGE / f"{key}{suffix}") > 0 for suffix in (".audio", ".json"))
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _drop(cache: StageCache, key: str) -> None:
+    for suffix in (".json", ".audio"):
+        (cache.root / STAGE / f"{key}{suffix}").unlink(missing_ok=True)
+
+
 def _store(cache: StageCache, key: str, voiced: _Voiced, billed_chars: int | None) -> None:
-    """Write the audio, then the `.json` last, so a hit never sees half an entry."""
+    """Drop any old `.json`, write the audio, then the `.json` last.
+
+    A hit needs both files, so a crash at any point never pairs old spans with
+    new audio and never leaves half an entry.
+    """
     meta = {
         "spans": [[s.text, s.start_ms, s.end_ms] for s in voiced.spans],
         "billed_chars": billed_chars,
     }
+    meta_path = cache.path_for(STAGE, key, ".json")
+    try:
+        meta_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise AudioError(f"cannot write tts cache {meta_path}: {exc}") from exc
     _write_atomic(cache.path_for(STAGE, key, ".audio"), voiced.audio)
-    _write_atomic(cache.path_for(STAGE, key, ".json"), json.dumps(meta).encode("utf-8"))
+    _write_atomic(meta_path, json.dumps(meta).encode("utf-8"))
 
 
 def uncached_chars(part: Part, choice: VoiceChoice, cache: StageCache) -> int:
     """Characters of the part's narration whose cache entry misses for `choice`.
 
     A text repeated within the part is counted once: the first call caches it.
+    The check is stat-only (both files present, neither empty); `narrate_part`
+    still validates each entry before using it.
     """
     seen: set[str] = set()
     total = 0
@@ -169,7 +233,7 @@ def uncached_chars(part: Part, choice: VoiceChoice, cache: StageCache) -> int:
         if key in seen:
             continue
         seen.add(key)
-        if _read(cache, key) is None:
+        if not _present(cache, key):
             total += len(text)
     return total
 
@@ -189,8 +253,9 @@ def _voice_all(
     tracked: TrackedSpeechProvider,
     cache: StageCache,
     language: Language,
-) -> dict[str, _Voiced]:
-    out: dict[str, _Voiced] = {}
+) -> dict[str, _Clip]:
+    """Voice (or reuse) every scene; bad audio fails the voice and drops its entry."""
+    out: dict[str, _Clip] = {}
     for scene in scenes:
         text = _spoken(scene)
         key = _key(choice, text)
@@ -199,23 +264,34 @@ def _voice_all(
             speech = tracked.synthesize(SpeechRequest(text, choice.voice_id, language))
             hit = _Voiced(speech.audio, tuple(speech.spans))
             _store(cache, key, hit, speech.billed_chars)
-        out[scene.id] = hit
+        out[scene.id] = _checked_clip(cache, key, scene, hit)
     return out
 
 
-def _timings(
-    timer: _Timer, scene: Scene, samples: Samples, spans: tuple[TimedSpan, ...]
-) -> tuple[list[WordTiming], TimingSource]:
+def _checked_clip(cache: StageCache, key: str, scene: Scene, voiced: _Voiced) -> _Clip:
+    try:
+        samples = decode(voiced.audio)
+    except AudioError as exc:
+        _drop(cache, key)
+        raise _BadVoiceAudio(f"scene {scene.id}: audio does not decode ({exc})") from exc
+    trimmed, lead_ms = trim_silence(samples)
+    if trimmed.size == 0:
+        _drop(cache, key)
+        raise _BadVoiceAudio(f"scene {scene.id}: audio is all silence")
+    return _Clip(samples, voiced.spans, lead_ms, len(trimmed) * 1000 // SAMPLE_RATE)
+
+
+def _timings(timer: _Timer, scene: Scene, clip: _Clip) -> tuple[list[WordTiming], TimingSource]:
     text = _spoken(scene)
     words = tokens(text)
-    if spans:
-        found = timings_from_spans(words, spans)
+    if clip.spans:
+        found = timings_from_spans(words, clip.spans)
         if found is not None:
             return found, TimingSource.PROVIDER
     note = f"{scene.id}: word timings estimated"
     if timer.aligner is not None:
         try:
-            aligned = timer.aligner.align(samples, SAMPLE_RATE, text, timer.language)
+            aligned = timer.aligner.align(clip.samples, SAMPLE_RATE, text, timer.language)
         except AlignerUnavailableError:
             timer.aligner = None
             timer.unavailable = True
@@ -225,10 +301,11 @@ def _timings(
             found = timings_from_spans(words, aligned)
             if found is not None:
                 return found, TimingSource.ALIGNED
-    trimmed, lead_ms = trim_silence(samples)
     timer.warnings.append(note)
-    offset_ms = lead_ms + len(trimmed) * 1000 // SAMPLE_RATE
-    return estimate_timings(words, lead_ms, offset_ms), TimingSource.ESTIMATED
+    # Spread the words over the clip's non-silent span [speech_start, speech_end].
+    speech_start_ms = clip.lead_ms
+    speech_end_ms = clip.lead_ms + clip.speech_ms
+    return estimate_timings(words, speech_start_ms, speech_end_ms), TimingSource.ESTIMATED
 
 
 def _caption_words(scene: Scene, timed: list[WordTiming]) -> list[WordTiming]:
@@ -255,6 +332,7 @@ def narrate_part(
     if not scenes:
         return NarrationResult(clips={}, voice=None, cost_estimated=False, warnings=[])
     _check_tokens(scenes)
+    require_ffmpeg()  # a missing ffmpeg is a setup error, never a voice failure
     reasons: list[str] = []
     wrappers: list[TrackedSpeechProvider] = []
     for index, choice in enumerate(chain):
@@ -262,22 +340,22 @@ def narrate_part(
         wrappers.append(tracked)
         try:
             voiced = _voice_all(scenes, choice, tracked, cache, language)
-        except (ProviderError, ExtraMissingError) as exc:
-            reasons.append(f"{choice.provider.name}: {exc}")
+        except (ProviderError, ExtraMissingError, _BadVoiceAudio) as exc:
+            reasons.append(f"{_label(choice)}: {exc}")
             continue
         voice = VoiceUsed(
             provider=choice.provider.name,
             model=choice.provider.model,
             voice_id=choice.voice_id,
-            fallback_from=chain[0].provider.name if index > 0 else None,
+            fallback_from=_label(chain[0]) if index > 0 else None,
             fallback_reasons=reasons,
         )
         timer = _Timer(aligner, language)
         clips: dict[str, NarrationClip] = {}
         for scene in scenes:
-            samples = decode(voiced[scene.id].audio)
-            timed, source = _timings(timer, scene, samples, voiced[scene.id].spans)
-            clips[scene.id] = NarrationClip(samples, _caption_words(scene, timed), source)
+            clip = voiced[scene.id]
+            timed, source = _timings(timer, scene, clip)
+            clips[scene.id] = NarrationClip(clip.samples, _caption_words(scene, timed), source)
         estimated = any(w.cost_estimated and prices.voice(w.name, w.model) > 0 for w in wrappers)
         return NarrationResult(
             clips=clips,

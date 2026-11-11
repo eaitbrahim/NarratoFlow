@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from decimal import Decimal
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from narratoflow.errors import (
 from narratoflow.models import Language, Narration, Part, Scene, SceneKind, VerseRef
 from narratoflow.pipeline.cache import StageCache, cache_key
 from narratoflow.tts import Speech, SpeechRequest, VoiceChoice
+from narratoflow.tts.piper import PiperProvider
 
 pytestmark = pytest.mark.usefixtures("ffmpeg_bin")
 
@@ -197,8 +199,8 @@ def test_primary_failure_revoices_whole_part_and_records_fallback(cache: StageCa
     assert [r.text for r in backup.requests] == ["alpha beta", "gamma delta epsilon", "zeta eta"]
     voice = voice_of(result)
     assert (voice.provider, voice.model, voice.voice_id) == ("edge", "edge-tts", "b")
-    assert voice.fallback_from == "paid"
-    assert voice.fallback_reasons == ["paid: HTTP 500"]
+    assert voice.fallback_from == "paid/p"
+    assert voice.fallback_reasons == ["paid/p: HTTP 500"]
 
 
 def test_no_fallback_records_primary(cache: StageCache) -> None:
@@ -213,7 +215,7 @@ def test_billed_provider_error_falls_back(cache: StageCache) -> None:
     primary = FakeVoice(fail_on="alpha", error=BilledProviderError("bad body"))
     backup = FakeVoice("edge", "edge-tts")
     result, tracker = run(three(), [VoiceChoice(primary, "p"), VoiceChoice(backup, "b")], cache)
-    assert voice_of(result).fallback_reasons == ["paid: bad body"]
+    assert voice_of(result).fallback_reasons == ["paid/p: bad body"]
     assert tracker.spent > 0  # the billed failure was charged
     assert result.cost_estimated is True
 
@@ -247,7 +249,7 @@ def test_all_voices_fail_raises_audio_error(cache: StageCache) -> None:
     b = FakeVoice("edge", "edge-tts", fail_on="gamma", error=ProviderError("offline"))
     with pytest.raises(AudioError) as info:
         run(three(), [VoiceChoice(a, "a"), VoiceChoice(b, "b")], cache)
-    assert str(info.value) == "no voice could narrate part 2: paid: down; edge: offline"
+    assert str(info.value) == "no voice could narrate part 2: paid/a: down; edge/b: offline"
 
 
 def test_missing_extra_counts_as_failed_voice(cache: StageCache) -> None:
@@ -257,8 +259,8 @@ def test_missing_extra_counts_as_failed_voice(cache: StageCache) -> None:
     result, _ = run(three(), [VoiceChoice(a, "a"), VoiceChoice(b, "piper")], cache)
     voice = voice_of(result)
     assert voice.provider == "piper"
-    assert voice.fallback_from == "edge"
-    assert voice.fallback_reasons == [f"edge: {hint}"]
+    assert voice.fallback_from == "edge/a"
+    assert voice.fallback_reasons == [f"edge/a: {hint}"]
 
 
 def test_other_channel_config_error_propagates_without_fallback(cache: StageCache) -> None:
@@ -496,7 +498,8 @@ def test_malformed_cache_meta_is_a_miss(cache: StageCache, meta: str) -> None:
     run(part, [choice], cache)
     (meta_path,) = (cache.root / "tts").glob("*.json")
     meta_path.write_text(meta, encoding="utf-8")
-    assert uncached_chars(part, choice, cache) == len("alpha beta")
+    run(part, [choice], cache)
+    assert len(voice.requests) == 2  # the malformed entry was a miss and is rewritten
 
 
 def test_empty_cached_audio_is_a_miss(cache: StageCache) -> None:
@@ -518,3 +521,160 @@ def test_cache_write_failure_raises_audio_error(
     with pytest.raises(AudioError, match="cannot write tts cache"):
         run(make_part(narration("s1", "alpha beta")), [VoiceChoice(FakeVoice(), "p")], cache)
     assert not list((cache.root / "tts").iterdir())  # temp files cleaned up
+
+
+class BadAudioVoice(FakeVoice):
+    def __init__(self, audio: bytes, bad_on: str, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.audio = audio
+        self.bad_on = bad_on
+
+    def synthesize(self, req: SpeechRequest) -> Speech:
+        speech = super().synthesize(req)
+        if self.bad_on in req.text:
+            return Speech(self.audio, speech.spans, speech.provider, speech.model, None)
+        return speech
+
+
+def key_for(choice: VoiceChoice, text: str) -> str:
+    return cache_key(
+        "tts",
+        ADAPTER_VERSION,
+        {
+            "provider": choice.provider.name,
+            "model": choice.provider.model,
+            "voice_id": choice.voice_id,
+            "text": text,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("audio", "why"),
+    [
+        (b"this is not audio at all", "does not decode"),
+        (to_wav_bytes(np.zeros(SAMPLE_RATE // 2, dtype=np.float32)), "all silence"),
+    ],
+)
+def test_bad_voice_audio_fails_the_voice(cache: StageCache, audio: bytes, why: str) -> None:
+    primary = BadAudioVoice(audio, "gamma", billed=False)
+    backup = FakeVoice("edge", "edge-tts")
+    p, b = VoiceChoice(primary, "p"), VoiceChoice(backup, "b")
+    result, tracker = run(three(), [p, b], cache)
+    voice = voice_of(result)
+    assert voice.provider == "edge" and voice.fallback_from == "paid/p"
+    (reason,) = voice.fallback_reasons
+    assert reason.startswith("paid/p: scene s2: audio") and why in reason
+    assert [r.text for r in backup.requests] == ["alpha beta", "gamma delta epsilon", "zeta eta"]
+    # The bad clip's entry is gone; the good one stays; the paid spend stays charged.
+    tts = cache.root / "tts"
+    bad, good = key_for(p, "gamma delta epsilon"), key_for(p, "alpha beta")
+    assert not (tts / f"{bad}.audio").exists() and not (tts / f"{bad}.json").exists()
+    assert (tts / f"{good}.audio").exists() and (tts / f"{good}.json").exists()
+    assert tracker.spent == Decimal(len("alpha betagamma delta epsilon")) / 1000 * Decimal("0.30")
+    assert result.cost_estimated is True
+
+
+def test_bad_cached_audio_fails_the_voice_and_is_dropped(cache: StageCache) -> None:
+    part = make_part(narration("s1", "alpha beta"))
+    p = VoiceChoice(FakeVoice(), "p")
+    run(part, [p], cache)
+    (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.audio").write_bytes(b"junk")
+    backup = FakeVoice("edge", "edge-tts")
+    result, _ = run(part, [p, VoiceChoice(backup, "b")], cache)
+    assert voice_of(result).provider == "edge"
+    assert not (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.json").exists()
+
+
+def test_failed_voice_cached_clips_are_reused_on_rerun(cache: StageCache) -> None:
+    failing = FakeVoice(fail_on="zeta")
+    backup = FakeVoice("edge", "edge-tts", fail_on="alpha", error=ProviderError("off"))
+    with pytest.raises(AudioError):
+        run(three(), [VoiceChoice(failing, "p"), VoiceChoice(backup, "b")], cache)
+    fixed = FakeVoice()  # same provider/model/voice id, now healthy
+    choice = VoiceChoice(fixed, "p")
+    assert uncached_chars(three(), choice, cache) == len("zeta eta")
+    result, tracker = run(three(), [choice], cache)
+    assert [r.text for r in fixed.requests] == ["zeta eta"]
+    assert tracker.spent == Decimal(len("zeta eta")) / 1000 * Decimal("0.30")
+    assert set(result.clips) == {"s1", "s2", "s3"}
+
+
+def test_store_drops_old_json_before_writing_new_audio(
+    cache: StageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    part = make_part(narration("s1", "alpha beta"))
+    p = VoiceChoice(FakeVoice(), "p")
+    run(part, [p], cache)
+    tts = cache.root / "tts"
+    key = key_for(p, "alpha beta")
+    (tts / f"{key}.audio").unlink()  # a miss with old spans still on disk
+    assert (tts / f"{key}.json").exists()
+
+    def crash(src: str, dst: str) -> None:
+        raise OSError("power cut")
+
+    monkeypatch.setattr("narratoflow.audio.narrate.os.replace", crash)
+    with pytest.raises(AudioError):
+        run(part, [p], cache)
+    assert not (tts / f"{key}.json").exists()  # old spans never pair with new audio
+
+
+def test_uncached_chars_is_stat_only(cache: StageCache, monkeypatch: pytest.MonkeyPatch) -> None:
+    part = make_part(narration("s1", "alpha beta"))
+    p = VoiceChoice(FakeVoice(), "p")
+    run(part, [p], cache)
+
+    def no_read(self: Path) -> bytes:
+        raise AssertionError("uncached_chars must not read the audio")
+
+    monkeypatch.setattr(Path, "read_bytes", no_read)
+    assert uncached_chars(part, p, cache) == 0
+    (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.json").write_text("", encoding="utf-8")
+    assert uncached_chars(part, p, cache) == len("alpha beta")
+
+
+class FakePiper(PiperProvider):
+    def synthesize(self, req: SpeechRequest) -> Speech:
+        audio = to_wav_bytes(speechlike(len(req.text.split()), WORD_MS, GAP_MS, lead_ms=LEAD_MS))
+        return Speech(audio, (), self.name, self.model, None)
+
+
+def test_piper_key_tracks_the_model_file(cache: StageCache, tmp_path: Path) -> None:
+    model = tmp_path / "voice.onnx"
+    model.write_bytes(b"model-v1")
+    part = make_part(narration("s1", "alpha beta"))
+    choice = VoiceChoice(FakePiper(model), "piper")
+    run(part, [choice], cache)
+    assert uncached_chars(part, choice, cache) == 0
+
+    model.write_bytes(b"model-v2-longer")  # replaced, different size
+    assert uncached_chars(part, choice, cache) == len("alpha beta")
+    run(part, [choice], cache)
+    assert uncached_chars(part, choice, cache) == 0
+
+    st = model.stat()
+    model.write_bytes(b"model-v3-longer")  # same size, same name
+    os.utime(model, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert uncached_chars(part, choice, cache) == len("alpha beta")
+
+    other = tmp_path / "other"
+    other.mkdir()
+    twin = other / "voice.onnx"  # same stem, different file
+    twin.write_bytes(b"model-v3-longer")
+    assert uncached_chars(part, VoiceChoice(FakePiper(twin), "piper"), cache) == len("alpha beta")
+
+
+def test_piper_key_without_model_file(cache: StageCache, tmp_path: Path) -> None:
+    choice = VoiceChoice(FakePiper(tmp_path / "missing.onnx"), "piper")
+    assert uncached_chars(make_part(narration("s1", "a b")), choice, cache) == len("a b")
+
+
+def test_unremovable_old_json_raises_audio_error(cache: StageCache) -> None:
+    part = make_part(narration("s1", "alpha beta"))
+    p = VoiceChoice(FakeVoice(), "p")
+    tts = cache.root / "tts"
+    tts.mkdir(parents=True)
+    (tts / f"{key_for(p, 'alpha beta')}.json").mkdir()  # cannot be unlinked as a file
+    with pytest.raises(AudioError, match="cannot write tts cache"):
+        run(part, [p], cache)

@@ -24,3 +24,5 @@ models/
 .env
 .env.*
 !.env.example
+assets/quran/*.txt
+!assets/quran/LICENSE-tanzil.txt

@@ -1,9 +1,11 @@
 """Typed application settings loaded from NARRATOFLOW_* environment variables."""
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from dotenv import dotenv_values
 from pydantic import SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -50,6 +52,16 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    prefix = Settings.model_config["env_prefix"]
+    known = sorted(prefix + name.upper() for name in Settings.model_fields)
+    names = {*os.environ, *dotenv_values(".env")}
+    unknown = sorted(n for n in names if n.upper().startswith(prefix) and n.upper() not in known)
+    if unknown:
+        # Names only, never values: an unknown name may be a mistyped secret.
+        raise SettingsError(
+            "unknown NarratoFlow setting(s) in the environment or .env: "
+            f"{', '.join(unknown)}; known: {', '.join(known)}"
+        )
     try:
         return Settings()
     except ValidationError as e:

@@ -172,7 +172,7 @@ def test_bad_dotenv_value_exit_1_without_leaking(
     assert "settings" in captured.err.lower()
 
 
-def test_dotenv_typo_key_ignored(
+def test_dotenv_typo_key_is_an_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (tmp_path / ".env").write_text(
@@ -180,7 +180,9 @@ def test_dotenv_typo_key_ignored(
     )
     code = run_main(monkeypatch, "check-input", str(INPUTS / "clean_en.txt"), "--language", "en")
     captured = capsys.readouterr()
-    assert code == 0, captured.err
+    assert code == 1
+    assert "NARRATOFLOW_IMAGE_APIKEY" in captured.err
+    assert "Traceback" not in captured.err
     assert "sk-SECRET123" not in captured.out + captured.err
 
 

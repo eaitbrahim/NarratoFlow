@@ -1,0 +1,97 @@
+"""Channel configuration: a named setup with its own sketch style."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import tomllib
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field, ValidationError, model_validator
+
+from narratoflow.errors import ChannelConfigError
+from narratoflow.models import AspectRatio, Language
+
+
+class StyleConfig(BaseModel):
+    reference_sketch: Path
+    instructions: str = Field(min_length=1)
+    image_provider: str
+    image_model: str
+    line_weight_px: float = Field(3.0, gt=0, le=20)
+    ink: str = Field("#111111", pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_instructions(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("instructions"), str):
+            data = {**data, "instructions": data["instructions"].strip()}
+        return data
+
+
+class VoiceConfig(BaseModel):
+    provider: str
+    model: str = ""
+    voice_id: str
+
+
+class LlmConfig(BaseModel):
+    provider: str
+    model: str
+
+
+class ChannelConfig(BaseModel):
+    name: str
+    slug: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
+    language: Language
+    style: StyleConfig
+    voice: VoiceConfig
+    llm: LlmConfig
+    outputs: list[AspectRatio] = Field(default_factory=lambda: [AspectRatio.PORTRAIT])
+    spending_limit_usd: Decimal | None = Field(None, gt=0)
+    approval_list: bool = True
+    background_music: bool = False
+    part_min_s: int = 60
+    part_max_s: int = 90
+    riwaya: str = "hafs"
+
+    @model_validator(mode="after")
+    def _part_bounds(self) -> ChannelConfig:
+        if self.part_min_s >= self.part_max_s:
+            raise ValueError("part_min_s must be less than part_max_s")
+        return self
+
+
+def load_channel(path: Path) -> ChannelConfig:
+    try:
+        with path.open("rb") as fh:
+            raw = tomllib.load(fh)
+        style = raw.get("style")
+        if isinstance(style, dict) and "reference_sketch" in style:
+            style["reference_sketch"] = str(
+                (path.parent / str(style["reference_sketch"])).resolve()
+            )
+        return ChannelConfig.model_validate(raw)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError) as e:
+        raise ChannelConfigError(f"Invalid channel config {path}: {e}") from e
+
+
+def style_fingerprint(style: StyleConfig) -> str:
+    try:
+        reference_sha256 = hashlib.sha256(style.reference_sketch.read_bytes()).hexdigest()
+    except OSError as e:
+        raise ChannelConfigError(
+            f"Cannot read reference sketch {style.reference_sketch}: {e}"
+        ) from e
+    payload = {
+        "instructions": style.instructions,
+        "image_provider": style.image_provider,
+        "image_model": style.image_model,
+        "line_weight_px": style.line_weight_px,
+        "ink": style.ink,
+        "reference_sha256": reference_sha256,
+    }
+    blob = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]

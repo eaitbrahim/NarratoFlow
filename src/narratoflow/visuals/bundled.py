@@ -118,7 +118,7 @@ def _build(raw_key: str, key: IdeaKey, entry: object, index_path: Path) -> Bundl
             f"bundled icon index entry {raw_key!r}: description has more than "
             f"{MAX_DESCRIPTION_WORDS} words"
         )
-    sha256 = _text(raw_key, entry, "sha256")
+    sha256 = _text(raw_key, entry, "sha256").strip().lower()
     path = confined_file(
         f"bundled icon index entry {raw_key!r}",
         Path(_text(raw_key, entry, "file")),

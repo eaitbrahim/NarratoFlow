@@ -111,6 +111,14 @@ def test_sha256_mismatch_is_rejected(tmp_path: Path) -> None:
         BundledIcons.from_index(index)
 
 
+def test_sha256_is_compared_trimmed_and_case_insensitively(tmp_path: Path) -> None:
+    messy = f"  {SVG_SHA.upper()}  "
+    index = _index(tmp_path, _entry(extra=_with("sha256", messy)))
+    icon = BundledIcons.from_index(index).get(parse_idea_key("eye|generic"))
+    assert icon is not None
+    assert icon.sha256 == SVG_SHA
+
+
 def test_catalog_is_sorted_key_description_pairs(tmp_path: Path) -> None:
     icons = _two(tmp_path)
     assert len(icons) == 2

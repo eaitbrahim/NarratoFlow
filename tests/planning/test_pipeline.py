@@ -91,6 +91,12 @@ def prices(settings: Settings) -> PriceTable:
     return default_prices(settings)
 
 
+@pytest.fixture(autouse=True)
+def no_bundled(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The shipped icon pack has `scroll|generic`; these tests plan against an empty pack.
+    monkeypatch.setattr(pipeline_module, "default_bundled_icons", lambda: BundledIcons({}))
+
+
 def _all_scenes(series: Series) -> list[Scene]:
     return [s for p in series.parts for s in p.scenes]
 

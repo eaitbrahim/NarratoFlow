@@ -808,6 +808,7 @@ def test_sketch_generate_real_run_without_vision_warns_unchecked(
     from sketching.support import FakeImages
 
     from narratoflow.sketching import generate as generate_module
+    from narratoflow.visuals.bundled import BundledIcons
 
     monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img-key")
     images = FakeImages()
@@ -817,6 +818,8 @@ def test_sketch_generate_real_run_without_vision_warns_unchecked(
         raise AssertionError("vision is off: no vision client is built")
 
     monkeypatch.setattr(generate_module, "build_llm_client", no_vision)
+    # the shipped icon pack would cover the series' key; this run must draw it
+    monkeypatch.setattr(generate_module, "default_bundled_icons", lambda: BundledIcons({}))
     path = _approved_series(tmp_path)
     out = runner.invoke(cli.app, ["sketch", "generate", str(path), "--channel", str(channel_file)])
     assert out.exit_code == 0, out.output

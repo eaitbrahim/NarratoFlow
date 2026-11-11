@@ -199,4 +199,7 @@ def test_wheel_contains_the_icon_index(tmp_path: Path) -> None:
     )
     [wheel] = out.glob("*.whl")
     with zipfile.ZipFile(wheel) as archive:
-        assert "narratoflow/assets/icons/index.toml" in archive.namelist()
+        names = archive.namelist()
+    assert "narratoflow/assets/icons/index.toml" in names
+    assert "narratoflow/assets/icons/lightbulb.png" in names
+    assert "narratoflow/assets/icons/LICENSE-tabler.txt" in names

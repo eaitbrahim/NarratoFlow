@@ -44,6 +44,7 @@ dev = [
     "coverage>=7.6",
     "httpx2==2.16.0",
     "hatchling",
+    "svgelements>=1.9",
 ]
 
 [build-system]
@@ -91,6 +92,7 @@ module = [
     "onnxruntime.*",
     "unidecode.*",
     "fontTools.*",
+    "svgelements.*",
 ]
 ignore_missing_imports = true
 

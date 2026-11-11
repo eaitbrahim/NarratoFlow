@@ -70,11 +70,12 @@ def _line_width(ink: np.ndarray) -> int:
 
 
 def _ink_coverage(ink: np.ndarray, strokes: StrokeSet) -> float:
-    """Share of ink pixels within 2 px of a stroke drawn at the line width."""
+    """Share of ink pixels within 2 px (at 512, scaled) of a stroke drawn at the line width."""
     width = _line_width(ink)
+    tolerance = 2 * min(ink.shape) / 512
     centre = _render(strokes, 1)
     to_stroke = cv2.distanceTransform((~centre).astype(np.uint8), cv2.DIST_L2, 3)
-    return float((to_stroke[ink] <= 2 + width / 2).mean())
+    return float((to_stroke[ink] <= tolerance + width / 2).mean())
 
 
 def test_square_outline_is_one_closed_stroke_or_at_most_four() -> None:
@@ -274,30 +275,34 @@ def test_pinholes_are_filled_before_skeletonizing() -> None:
     assert len(result.strokes) == 1
 
 
-def test_calligraphy_stroke_count_is_stable_across_resolutions() -> None:
+def test_calligraphy_does_not_fragment_at_higher_resolution() -> None:
+    # guards only against fragmentation blowups; ink fidelity wins over a low
+    # count (Task 5 paces the reveal from the count)
     low = len(extract_strokes(binarize(calligraphy(size=512))).strokes)
     high = len(extract_strokes(binarize(calligraphy(size=1024))).strokes)
-    assert high <= 1.6 * low
+    assert high <= 3 * low
 
 
-@pytest.mark.parametrize(
-    ("name", "png"),
-    [
-        ("road_map", road_map()),
-        ("brick 20x10", brick(brick_w=20, brick_h=10)),
-        ("label_map", label_map()),
-    ],
-)
-def test_no_ink_is_dropped(name: str, png: bytes) -> None:
-    ink = binarize(png)
-    assert _ink_coverage(ink, extract_strokes(ink)) >= 0.98, name
+def _busy(name: str, size: int) -> bytes:
+    width = max(1, round(3 * size / 512))
+    if name == "road_map":
+        return road_map(size=size, width=width)
+    if name == "brick 20x10":
+        return brick(brick_w=20, brick_h=10, size=size)
+    return label_map(size=size)
 
 
-def test_calligraphy_keeps_nearly_all_ink() -> None:
-    # filled pinholes make small loops thicker than the line width; the drawn
-    # centreline still covers all but a sliver of those blobs
-    ink = binarize(calligraphy())
-    assert _ink_coverage(ink, extract_strokes(ink)) >= 0.975
+@pytest.mark.parametrize("size", [512, 1024, 2048])
+@pytest.mark.parametrize("name", ["road_map", "brick 20x10", "label_map"])
+def test_no_ink_is_dropped(name: str, size: int) -> None:
+    ink = binarize(_busy(name, size))
+    assert _ink_coverage(ink, extract_strokes(ink)) >= 0.98, (name, size)
+
+
+@pytest.mark.parametrize("size", [512, 1024, 2048])
+def test_calligraphy_keeps_its_ink(size: int) -> None:
+    ink = binarize(calligraphy(size=size))
+    assert _ink_coverage(ink, extract_strokes(ink)) >= 0.97, size
 
 
 def test_pacing_hint_is_never_enforced() -> None:

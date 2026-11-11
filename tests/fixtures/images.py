@@ -125,18 +125,20 @@ def road_map(*, roads: int = 40, width: int = 3, size: int = SIZE, seed: int = 1
     return _png(image)
 
 
-def label_map(*, seed: int = 7) -> bytes:
+def label_map(*, seed: int = 7, size: int = SIZE) -> bytes:
     """A map with a dozen roads and forty small label-like boxes."""
     rng = random.Random(seed)  # noqa: S311 - deterministic fixture
-    image = Image.new("RGB", (SIZE, SIZE), "white")
+    image = Image.new("RGB", (size, size), "white")
     draw = ImageDraw.Draw(image)
+    k = size / SIZE
     for _ in range(12):
-        points = [(rng.randrange(SIZE), rng.randrange(SIZE)) for _ in range(4)]
-        draw.line(points, fill="black", width=3, joint="curve")
+        points = [(rng.randrange(SIZE) * k, rng.randrange(SIZE) * k) for _ in range(4)]
+        draw.line(points, fill="black", width=max(1, round(3 * k)), joint="curve")
     for _ in range(40):
         x, y = rng.randrange(SIZE - 40), rng.randrange(SIZE - 16)
         w, h = rng.randrange(20, 40), rng.randrange(8, 16)
-        draw.rectangle((x, y, x + w, y + h), outline="black", width=2)
+        box = (x * k, y * k, (x + w) * k, (y + h) * k)
+        draw.rectangle(box, outline="black", width=max(1, round(2 * k)))
     return _png(image)
 
 

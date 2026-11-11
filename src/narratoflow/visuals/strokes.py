@@ -42,7 +42,7 @@ from narratoflow.errors import StrokeDataError
 
 REFERENCE_PX = 512
 MIN_SPUR_PX = 8
-SPUR_REACH_PX = 2.0
+SPUR_REACH_PX = 1.0
 CHAIN_PX = 2.0
 PINHOLE_PX = 4
 PACING_STROKES = 400

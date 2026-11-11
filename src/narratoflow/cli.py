@@ -24,6 +24,7 @@ from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.pipeline import plan_series
+from narratoflow.render.build import RenderResult, build_render
 from narratoflow.settings import get_settings
 from narratoflow.sketching.generate import (
     GenerationInterruptedError,
@@ -241,6 +242,9 @@ def sketch_resolve(
     ] = None,
     text_card: Annotated[bool, typer.Option("--text-card", help="Show a text card.")] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Regenerate without asking.")] = False,
+    card_text: Annotated[
+        str | None, typer.Option("--card-text", help="Text for --text-card.")
+    ] = None,
 ) -> None:
     """Settle a quarantined scene: regenerate it, swap its idea, or use a text card."""
     if (do_regenerate, swap is not None, text_card).count(True) != 1:
@@ -251,6 +255,8 @@ def sketch_resolve(
         raise typer.BadParameter("--description only goes with --swap")
     if yes and not do_regenerate:
         raise typer.BadParameter("--yes only goes with --regenerate")
+    if card_text is not None and not text_card:
+        raise typer.BadParameter("--card-text only goes with --text-card")
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
     if swap is not None and description is not None:
@@ -264,7 +270,7 @@ def sketch_resolve(
         )
         return
     if text_card:
-        use_text_card(series, scene_id).save(series_json)
+        use_text_card(series, scene_id, card_text or "").save(series_json)
         _out.print(f"{escape(scene_id)}: now uses a text card", highlight=False)
         return
     # everything that can refuse without spend is checked before asking for money
@@ -370,6 +376,66 @@ def audio_build(
         raise
     updated.save(series_json)
     _print_audio(result, series)
+
+
+def _print_render(result: RenderResult) -> None:
+    for built in result.parts:
+        rep = built.report
+        _out.print(
+            f"part {rep.part_index}/{rep.part_count}: {rep.duration_ms / 1000:.1f} s, "
+            f"{rep.frames} frames, {rep.width}x{rep.height} @ {rep.fps} fps -> "
+            f"{escape(str(built.video_path))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        _out.print(f"  report: {escape(str(built.report_path))}", highlight=False, soft_wrap=True)
+        for warning in rep.warnings:
+            _out.print(
+                f"[yellow]warning:[/yellow] part {rep.part_index}: {escape(warning)}",
+                highlight=False,
+                soft_wrap=True,
+            )
+
+
+@app.command()
+def render(
+    series_json: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    part: Annotated[
+        list[int] | None,
+        typer.Option("--part", help="Part number to render; repeatable (default: all parts)."),
+    ] = None,
+    audio: Annotated[
+        Path | None,
+        typer.Option("--audio", help="Audio directory (default: audio/ next to SERIES_JSON)."),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Output directory (default: the audio directory)."),
+    ] = None,
+    workers: Annotated[
+        int | None,
+        typer.Option("--workers", min=1, help="Render processes (default: one per CPU core)."),
+    ] = None,
+) -> None:
+    """Render every part of an approved series to a 1080x1920 MP4 plus a render report."""
+    channel = load_channel(channel_toml)
+    series = Series.load(series_json)
+    audio_dir = audio if audio is not None else series_json.parent / "audio"
+    try:
+        result = build_render(
+            series,
+            channel,
+            get_settings(),
+            audio_dir=audio_dir,
+            out_dir=out if out is not None else audio_dir,
+            parts=part or None,
+            workers=workers,
+        )
+    except KeyboardInterrupt:
+        _err.print("[red]interrupted: render stopped; finished parts are kept[/red]")
+        raise typer.Exit(130) from None
+    _print_render(result)
 
 
 def main() -> None:

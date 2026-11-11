@@ -157,12 +157,13 @@ def swap_idea(series: Series, scene_id: str, new_key: str, description: str) -> 
     return _resolved(series, scene_id, change)
 
 
-def use_text_card(series: Series, scene_id: str) -> Series:
-    """Show a text card instead of a sketch (the card is drawn in Plan 5)."""
+def use_text_card(series: Series, scene_id: str, card_text: str = "") -> Series:
+    """Show a text card instead of a sketch; `card_text` is what the card says."""
 
     def change(scene: Scene) -> dict[str, Any]:
         return {
             "sketch_id": None,
+            "card_text": card_text,
             "visual": scene.visual.model_copy(update={"source": VisualSource.TEXT_CARD}),
         }
 

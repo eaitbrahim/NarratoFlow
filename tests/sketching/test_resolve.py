@@ -187,6 +187,14 @@ def test_use_text_card_sets_the_source_and_clears_the_flag() -> None:
     assert QUARANTINED_FLAG not in sc.flags
 
 
+def test_use_text_card_sets_card_text_and_default_empty() -> None:
+    s = series([scene(1, flags=[QUARANTINED_FLAG]), scene(2, flags=[QUARANTINED_FLAG])])
+    [sc, _] = scenes_of(use_text_card(s, "s001", "Hello"))
+    assert sc.card_text == "Hello"
+    [_, other] = scenes_of(use_text_card(s, "s002"))
+    assert other.card_text == ""
+
+
 def test_use_text_card_refuses_unknown_or_unflagged_scenes() -> None:
     s = quarantined()
     for sid in ("s999", "s002"):

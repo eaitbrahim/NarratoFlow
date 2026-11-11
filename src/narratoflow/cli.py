@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
+from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, build_audio
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint, vision_model
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
 from narratoflow.costs.prices import PriceTable, default_prices
@@ -46,6 +47,8 @@ sketch_app = typer.Typer(no_args_is_help=True, help="Sketch generation commands.
 app.add_typer(channel_app, name="channel")
 app.add_typer(library_app, name="library")
 app.add_typer(sketch_app, name="sketch")
+audio_app = typer.Typer(no_args_is_help=True, help="Audio build commands.")
+app.add_typer(audio_app, name="audio")
 
 _out = Console()
 _err = Console(stderr=True)
@@ -297,6 +300,76 @@ def sketch_resolve(
         _print_resolve_hint(scene_id, "quarantined again", series_json, channel_toml)
     _out.print(f"spent {format_usd(result.spent_usd)}", highlight=False)
     _print_unchecked(result)
+
+
+def _print_audio(result: AudioBuildResult, before: Series) -> None:
+    seeds = {p.index: p.spent_usd for p in before.parts}
+    for built in result.parts:
+        tl = built.timeline
+        lufs = "n/a" if tl.integrated_lufs is None else f"{tl.integrated_lufs:.1f}"
+        voice = tl.voice
+        used = "none (verse only)" if voice is None else f"{voice.provider}/{voice.voice_id}"
+        run_spend = tl.spent_usd - seeds.get(built.index, Decimal(0))
+        estimated = " (estimated)" if tl.cost_estimated and run_spend > 0 else ""
+        _out.print(
+            f"part {tl.part_index}/{tl.part_count}: {tl.duration_ms / 1000:.1f} s, {lufs} LUFS, "
+            f"voice {escape(used)}, spent {format_usd(run_spend)}{estimated} "
+            f"(part total {format_usd(tl.spent_usd)}) -> {escape(str(built.audio_path))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        _out.print(
+            f"  timeline: {escape(str(built.timeline_path))}", highlight=False, soft_wrap=True
+        )
+        if voice is not None and voice.fallback_from is not None:
+            reasons = "; ".join(voice.fallback_reasons)
+            _out.print(
+                f"[yellow]warning:[/yellow] voice fell back from {escape(voice.fallback_from)}: "
+                f"{escape(reasons)}",
+                highlight=False,
+                soft_wrap=True,
+            )
+        for warning in tl.warnings:
+            _out.print(
+                f"[yellow]warning:[/yellow] part {tl.part_index}: {escape(warning)}",
+                highlight=False,
+                soft_wrap=True,
+            )
+    _out.print(f"total spent {format_usd(result.spent_usd)}", highlight=False)
+
+
+@audio_app.command("build")
+def audio_build(
+    series_json: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    part: Annotated[
+        list[int] | None,
+        typer.Option("--part", help="Part number to build; repeatable (default: all parts)."),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Output directory (default: audio/ next to SERIES_JSON)."),
+    ] = None,
+) -> None:
+    """Narrate, mix and master every part of an approved series to a FLAC plus a timeline."""
+    channel = load_channel(channel_toml)
+    series = Series.load(series_json)
+    target = out if out is not None else series_json.parent / "audio"
+    try:
+        updated, result = build_audio(
+            series,
+            channel,
+            get_settings(),
+            out_dir=target,
+            cache_root=series_json.parent / ".cache",
+            parts=part or None,
+        )
+    except AudioInterruptedError as exc:
+        exc.partial[0].save(series_json)
+        _print_audio(exc.partial[1], series)
+        raise
+    updated.save(series_json)
+    _print_audio(result, series)
 
 
 def main() -> None:

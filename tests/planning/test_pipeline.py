@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from conftest import FIXTURES
 from llm.fakes import FakeLLM
+from PIL import Image
 from pydantic import SecretStr
 from rich.console import Console
 
@@ -353,13 +354,15 @@ def test_arabic_default_corpus_and_bundled_icon(
         loaded.append(st)
         return fixture_corpus()
 
+    scroll = tmp_path / "scroll.png"
+    Image.new("L", (8, 8), 255).save(scroll)
     icon = BundledIcon(
         key=SCRIPTED_IDEA,
-        file=tmp_path / "scroll.svg",
+        file=scroll,
         license="CC0",
         source="x",
         description="a scroll",
-        sha256=hashlib.sha256(b"").hexdigest(),
+        sha256=hashlib.sha256(scroll.read_bytes()).hexdigest(),
     )
     monkeypatch.setattr(pipeline_module, "default_corpus", corpus_for)
     monkeypatch.setattr(

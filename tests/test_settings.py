@@ -59,6 +59,19 @@ def test_unknown_narratoflow_env_var_is_an_error(monkeypatch: pytest.MonkeyPatch
     assert "sk-SECRET456" not in str(exc.value)
 
 
+def test_unknown_name_is_caught_in_any_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("narratoflow_llm_apikey", "sk-SECRET789")
+    with pytest.raises(SettingsError) as exc:
+        get_settings()
+    assert "narratoflow_llm_apikey" in str(exc.value).lower()
+    assert "sk-SECRET789" not in str(exc.value)
+
+
+def test_known_name_is_accepted_in_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("narratoflow_log_level", "DEBUG")
+    assert get_settings().log_level == "DEBUG"
+
+
 def test_foreign_keys_in_dotenv_are_ignored(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text(
         "OPENAI_API_KEY=x\nNARRATOFLOW_LOG_LEVEL=DEBUG\n", encoding="utf-8"

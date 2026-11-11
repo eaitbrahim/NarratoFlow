@@ -69,7 +69,7 @@ def render_marker(
 
     total = sum(length(*item) for item in prepared)
     budget = upto * total
-    if upto <= 0.0 or total <= 0.0:
+    if upto <= 0.0:
         return img
 
     for pts, weight, dot in prepared:
@@ -96,10 +96,22 @@ def render_marker(
                     break
             if len(cut) < 2:
                 break
-        w = max(1, round(weight))
-        draw.line(cut, fill=rgb, width=w, joint="curve")
+        half = weight / 2.0
+        for a, b in itertools.pairwise(cut):
+            d = math.dist(a, b)
+            if d > 0.0:
+                nx, ny = -(b[1] - a[1]) / d * half, (b[0] - a[0]) / d * half
+                draw.polygon(
+                    [
+                        (a[0] + nx, a[1] + ny),
+                        (b[0] + nx, b[1] + ny),
+                        (b[0] - nx, b[1] - ny),
+                        (a[0] - nx, a[1] - ny),
+                    ],
+                    fill=rgb,
+                )
         for p in cut:
-            _disc(draw, p, max(1.0, weight), rgb)
+            _disc(draw, p, weight, rgb)
         if not done:
             break
         budget -= seg

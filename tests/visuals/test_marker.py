@@ -52,9 +52,18 @@ def test_upto_half_about_half_ink() -> None:
 
 
 def test_partial_is_subset_of_full() -> None:
-    half, full = _ink(_render(upto=0.5)), _ink(_render())
-    extra = (half & ~full).sum()
-    assert extra <= 0.02 * half.sum()
+    from fixtures.images import road_map
+
+    from narratoflow.visuals.lineart import binarize
+    from narratoflow.visuals.strokes import extract_strokes
+
+    ss = extract_strokes(binarize(road_map()))
+    size = (256, 256)
+    full = _ink(render_marker(ss, size, line_weight_px=3.0, ink="#000000", seed=5))
+    for upto in (0.1, 0.3, 0.5, 0.77, 0.95):
+        part = _ink(render_marker(ss, size, line_weight_px=3.0, ink="#000000", seed=5, upto=upto))
+        assert part.any()
+        assert (part & ~full).sum() <= 0.02 * part.sum()
 
 
 def test_upto_validated() -> None:
@@ -89,3 +98,24 @@ def test_marker_seed() -> None:
     assert marker_seed("v", "s1") == marker_seed("v", "s1")
     assert marker_seed("v", "s1") != marker_seed("v", "s2")
     assert 0 <= marker_seed("v", "s1") < 2**63
+
+
+def test_weight_jitter_visible_and_unbiased() -> None:
+    one = StrokeSet(width=400, height=40, strokes=[Stroke(points=[(0.02, 0.3), (0.98, 0.7)])])
+    cov = np.array(
+        [
+            _ink(render_marker(one, (400, 40), line_weight_px=3.0, ink="#000000", seed=s)).sum()
+            for s in range(20)
+        ],
+        dtype=float,
+    )
+    assert (cov.max() - cov.min()) / cov.mean() > 0.05
+    expected = 3.0 * float(np.hypot(0.96 * 399, 0.4 * 39))
+    assert abs(cov.mean() - expected) / expected < 0.05
+
+
+def test_small_dot_never_thinner_than_line() -> None:
+    dot = StrokeSet(width=200, height=120, strokes=[Stroke(points=[(0.5, 0.5)] * 2, width=0.01)])
+    img = render_marker(dot, SIZE, line_weight_px=8.0, ink="#000000", seed=3)
+    cols = np.flatnonzero(_ink(img).any(axis=0))
+    assert cols.max() - cols.min() + 1 >= 7

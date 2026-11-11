@@ -74,3 +74,7 @@ class VerseCorpusError(NarratoFlowError):
 
 class SketchRejectedError(NarratoFlowError):
     """A generated sketch is not clean line art (empty, filled or hatched)."""
+
+
+class StrokeDataError(NarratoFlowError):
+    """Stroke data is malformed (bad JSON, out-of-range points) or the ink mask is invalid."""

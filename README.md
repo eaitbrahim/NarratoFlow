@@ -23,6 +23,8 @@ uv run narratoflow check-input script.txt --language ar   # reject corrupt PDF c
 uv run python scripts/fetch_quran.py                   # one-time: Tanzil Qur'an text for verse detection
 uv run narratoflow plan script.txt --channel channel.toml   # writes series.json next to the script
 uv run narratoflow approve series.json                 # review the list, then confirm (--yes skips the prompt)
+uv run narratoflow sketch generate series.json --channel channel.toml   # draw or reuse a sketch per scene; keeps progress on errors
+uv run narratoflow sketch resolve series.json s003 --regenerate --channel channel.toml   # or --swap KEY --description TEXT, or --text-card
 ```
 
 ### Script front matter

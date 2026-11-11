@@ -9,6 +9,7 @@ import pytest
 from fixtures import images as img
 from llm.fakes import FakeLLM
 from PIL import Image
+from pydantic import SecretStr
 
 from narratoflow.channels.config import ChannelConfig, VisionConfig
 from narratoflow.costs.prices import PriceTable
@@ -981,3 +982,98 @@ def test_bundled_vision_error_stores_nothing(
     [sc] = scenes_of(info.value.partial[0])
     assert sc.sketch_id is None and sc.flags == []
     assert library.find_by_content(1, "eye|generic", img.scroll(width=4)) is None
+
+
+def _auto(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    verdicts: int,
+) -> tuple[list[tuple[str, str]], generate_module.GenerationResult]:
+    """Run `generate_missing` with `vision="auto"`; returns the vision models built."""
+    built: list[tuple[str, str]] = []
+
+    def build(cfg: object, _settings: Settings) -> FakeLLM:
+        built.append((getattr(cfg, "provider", ""), getattr(cfg, "model", "")))
+        return FakeLLM(clean(verdicts))
+
+    monkeypatch.setattr(generate_module, "build_llm_client", build)
+    keyed = settings.model_copy(update={"llm_api_key": SecretStr("llm-key")})
+    _, result = generate_missing(
+        series([scene(1)]), channel, keyed, images=FakeImages(), library=library, prices=PRICES
+    )
+    return built, result
+
+
+def _with_llm(channel: ChannelConfig, provider: str, vision: VisionConfig) -> ChannelConfig:
+    llm = channel.llm.model_copy(update={"provider": provider, "model": "claude-opus-5-5"})
+    return channel.model_copy(update={"llm": llm, "vision": vision})
+
+
+def test_auto_vision_unset_with_an_anthropic_llm_checks_with_it(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ch = _with_llm(channel, "anthropic", VisionConfig())
+    built, result = _auto(ch, settings, library, monkeypatch, 1)
+    assert built == [("anthropic", "claude-opus-5-5")]
+    assert result.unchecked == [] and result.spent_usd == PER_SKETCH
+
+
+def test_auto_vision_unset_with_an_ollama_llm_stores_unchecked(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ch = _with_llm(channel, "ollama", VisionConfig())
+    built, result = _auto(ch, settings, library, monkeypatch, 0)
+    assert built == []
+    assert result.unchecked == ["s001"] and result.spent_usd == Decimal("0.04")
+    [record] = library.find_reusable(1, "thing-1|roman")
+    assert (record.status, record.status_reason) == (SketchStatus.UNCHECKED, "vision: not checked")
+
+
+def test_vision_provider_none_stores_unchecked(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ch = _with_llm(channel, "anthropic", VisionConfig(provider="none"))
+    built, result = _auto(ch, settings, library, monkeypatch, 0)
+    assert built == [] and result.unchecked == ["s001"]
+    # an injected vision client is not used either when the channel turns vision off
+    vision = FakeLLM([])
+    keyed = settings.model_copy(update={"llm_api_key": SecretStr("llm-key")})
+    _, again = run(series([scene(2)]), ch, keyed, library, FakeImages(), vision)
+    assert vision.calls == [] and again.unchecked == ["s002"]
+
+
+def test_series_of_another_channel_is_refused_before_any_spend(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    other = channel.model_copy(update={"slug": "other-channel"})
+    images, vision = FakeImages(), FakeLLM([])
+    with pytest.raises(PlanningError, match="history") as info:
+        run(series([scene(1)]), other, settings, library, images, vision)
+    assert "other-channel" in str(info.value)
+    assert images.requests == [] and vision.calls == []
+
+
+def test_reused_and_kept_unchecked_sketches_are_listed_as_unchecked(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    first, _ = run(series([scene(1)]), channel, settings, library, FakeImages(), None)
+    # kept: the attached UNCHECKED sketch, now with vision available
+    _, kept = run(first, channel, settings, library, FakeImages(), FakeLLM([]))
+    assert kept.kept == 1 and kept.unchecked == ["s001"]
+    # reused: another scene with the same key picks the stored UNCHECKED sketch
+    images = FakeImages()
+    _, reused = run(
+        series([scene(2, "thing-1|roman")]), channel, settings, library, images, FakeLLM([])
+    )
+    assert reused.reused == 1 and reused.unchecked == ["s002"] and images.requests == []

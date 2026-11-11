@@ -199,7 +199,9 @@ def test_estimate_part_cost(prices: PriceTable, channel_file: Path) -> None:
 
     def check(channel: ChannelConfig, key: str) -> Decimal:
         # exactly what generate_one / the bundled first copy check before the call
-        provider, model = vision_model(channel)
+        ident = vision_model(channel)
+        assert ident is not None
+        provider, model = ident
         return estimate_check_cost(channel.style, key, prices, provider, model, with_reference=True)
 
     for vision in (None, VisionConfig(provider="anthropic", model="claude-haiku-5-5")):
@@ -219,6 +221,22 @@ def test_estimate_part_cost(prices: PriceTable, channel_file: Path) -> None:
     # (opus 0.01 per image) on top of the prompt tokens
     tokens_only = check(ch, "thing-1|roman") - 2 * Decimal("0.01")
     assert tokens_only > 0
+    # vision off: images and voice only, no check is priced
+    off = ch.model_copy(update={"vision": VisionConfig(provider="none")})
+    assert estimate_part_cost(part, off, prices, voice_chars=2000) == 2 * image + speech
+
+
+def test_require_generation_prices_skips_vision_when_off(
+    prices: PriceTable, channel_file: Path
+) -> None:
+    base = load_channel(channel_file)
+    unpriced = base.model_copy(
+        update={"llm": base.llm.model_copy(update={"provider": "anthropic", "model": "unpriced"})}
+    )
+    with pytest.raises(PlanningError, match="anthropic/unpriced"):
+        require_generation_prices(unpriced, prices, vision=True)
+    off = unpriced.model_copy(update={"vision": VisionConfig(provider="none")})
+    require_generation_prices(off, prices, vision=True)
 
 
 def test_estimate_llm_call_matches_tracked_llm_check(prices: PriceTable) -> None:

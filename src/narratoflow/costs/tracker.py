@@ -169,12 +169,13 @@ def require_prices(channel: ChannelConfig, prices: PriceTable, *, embed: bool = 
 
 def require_generation_prices(channel: ChannelConfig, prices: PriceTable, *, vision: bool) -> None:
     """Raise `PlanningError` unless the image price and, with `vision`, the vision
-    model's LLM and per-image prices are known (`channel.vision`, else the channel LLM).
+    model's LLM and per-image prices are known (`vision_model`; none when it is off).
     """
     style = channel.style
     prices.image(style.image_provider, style.image_model)
-    if vision:
-        provider, model = vision_model(channel)
+    ident = vision_model(channel) if vision else None
+    if ident is not None:
+        provider, model = ident
         prices.llm(provider, model)
         prices.vision(provider, model)
 
@@ -191,19 +192,19 @@ def estimate_part_cost(
     - a "bundled" scene, on the first use of its key in the part: the vision check
       of the copied icon (later uses reuse that copy);
     - verse scenes and scenes without an idea key are never generated: zero.
-    The vision model is `channel.vision`, else the channel LLM.
+    The vision model is `vision_model(channel)`; when vision is off a check costs zero.
     """
     # imported here: sketching.vision imports this module for `estimate_llm_call`
     from narratoflow.sketching.vision import estimate_check_cost
 
     style, voice = channel.style, channel.voice
-    vision_provider, vision_name = vision_model(channel)
+    ident = vision_model(channel)
     image = prices.image(style.image_provider, style.image_model)
 
     def check(key: str) -> Decimal:
-        return estimate_check_cost(
-            style, key, prices, vision_provider, vision_name, with_reference=True
-        )
+        if ident is None:
+            return Decimal(0)
+        return estimate_check_cost(style, key, prices, *ident, with_reference=True)
 
     total = Decimal(0)
     bundled_seen: set[str] = set()

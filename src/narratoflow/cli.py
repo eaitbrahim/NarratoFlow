@@ -12,7 +12,8 @@ from rich.markup import escape
 
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint, vision_model
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
-from narratoflow.costs.prices import default_prices
+from narratoflow.costs.prices import PriceTable, default_prices
+from narratoflow.costs.tracker import require_generation_prices
 from narratoflow.errors import CorruptInputError, LibraryError, NarratoFlowError, PlanningError
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import SketchStatus
@@ -27,7 +28,12 @@ from narratoflow.sketching.generate import (
     GenerationResult,
     generate_missing,
 )
-from narratoflow.sketching.resolve import regenerate, swap_idea, use_text_card
+from narratoflow.sketching.resolve import (
+    check_regenerable,
+    regenerate,
+    swap_idea,
+    use_text_card,
+)
 from narratoflow.sketching.vision import estimate_check_cost
 from narratoflow.text.quality import require_clean
 
@@ -155,6 +161,16 @@ def approve(
     _out.print(f"[green]Approved[/green] {escape(str(series_json))}", highlight=False)
 
 
+def _print_resolve_hint(scene_id: str, state: str, series_json: Path, channel_toml: Path) -> None:
+    _out.print(
+        f"{escape(scene_id)}: {state} - resolve with: narratoflow sketch resolve "
+        f"{escape(str(series_json))} {escape(scene_id)} --regenerate | "
+        f"--swap KEY --description TEXT | --text-card --channel {escape(str(channel_toml))}",
+        highlight=False,
+        soft_wrap=True,
+    )
+
+
 def _print_generation(result: GenerationResult, series_json: Path, channel_toml: Path) -> None:
     _out.print(
         f"generated {result.generated}, reused {result.reused}, bundled {result.bundled}, "
@@ -164,13 +180,11 @@ def _print_generation(result: GenerationResult, series_json: Path, channel_toml:
         soft_wrap=True,
     )
     for scene_id in result.quarantined:
-        _out.print(
-            f"{escape(scene_id)}: quarantined - resolve with: narratoflow sketch resolve "
-            f"{escape(str(series_json))} {escape(scene_id)} --regenerate | "
-            f"--swap KEY --description TEXT | --text-card --channel {escape(str(channel_toml))}",
-            highlight=False,
-            soft_wrap=True,
-        )
+        _print_resolve_hint(scene_id, "quarantined", series_json, channel_toml)
+    _print_unchecked(result)
+
+
+def _print_unchecked(result: GenerationResult) -> None:
     if result.unchecked:
         _out.print(
             f"[yellow]warning:[/yellow] {len(result.unchecked)} sketch(es) are unchecked: "
@@ -198,17 +212,14 @@ def sketch_generate(
     _print_generation(result, series_json, channel_toml)
 
 
-def _regenerate_estimate(series: Series, scene_id: str, channel: ChannelConfig) -> Decimal | None:
-    """Image price plus the vision check for the scene, or None if it has no idea key."""
-    idea_key = next((s.idea_key for p in series.parts for s in p.scenes if s.id == scene_id), None)
-    if idea_key is None:
-        return None
-    prices = default_prices(get_settings())
+def _regenerate_estimate(idea_key: str, channel: ChannelConfig, prices: PriceTable) -> Decimal:
+    """Image price plus the vision check (none when vision is off) for one sketch."""
     style = channel.style
-    provider, model = vision_model(channel)
-    return prices.image(style.image_provider, style.image_model) + estimate_check_cost(
-        style, idea_key, prices, provider, model, with_reference=True
-    )
+    estimate = prices.image(style.image_provider, style.image_model)
+    ident = vision_model(channel)
+    if ident is not None:
+        estimate += estimate_check_cost(style, idea_key, prices, *ident, with_reference=True)
+    return estimate
 
 
 @sketch_app.command("resolve")
@@ -251,21 +262,35 @@ def sketch_resolve(
         use_text_card(series, scene_id).save(series_json)
         _out.print(f"{escape(scene_id)}: now uses a text card", highlight=False)
         return
+    # everything that can refuse without spend is checked before asking for money
+    settings = get_settings()
+    idea_key = check_regenerable(series, scene_id)
+    check_provider_keys(channel, settings)
+    prices = default_prices(settings)
+    require_generation_prices(channel, prices, vision=True)
     if not yes:
-        estimate = _regenerate_estimate(series, scene_id, channel)
-        if estimate is not None and not typer.confirm(
+        estimate = _regenerate_estimate(idea_key, channel, prices)
+        if not typer.confirm(
             f"Regenerate the sketch for {scene_id}? Estimated cost {format_usd(estimate)}"
         ):
             _out.print("Unchanged.")
             return
     try:
-        updated = regenerate(series, scene_id, channel, get_settings())
+        updated, result = regenerate(series, scene_id, channel, settings)
     except GenerationInterruptedError as exc:
         exc.partial[0].save(series_json)
         _print_generation(exc.partial[1], series_json, channel_toml)
         raise
     updated.save(series_json)
-    _out.print(f"{escape(scene_id)}: regenerated", highlight=False)
+    attached = any(
+        s.id == scene_id and s.sketch_id is not None for p in updated.parts for s in p.scenes
+    )
+    if attached:
+        _out.print(f"{escape(scene_id)}: regenerated", highlight=False)
+    else:
+        _print_resolve_hint(scene_id, "quarantined again", series_json, channel_toml)
+    _out.print(f"spent {format_usd(result.spent_usd)}", highlight=False)
+    _print_unchecked(result)
 
 
 def main() -> None:

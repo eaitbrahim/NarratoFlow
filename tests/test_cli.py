@@ -548,17 +548,203 @@ def _resolve(channel_file: Path, path: Path, *args: str, input: str | None = Non
     )
 
 
-def _patch_regenerate(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _patch_regenerate(
+    monkeypatch: pytest.MonkeyPatch, *, attached: bool = True, key: bool = True
+) -> list[str]:
+    """Fake `regenerate`: the scene ends attached (or quarantined again), $0.06 spent."""
     calls: list[str] = []
+    if key:
+        monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img-key")
 
-    def fake(series: Series, scene_id: str, channel: ChannelConfig, settings: Settings) -> Series:
+    def fake(
+        series: Series, scene_id: str, channel: ChannelConfig, settings: Settings
+    ) -> tuple[Series, GenerationResult]:
         calls.append(scene_id)
         out = series.model_copy(deep=True)
         out.title = "Regenerated"
-        return out
+        result = GenerationResult(spent_usd=Decimal("0.06"))
+        sc = out.parts[0].scenes[0]
+        if attached:
+            out.parts[0].scenes[0] = sc.model_copy(update={"sketch_id": 7, "flags": []})
+            result.generated = 1
+            result.unchecked.append(scene_id)
+        else:
+            result.quarantined.append(scene_id)
+        return out, result
 
     monkeypatch.setattr(cli, "regenerate", fake)
     return calls
+
+
+def _no_confirm(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    asked: list[str] = []
+
+    def confirm(text: str, *args: object, **kwargs: object) -> bool:
+        asked.append(text)
+        return True
+
+    monkeypatch.setattr("typer.confirm", confirm)
+    return asked
+
+
+def test_sketch_resolve_regenerate_reports_attached_and_spend(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    _patch_regenerate(monkeypatch)
+    out = _resolve(channel_file, path, "--regenerate", "--yes")
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    assert "s001: regenerated" in text and "$0.06" in text
+    assert "vision checking was off" in text
+
+
+def test_sketch_resolve_regenerate_that_fails_again_says_so(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    _patch_regenerate(monkeypatch, attached=False)
+    out = _resolve(channel_file, path, "--regenerate", "--yes")
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    assert "regenerated" not in text
+    assert "s001: quarantined again" in text and "$0.06" in text
+    assert f"narratoflow sketch resolve {path} s001 --regenerate | --swap KEY" in text
+
+
+def test_sketch_resolve_regenerate_never_prompts_for_a_scene_it_cannot_regenerate(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _approved_series(tmp_path)  # s001 is not quarantined
+    calls = _patch_regenerate(monkeypatch)
+    asked = _no_confirm(monkeypatch)
+    code = run_main(
+        monkeypatch,
+        "sketch",
+        "resolve",
+        str(path),
+        "s001",
+        "--regenerate",
+        "--channel",
+        str(channel_file),
+    )
+    assert code == 1 and asked == [] and calls == []
+
+
+def test_sketch_resolve_regenerate_never_prompts_without_the_image_key(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    calls = _patch_regenerate(monkeypatch, key=False)
+    asked = _no_confirm(monkeypatch)
+    code = run_main(
+        monkeypatch,
+        "sketch",
+        "resolve",
+        str(path),
+        "s001",
+        "--regenerate",
+        "--channel",
+        str(channel_file),
+    )
+    assert code == 1 and asked == [] and calls == []
+    assert "NARRATOFLOW_IMAGE_API_KEY" in capsys.readouterr().err
+
+
+def test_sketch_resolve_regenerate_estimate_has_no_vision_cost_when_off(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the history channel's LLM is ollama with no [vision]: vision is off
+    path = _approved_series(tmp_path, quarantined=True)
+    _patch_regenerate(monkeypatch)
+    asked = _no_confirm(monkeypatch)
+    out = _resolve(channel_file, path, "--regenerate")
+    assert out.exit_code == 0, out.output
+    [prompt] = asked
+    assert prompt.endswith("Estimated cost $0.04")
+
+
+def test_sketch_resolve_regenerate_estimate_includes_the_vision_check_when_on(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.costs.prices import default_prices
+    from narratoflow.money import format_usd
+    from narratoflow.sketching.vision import estimate_check_cost
+
+    text = channel_file.read_text(encoding="utf-8")
+    channel_file.write_text(
+        text + '\n[vision]\nprovider = "anthropic"\nmodel = "claude-haiku-5-5"\n',
+        encoding="utf-8",
+    )
+    channel = load_channel(channel_file)
+    path = _approved_series(tmp_path, quarantined=True)
+    _patch_regenerate(monkeypatch)
+    asked = _no_confirm(monkeypatch)
+    out = _resolve(channel_file, path, "--regenerate")
+    assert out.exit_code == 0, out.output
+    prices = default_prices(get_settings())
+    check = estimate_check_cost(
+        channel.style,
+        "scroll|generic",
+        prices,
+        "anthropic",
+        "claude-haiku-5-5",
+        with_reference=True,
+    )
+    assert check > 0
+    [prompt] = asked
+    assert prompt.endswith(f"Estimated cost {format_usd(Decimal('0.04') + check)}")
+
+
+def test_sketch_generate_real_run_without_vision_warns_unchecked(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data_dir: Path
+) -> None:
+    from sketching.support import FakeImages
+
+    from narratoflow.sketching import generate as generate_module
+
+    monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img-key")
+    images = FakeImages()
+    monkeypatch.setattr(generate_module, "build_image_provider", lambda c, s: images)
+
+    def no_vision(*args: object) -> object:
+        raise AssertionError("vision is off: no vision client is built")
+
+    monkeypatch.setattr(generate_module, "build_llm_client", no_vision)
+    path = _approved_series(tmp_path)
+    out = runner.invoke(cli.app, ["sketch", "generate", str(path), "--channel", str(channel_file)])
+    assert out.exit_code == 0, out.output
+    text = " ".join(out.output.split())
+    assert "unchecked 1" in text and "vision checking was off" in text
+    assert len(images.requests) == 1
+
+
+def test_sketch_generate_for_another_channel_exits_1_before_spend(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    data_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.sketching import generate as generate_module
+
+    monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img-key")
+
+    def no_images(*args: object) -> object:
+        raise AssertionError("nothing is drawn for another channel's series")
+
+    monkeypatch.setattr(generate_module, "build_image_provider", no_images)
+    _set_toml(channel_file, 'slug = "history"', 'slug = "other-channel"')
+    path = _approved_series(tmp_path)
+    before = path.read_text(encoding="utf-8")
+    code = run_main(monkeypatch, "sketch", "generate", str(path), "--channel", str(channel_file))
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "history" in err and "other-channel" in err
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_sketch_resolve_regenerate_confirms_with_estimate(
@@ -613,6 +799,7 @@ def test_sketch_resolve_regenerate_interrupted_saves_partial(
     def boom(*args: object, **kwargs: object) -> Series:
         raise exc
 
+    monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img-key")
     monkeypatch.setattr(cli, "regenerate", boom)
     code = run_main(
         monkeypatch,

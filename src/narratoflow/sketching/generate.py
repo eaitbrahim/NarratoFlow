@@ -86,7 +86,7 @@ class GenerationResult:
     quarantined: list[str] = field(default_factory=list)
     """Scene ids left without a sketch because theirs FAILED or the scene is flagged."""
     unchecked: list[str] = field(default_factory=list)
-    """Scene ids this run attached to a new or bundled UNCHECKED sketch (no vision)."""
+    """Scene ids whose sketch (new, bundled, reused or kept) is UNCHECKED (no vision)."""
     spent_usd: Decimal = Decimal(0)
 
 
@@ -164,6 +164,17 @@ def _ensure_strokes(
     library.put_strokes(record.id, extract_strokes(ink, rtl=rtl))
 
 
+def _tracked_vision(
+    channel: ChannelConfig, vision: LLMClient | None, tracker: SpendTracker, prices: PriceTable
+) -> TrackedLLM | None:
+    """`vision` charged to `tracker` at the vision model's prices; None when either the
+    client is None or the channel turns vision off (`vision_model` is None)."""
+    ident = vision_model(channel)
+    if vision is None or ident is None:
+        return None
+    return TrackedLLM(vision, tracker, *ident, prices)
+
+
 def _require_untracked(images: ImageProvider | None, vision: LLMClient | None) -> None:
     """Injected clients are wrapped on the part's tracker; a tracked one would pay twice."""
     if isinstance(images, TrackedImageProvider) or isinstance(vision, TrackedLLM):
@@ -187,7 +198,8 @@ def generate_one(
 
     `images` and `vision` must be untracked clients (an already tracked one raises
     `TypeError`): they are wrapped here so every call is checked against and charged
-    to `tracker` at the channel's configured prices. The image seed is
+    to `tracker` at the channel's configured prices. `vision` is not used when the
+    channel turns vision off (`vision_model` is None). The image seed is
     `marker_seed(video_id, scene.id)`, so a re-run asks for the same image. When the
     image dedupes onto a stored record (same style version, key and bytes), that
     record is returned as is, even FAILED, with no vision call. A density reject is
@@ -231,19 +243,14 @@ def _generate_one(
     key = str(parse_idea_key(scene.idea_key))
     style = channel.style
     image_provider = style.image_provider.strip().lower()
-    vision_provider, vision_name = vision_model(channel)
     tracked_images = TrackedImageProvider(
         images, tracker, prices, image_provider, style.image_model
     )
-    tracked_vision = (
-        None
-        if vision is None
-        else TrackedLLM(vision, tracker, vision_provider, vision_name, prices)
-    )
+    tracked_vision = _tracked_vision(channel, vision, tracker, prices)
     estimate = prices.image(image_provider, style.image_model)
-    if vision is not None:
+    if tracked_vision is not None:
         estimate += estimate_check_cost(
-            style, key, prices, vision_provider, vision_name, with_reference=True
+            style, key, prices, tracked_vision.provider, tracked_vision.model, with_reference=True
         )
     tracker.ensure_room(estimate, f"sketch {key}")
 
@@ -390,10 +397,7 @@ class _Run:
     """Records stored for the scene in progress (read when that scene raises)."""
 
     def tracked_vision(self, tracker: SpendTracker) -> TrackedLLM | None:
-        if self.vision is None:
-            return None
-        provider, model = vision_model(self.channel)
-        return TrackedLLM(self.vision, tracker, provider, model, self.prices)
+        return _tracked_vision(self.channel, self.vision, tracker, self.prices)
 
     def interrupted(self, scene: Scene) -> Scene:
         """The scene as it stands when its processing raised mid-way."""
@@ -426,6 +430,7 @@ class _Run:
             # stable re-runs: keep the sketch and the scene's match as they are
             _ensure_strokes(self.library, current, rtl=rtl)
             self.result.kept += 1
+            self._note_unchecked(scene, current)
             return scene
         found = match_idea(self.library, self.version, key, self.bundled)
         if found.kind is MatchKind.REUSED:
@@ -433,6 +438,7 @@ class _Run:
             record = (passed or list(found.candidates))[0]
             _ensure_strokes(self.library, record, rtl=rtl)
             self.result.reused += 1
+            self._note_unchecked(scene, record)
             return _attached(scene, record, "reused")
         # `found.icon is not None` only narrows the type: match_idea sets it for BUNDLED
         if found.kind is MatchKind.BUNDLED and found.icon is not None:
@@ -448,8 +454,7 @@ class _Run:
             )
             if record.status is not SketchStatus.FAILED:
                 self.result.bundled += 1
-                if record.status is SketchStatus.UNCHECKED:
-                    self.result.unchecked.append(scene.id)
+                self._note_unchecked(scene, record)
                 return _attached(scene, record, "reused")
             logger.info("bundled icon %s failed its check; generating instead", key)
         record = _generate_one(
@@ -469,9 +474,12 @@ class _Run:
             self.result.quarantined.append(scene.id)
             return _quarantined(scene)
         self.result.generated += 1
+        self._note_unchecked(scene, record)
+        return _attached(scene, record, "new")
+
+    def _note_unchecked(self, scene: Scene, record: SketchRecord) -> None:
         if record.status is SketchStatus.UNCHECKED:
             self.result.unchecked.append(scene.id)
-        return _attached(scene, record, "new")
 
     def _attached_record(self, scene: Scene, key: IdeaKey) -> SketchRecord | None:
         """The record an earlier run attached, unless it is stale (unknown id, or
@@ -500,9 +508,10 @@ def generate_missing(
 
     `images` and `vision` must be untracked clients (tests inject fakes; a tracked
     one raises `TypeError`); they are charged at the channel's configured image and
-    vision prices. `vision="auto"`
-    builds the vision model of `channel.vision` (else the channel LLM); `None`
-    stores new sketches UNCHECKED. Keys, prices and the reference sketch are
+    vision prices. `vision="auto"` builds the vision model of `vision_model(channel)`;
+    `None`, or a channel whose vision is off (`[vision] provider = "none"`, or no
+    `[vision]` with a text-only LLM provider), stores new sketches UNCHECKED. The
+    series must belong to `channel` (same slug). Keys, prices and the reference sketch are
     checked before any spend. The spending limit applies per part. A scene whose
     attached sketch is still usable is kept as is; one quarantined since is
     flagged again without spend. Any `NarratoFlowError` raised mid-run (budget,
@@ -513,6 +522,11 @@ def generate_missing(
     """
     if not series.approved:
         raise PlanningError("approve the series first")
+    if series.channel_slug != channel.slug:
+        raise PlanningError(
+            f"series belongs to channel {series.channel_slug!r}, not {channel.slug!r}; "
+            "pass that channel's TOML with --channel"
+        )
     _require_untracked(images, None if vision == "auto" else vision)
     check_provider_keys(channel, settings)
     prices = prices if prices is not None else default_prices(settings)
@@ -521,9 +535,12 @@ def generate_missing(
     library = library if library is not None else default_library(settings)
     version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
     bundled = default_bundled_icons()
-    vision_client = (
-        build_llm_client(vision_llm_config(channel), settings) if vision == "auto" else vision
-    )
+    vision_client: LLMClient | None
+    if vision == "auto":
+        cfg = vision_llm_config(channel)
+        vision_client = None if cfg is None else build_llm_client(cfg, settings)
+    else:
+        vision_client = vision
     built: list[ImageProvider] = [] if images is None else [images]
 
     def image_provider() -> ImageProvider:

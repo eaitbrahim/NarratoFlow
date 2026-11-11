@@ -9,7 +9,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 
 from narratoflow.channels.config import StyleConfig
 from narratoflow.costs.prices import PriceTable
-from narratoflow.costs.tracker import estimate_llm_call
+from narratoflow.costs.tracker import VISION_IMAGES_PER_CHECK, estimate_llm_call
 from narratoflow.library.keys import parse_idea_key
 from narratoflow.library.schemas import SketchStatus
 from narratoflow.llm.base import LLMClient
@@ -63,7 +63,7 @@ def estimate_check_cost(
         provider,
         model,
         VISION_SYSTEM + _user_text(style, key, with_reference),
-        images=2 if with_reference else 1,
+        images=VISION_IMAGES_PER_CHECK if with_reference else 1,
     )
 
 

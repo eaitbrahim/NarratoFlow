@@ -17,9 +17,23 @@ from narratoflow.sketching.generate import (
     GenerationInterruptedError,
     generate_missing,
 )
-from narratoflow.sketching.resolve import regenerate, swap_idea, use_text_card
+from narratoflow.sketching.resolve import (
+    check_regenerable,
+    regenerate,
+    swap_idea,
+    use_text_card,
+)
 from narratoflow.visuals.marker import marker_seed
-from sketching.support import PRICES, FakeImages, clean, scene, scenes_of, series, verdict
+from sketching.support import (
+    PER_SKETCH,
+    PRICES,
+    FakeImages,
+    clean,
+    scene,
+    scenes_of,
+    series,
+    verdict,
+)
 
 
 def quarantined() -> Series:
@@ -43,7 +57,7 @@ def test_regenerate_makes_a_new_sketch_with_a_different_seed(
     assert QUARANTINED_FLAG in sc.flags
     before = first.model_copy(deep=True)
     images = FakeImages([img.scroll(size=256)])
-    out = regenerate(
+    out, _ = regenerate(
         first,
         "s001",
         channel,
@@ -66,7 +80,7 @@ def test_regenerate_only_touches_the_chosen_scene(
 ) -> None:
     s = quarantined()
     images = FakeImages()
-    out = regenerate(
+    out, _ = regenerate(
         s,
         "s001",
         channel,
@@ -85,7 +99,7 @@ def test_regenerate_only_touches_the_chosen_scene(
 def test_regenerate_that_fails_again_stays_quarantined(
     channel: ChannelConfig, settings: Settings, library: SketchLibrary
 ) -> None:
-    out = regenerate(
+    out, result = regenerate(
         quarantined(),
         "s001",
         channel,
@@ -97,6 +111,8 @@ def test_regenerate_that_fails_again_stays_quarantined(
     )
     [first, _] = scenes_of(out)
     assert QUARANTINED_FLAG in first.flags and first.sketch_id is None
+    assert result.quarantined == ["s001"] and result.generated == 0
+    assert result.spent_usd == PER_SKETCH
 
 
 def test_regenerate_needs_an_approved_series(
@@ -233,3 +249,14 @@ def test_regenerate_refuses_scenes_generate_missing_would_skip(
                 prices=PRICES,
             )
         assert s == before and images.requests == []
+
+
+def test_check_regenerable_accepts_only_a_quarantined_drawable_scene() -> None:
+    assert check_regenerable(quarantined(), "s001") == "thing-1|roman"
+    with pytest.raises(PlanningError, match="unknown scene"):
+        check_regenerable(quarantined(), "s999")
+    with pytest.raises(PlanningError, match="not quarantined"):
+        check_regenerable(quarantined(), "s002")
+    text_card = scene(1, flags=[QUARANTINED_FLAG], visual={"source": "text_card"})
+    with pytest.raises(PlanningError, match="nothing to generate"):
+        check_regenerable(series([text_card]), "s001")

@@ -20,9 +20,13 @@ def make_llm(
     return TrackedLLM(build_llm_client(cfg, settings), tracker, provider, cfg.model, prices)
 
 
-def vision_llm_config(channel: ChannelConfig) -> LlmConfig:
-    """The channel LLM settings with the vision check's provider and model (`channel.vision`)."""
-    provider, model = vision_model(channel)
+def vision_llm_config(channel: ChannelConfig) -> LlmConfig | None:
+    """The channel LLM settings with the vision check's provider and model
+    (`vision_model`), or None when vision is off."""
+    ident = vision_model(channel)
+    if ident is None:
+        return None
+    provider, model = ident
     return channel.llm.model_copy(update={"provider": provider, "model": model})
 
 

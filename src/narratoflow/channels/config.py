@@ -51,8 +51,15 @@ class EmbedConfig(BaseModel):
     model: str = "voyage-multilingual-2"
 
 
+VISION_CAPABLE_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
+"""LLM providers whose channel model can judge images when `[vision]` is unset."""
+VISION_OFF = "none"
+"""`[vision] provider = "none"` turns the vision check off."""
+
+
 class VisionConfig(BaseModel):
-    """Vision-check model; None means the channel's LLM provider and model."""
+    """Vision-check model (see `vision_model`); both unset means the channel's LLM
+    when its provider is vision capable, else no vision check."""
 
     provider: str | None = None
     model: str | None = None
@@ -83,14 +90,25 @@ class ChannelConfig(BaseModel):
         return self
 
 
-def vision_model(channel: ChannelConfig) -> tuple[str, str]:
-    """`(provider, model)` of the vision check: `channel.vision`, else the channel LLM's.
+def vision_model(channel: ChannelConfig) -> tuple[str, str] | None:
+    """`(provider, model)` of the vision check, or None when vision is off.
+
+    - `[vision] provider = "none"`: off;
+    - `[vision]` unset: the channel LLM when its provider is in
+      `VISION_CAPABLE_PROVIDERS` (a text-only model must not judge images), else off;
+    - otherwise `channel.vision`, each unset field taken from the channel LLM.
 
     The provider is normalized (stripped, lower case) the way the factories use it.
+    Off means new sketches are stored UNCHECKED ("vision: not checked").
     """
-    provider = channel.vision.provider or channel.llm.provider
-    model = channel.vision.model or channel.llm.model
-    return provider.strip().lower(), model
+    vision, llm = channel.vision, channel.llm
+    if vision.provider is None and vision.model is None:
+        provider = llm.provider.strip().lower()
+        return (provider, llm.model) if provider in VISION_CAPABLE_PROVIDERS else None
+    provider = (vision.provider or llm.provider).strip().lower()
+    if provider == VISION_OFF:
+        return None
+    return provider, vision.model or llm.model
 
 
 def load_channel(path: Path) -> ChannelConfig:

@@ -19,6 +19,7 @@ from narratoflow.settings import Settings
 from narratoflow.sketching.generate import (
     QUARANTINED_FLAG,
     GenerationInterruptedError,
+    GenerationResult,
     generate_missing,
 )
 
@@ -50,28 +51,53 @@ def _requarantined(partial: Series, scene_id: str) -> Series:
     return fixed
 
 
+def _drawable_key(scene: Scene) -> str:
+    """The idea key of a scene `generate_missing` would draw, else `PlanningError`."""
+    if (
+        scene.kind is SceneKind.VERSE
+        or scene.idea_key is None
+        or scene.visual.source is VisualSource.TEXT_CARD
+    ):
+        raise PlanningError(f"scene {scene.id} has nothing to generate")
+    return scene.idea_key
+
+
+def _regenerated(scene: Scene) -> dict[str, Any]:
+    _drawable_key(scene)
+    return {"sketch_id": None, "match": "new", "sketch_attempt": scene.sketch_attempt + 1}
+
+
+def check_regenerable(series: Series, scene_id: str) -> str:
+    """The scene's idea key if `regenerate` accepts the scene (it exists, is
+    quarantined and has an idea to draw), else `PlanningError`. No spend; the
+    series is not changed."""
+    keys: list[str] = []
+
+    def change(scene: Scene) -> dict[str, Any]:
+        keys.append(_drawable_key(scene))
+        return {}
+
+    _resolved(series, scene_id, change)
+    return keys[0]
+
+
 def regenerate(
     series: Series, scene_id: str, channel: ChannelConfig, settings: Settings, **deps: Any
-) -> Series:
+) -> tuple[Series, GenerationResult]:
     """Generate a new sketch for one quarantined scene (a paid call: confirm first).
 
     The scene's attempt counter goes up so the image seed differs from the earlier
-    one. `deps` are `generate_missing`'s `images`, `vision`, `library` and `prices`.
-    May raise `GenerationInterruptedError` like `generate_missing`.
+    one. Returns the new series and the run's result: when the new sketch fails too
+    the scene is quarantined again (listed in `result.quarantined`). `deps` are
+    `generate_missing`'s `images`, `vision`, `library` and `prices`. Refuses what
+    `check_regenerable` refuses. May raise `GenerationInterruptedError` like
+    `generate_missing`.
     """
-
-    def change(scene: Scene) -> dict[str, Any]:
-        if (
-            scene.kind is SceneKind.VERSE
-            or scene.idea_key is None
-            or scene.visual.source is VisualSource.TEXT_CARD
-        ):
-            raise PlanningError(f"scene {scene_id} has nothing to generate")
-        return {"sketch_id": None, "match": "new", "sketch_attempt": scene.sketch_attempt + 1}
-
-    prepared = _resolved(series, scene_id, change)
+    prepared = _resolved(series, scene_id, _regenerated)
     try:
-        out, _ = generate_missing(prepared, channel, settings, only=frozenset({scene_id}), **deps)
+        out, result = generate_missing(
+            prepared, channel, settings, only=frozenset({scene_id}), **deps
+        )
     except GenerationInterruptedError as e:
         # the creator confirmed this attempt only: a scene left without a sketch goes
         # back to quarantine so the next `sketch generate` does not spend on it
@@ -84,7 +110,7 @@ def regenerate(
             result.quarantined.append(scene_id)
         e.partial = (fixed, result)
         raise
-    return out
+    return out, result
 
 
 def swap_idea(series: Series, scene_id: str, new_key: str, description: str) -> Series:

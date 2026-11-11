@@ -50,6 +50,13 @@ per-part cost estimates) when `approval_list = true`, when a part's estimate is 
 limit, or when something needs a human check. Otherwise it approves the series and
 prints a one-line summary.
 
+`sketch generate` checks every new sketch with a vision model (no people, faces, logos or
+text; style matches the reference sketch). Set it in the channel TOML with
+`[vision] provider = "anthropic"` and `model = "..."`. Without a `[vision]` table the channel's
+`[llm]` is used only when its provider can see images (`anthropic`). Otherwise, or with
+`[vision] provider = "none"`, vision is off. New sketches are then stored unchecked
+(`vision: not checked`), the command prints a warning, and no vision cost is estimated or charged.
+
 System requirement: `ffmpeg` on `PATH`.
 
 ## Layout

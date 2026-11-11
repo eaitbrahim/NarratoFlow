@@ -7,6 +7,8 @@ from narratoflow.errors import PlanningError
 from narratoflow.models import Narration, Scene, SceneKind
 from narratoflow.planning import ideas as ideas_module
 from narratoflow.planning.ideas import (
+    ALLOWED_COMPOUNDS,
+    FIGURE_WORDS,
     FORBIDDEN_OBJECTS,
     IdeaOut,
     assign_ideas,
@@ -96,6 +98,73 @@ def test_forbidden_object_rejected(key: str) -> None:
 )
 def test_symbols_and_limbs_allowed(key: str) -> None:
     assert validate_idea(_idea(key)) == []
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "human|generic",
+        "stickman|generic",
+        "stick-figure|generic",
+        "crowd|generic",
+        "soldier|roman",
+        "kings|abbasid",
+        "praying-worshipper|generic",
+        "marble-statue|greek",
+        "idol|generic",
+        "bust|roman",
+        "baby|generic",
+    ],
+)
+def test_figure_words_rejected(key: str) -> None:
+    violations = validate_idea(_idea(key, "a drawing"))
+    assert len(violations) == 1
+    assert key in violations[0]
+
+
+def test_figure_words_cover_the_review_list() -> None:
+    required = {"human", "humans", "stickman", "stick", "body", "crowd", "skeleton"}
+    required |= {"portrait", "mannequin", "soldier", "soldiers", "king", "queen"}
+    required |= {"mother", "father", "baby", "warrior", "worshipper", "worshippers"}
+    required |= {"scholar", "saint", "statue", "idol", "profile", "bust"}
+    assert required <= FIGURE_WORDS
+    assert not {"crown", "throne", "sword"} & FIGURE_WORDS
+
+
+@pytest.mark.parametrize("key", ["crown|abbasid", "throne|generic", "sword|generic"])
+def test_royal_symbols_allowed(key: str) -> None:
+    assert validate_idea(_idea(key, "a golden crown on a cushion")) == []
+
+
+def test_person_in_description_rejected() -> None:
+    out = IdeaOut(
+        idea_key="eye|generic",
+        description="a bearded man praying",
+        depicts_person=False,
+        depicts_logo=False,
+    )
+    violations = validate_idea(out)
+    assert len(violations) == 1
+    assert "'man'" in violations[0]
+    assert validate_idea(_idea("pen|generic", "Two Women, walking"))
+    assert validate_idea(_idea("pen|generic", "angels around a gate"))
+
+
+def test_allowed_body_words_in_description_pass() -> None:
+    assert validate_idea(_idea("hand|generic", "a hand holding a pen")) == []
+    assert validate_idea(_idea("eye|generic", "two open eyes")) == []
+    assert validate_idea(_idea("footprints|desert", "footprints in the sand")) == []
+
+
+@pytest.mark.parametrize("key", sorted(ALLOWED_COMPOUNDS))
+def test_allowed_compounds(key: str) -> None:
+    assert validate_idea(_idea(f"{key}|generic", f"a {key.replace('-', ' ')}")) == []
+
+
+def test_allowed_compounds_are_the_review_list() -> None:
+    assert {"clock-face", "arrow-head", "figure-eight"} == ALLOWED_COMPOUNDS
+    assert validate_idea(_idea("clock-face|generic", "a face of a clock"))
+    assert validate_idea(_idea("old-face|generic", "a clock"))
 
 
 def test_unparseable_key_is_a_violation() -> None:

@@ -12,6 +12,7 @@ second failure raises `SegmentationError`.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -25,8 +26,14 @@ from narratoflow.quran.detect import VerseHit
 
 UNMATCHED_BRACKETS_FLAG = "unmatched_verse_brackets"
 # Ornate parentheses used around Qur'anic quotes.
-_VERSE_BRACKETS = frozenset("\ufd3e\ufd3f")
+_VERSE_BRACKETS = frozenset("\ufd3e\ufd3f")  # either direction flags a narration
 _WS = re.compile(r"\s+")
+_OPENING_BRACKET = "\ufd3f"
+_CLOSING_BRACKET = "\ufd3e"
+# Clause and sentence punctuation a scene may end on: . ! ? , ; : and their Arabic
+# forms (question mark, comma, semicolon) plus the ellipsis.
+_CUT_PUNCTUATION = frozenset(".!?,;:\u061f\u060c\u061b\u2026")
+_CLOSING_CATEGORIES = ("Pe", "Pf")
 
 
 class SegmentSpan(BaseModel):
@@ -50,6 +57,16 @@ class _Piece:
     verse: VerseRef | None = None
 
 
+def _ends_clause(ch: str) -> bool:
+    return ch in _CUT_PUNCTUATION or ch in "\"'" or unicodedata.category(ch) in _CLOSING_CATEGORIES
+
+
+def _is_cut(stretch: str, at: int) -> bool:
+    """A scene may start at `at`: after whitespace, or right after closing punctuation."""
+    before = stretch[at - 1]
+    return before.isspace() or (_ends_clause(before) and not _ends_clause(stretch[at]))
+
+
 def _locate(stretch: str, spans: Sequence[SegmentSpan]) -> list[tuple[int, str]] | int:
     """Start offsets and titles of the spans in `stretch`, or the first differing offset."""
     pos = [i for i, ch in enumerate(stretch) if not ch.isspace()]
@@ -64,6 +81,8 @@ def _locate(stretch: str, spans: Sequence[SegmentSpan]) -> list[tuple[int, str]]
                 return len(stretch)
             if stretch[pos[k + j]] != ch:
                 return pos[k + j]
+        if starts and not _is_cut(stretch, pos[k]):
+            return pos[k]
         starts.append((pos[k], span.title))
         k += len(chars)
     if k < len(pos):
@@ -118,19 +137,13 @@ def _verse_title(ref: VerseRef) -> str:
 
 
 def _flush_brackets(text: str, verses: Sequence[VerseHit]) -> set[int]:
-    """Offsets of verse brackets that sit against a detected verse (whitespace aside)."""
+    """Offsets of an opening bracket right before a verse and a closing one right after."""
     flush: set[int] = set()
     for hit in verses:
-        i = hit.start - 1
-        while i >= 0 and text[i].isspace():
-            i -= 1
-        if i >= 0 and text[i] in _VERSE_BRACKETS:
-            flush.add(i)
-        j = hit.end
-        while j < len(text) and text[j].isspace():
-            j += 1
-        if j < len(text) and text[j] in _VERSE_BRACKETS:
-            flush.add(j)
+        if hit.start > 0 and text[hit.start - 1] == _OPENING_BRACKET:
+            flush.add(hit.start - 1)
+        if hit.end < len(text) and text[hit.end] == _CLOSING_BRACKET:
+            flush.add(hit.end)
     return flush
 
 

@@ -78,10 +78,29 @@ def test_unmatched_verse_brackets_flagged() -> None:
 
 def test_brackets_flush_with_a_matched_verse_are_not_flagged() -> None:
     quote = "يوم لا يجزي والد"
-    text = f"قال {OPEN} {quote}{CLOSE} انتهى."
+    text = f"قال {OPEN}{quote}{CLOSE} انتهى."
     llm = FakeLLM([_out(f"قال {OPEN}"), _out(f"{CLOSE} انتهى.")])
     scenes = segment_script(text, [_hit(text, quote)], llm)
     assert [s.flags for s in scenes] == [[], [], []]
+
+
+def test_reversed_brackets_between_verses_are_flagged() -> None:
+    verse_a = "يوم لا يجزي والد"
+    verse_b = "ولا مولود هو جاز"
+    text = f"{verse_a} {OPEN}نص مجهول{CLOSE} {verse_b}"
+    hits = [_hit(text, verse_a), _hit(text, verse_b)]
+    middle = text[len(verse_a) : text.index(verse_b)]
+    scenes = segment_script(text, hits, FakeLLM([_out(middle.strip())]))
+    assert [s.kind for s in scenes] == [SceneKind.VERSE, SceneKind.NARRATION, SceneKind.VERSE]
+    assert scenes[1].flags == ["unmatched_verse_brackets"]
+
+
+def test_bracket_separated_by_space_is_flagged() -> None:
+    quote = "يوم لا يجزي والد"
+    text = f"قال {OPEN} {quote}{CLOSE} انتهى."
+    llm = FakeLLM([_out(f"قال {OPEN}"), _out(f"{CLOSE} انتهى.")])
+    scenes = segment_script(text, [_hit(text, quote)], llm)
+    assert [s.flags for s in scenes] == [["unmatched_verse_brackets"], [], []]
 
 
 def test_verse_range_title_and_punctuation_only_stretches_attach() -> None:
@@ -156,6 +175,42 @@ def test_rewrite_fixed_on_retry_names_offset() -> None:
     retry_user = llm.calls[1][1]
     assert llm.calls[0][1] in retry_user
     assert f"offset {bad_at}" in retry_user
+
+
+def test_mid_word_cut_rejected() -> None:
+    text = "العلم نور. والجهل ظلام."
+    llm = FakeLLM([_out("العل", "م نور. والجهل ظلام.")] * 2)
+    with pytest.raises(SegmentationError, match=f"offset {text.index('م ')}"):
+        segment_script(text, [], llm)
+    assert len(llm.calls) == 2
+
+
+def test_full_stop_moved_into_next_scene_rejected() -> None:
+    text = "العلم نور. والجهل ظلام."
+    llm = FakeLLM([_out("العلم نور", ". والجهل ظلام.")] * 2)
+    with pytest.raises(SegmentationError, match=f"offset {text.index('.')}"):
+        segment_script(text, [], llm)
+
+
+def test_cut_after_full_stop_and_space_accepted() -> None:
+    text = "العلم نور. والجهل ظلام."
+    scenes = segment_script(text, [], FakeLLM([_out("العلم نور.", "والجهل ظلام.")]))
+    assert [s.narration.source_text for s in scenes] == ["العلم نور. ", "والجهل ظلام."]
+
+
+@pytest.mark.parametrize("mark", ["\u060c", "\u061b", ":", "\u2026", "\u00bb", '"'])
+def test_cut_right_after_closing_punctuation_accepted(mark: str) -> None:
+    text = f"العلم نور{mark}والجهل ظلام."
+    llm = FakeLLM([_out(f"العلم نور{mark}", "والجهل ظلام.")])
+    scenes = segment_script(text, [], llm)
+    assert scenes[1].narration.source_text == "والجهل ظلام."
+
+
+def test_cut_between_two_punctuation_marks_rejected() -> None:
+    text = "العلم نور.. والجهل ظلام."
+    llm = FakeLLM([_out("العلم نور.", ". والجهل ظلام.")] * 2)
+    with pytest.raises(SegmentationError, match=f"offset {text.index('.') + 1}"):
+        segment_script(text, [], llm)
 
 
 def test_spans_that_stop_short_are_rejected() -> None:

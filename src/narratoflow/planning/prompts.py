@@ -59,7 +59,9 @@ IDEAS_SYSTEM = (
     "key whenever it is the same object and the same culture or period. Propose a new key "
     "only when no candidate fits.\n"
     "\n"
-    "Return idea_key, a description of the drawing in English of at most 15 words, and "
+    "Return idea_key, a description of the drawing in English of at most 15 words that "
+    "names only objects and symbols (never a person, figure or body other than a hand, "
+    "an eye or footprints), and "
     "set depicts_person or depicts_logo to true if the drawing would show a person or a "
     "logo."
 )

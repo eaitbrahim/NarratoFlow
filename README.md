@@ -17,7 +17,7 @@ cp .env.example .env             # then fill in keys for any paid providers
                                  # (NARRATOFLOW_EMBED_API_KEY: Voyage embeddings default; or set [embed] provider = "ollama")
 uv run narratoflow channel check channel.toml          # fails fast naming a missing key
 uv run narratoflow library keys channel.toml           # reusable sketch idea keys
-uv run narratoflow library icons light   # bundled icon keys to use with sketch resolve --swap
+uv run narratoflow library icons light   # bundled icon keys, e.g. for sketch resolve --swap on a quarantined scene
 uv run narratoflow library copy SKETCH_ID other.toml   # reuse a sketch in another channel
 uv run narratoflow check-input script.txt --language ar   # reject corrupt PDF copy-paste
 

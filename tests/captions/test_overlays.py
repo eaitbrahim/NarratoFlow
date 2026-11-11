@@ -28,13 +28,15 @@ from narratoflow.models import (
     Series,
 )
 from narratoflow.render.ffmpeg import RenderTools
-from narratoflow.render.layout import STAGE, TOP_BAR
+from narratoflow.render.layout import STAGE, TOP_BAR, Rect
 
 from .stills import assert_in_zone, bbox, ink, still
 
 ELL = "\u2026"
-# Words of the widest Arabic letters (seen, sad, sheen, dad) with full width.
-AR_WIDE = ["\u0633\u0633\u0633\u0633", "\u0635\u0635\u0635\u0635", "\u0634\u0634\u0634\u0634"]
+# Words of the widest Arabic letters, sad and dad (23.0 px each in Amiri Bold).
+AR_WIDE = ["\u0635\u0635\u0635\u0635", "\u0636\u0636\u0636\u0636"]
+DAD = "\u0636"
+EN, AR = Language.ENGLISH, Language.ARABIC
 # "ar-rajulu alladhi kataba kulla kalimatin fi al-layli": prose with full tashkeel.
 AR_PROSE = [
     "\u0627\u0644\u0631\u0651\u064e\u062c\u064f\u0644\u064f",
@@ -141,6 +143,40 @@ def test_truncate_cuts_at_word_boundary() -> None:
     assert truncate(long).endswith("word" + ELL)
 
 
+def test_truncate_never_splits_a_grapheme() -> None:
+    # beh + shadda + fatha: both marks stay on every kept letter (marks take no width).
+    tashkeel = truncate("\u0628\u0651\u064e" * 30, 24)
+    assert tashkeel == "\u0628\u0651\u064e" * 23 + ELL
+    # An emoji ZWJ family is kept whole or dropped whole.
+    family = "\U0001f468\u200d\U0001f469\u200d\U0001f467"
+    cut = truncate(family * 10, 24)
+    assert cut.endswith(ELL)
+    assert cut[:-1] == family * (len(cut[:-1]) // len(family))
+    assert truncate(family * 10, 2) == ELL
+    # e + combining acute: the accent stays with its e.
+    acute = truncate("e\u0301" * 30, 24)
+    assert acute == "e\u0301" * 23 + ELL
+    # A tatweel stays with the letter it stretches; ZWNJ is never cut off.
+    assert truncate("\u0628\u0640\u0640" * 4, 5) == "\u0628\u0640\u0640" + ELL
+    assert truncate("\u0628\u200c" * 8, 5) == "\u0628\u200c" * 4 + ELL
+
+
+def test_truncate_cuts_tokens_wider_than_a_line() -> None:
+    assert truncate("W" * 80, 60, line=30) == "W" * 29 + ELL
+    assert truncate("ab " + "W" * 80 + " cd", 60, line=30) == "ab " + "W" * 29 + ELL
+    assert truncate("W" * 40, 32, line=30) == "W" * 29 + ELL
+    # Near the end of the budget the long token is cut to what remains.
+    words = " ".join(["aaaa"] * 10)
+    assert truncate(words + " " + "W" * 40, 60, line=30) == words + " " + "W" * 9 + ELL
+    # No room left for any of it: a word-boundary cut.
+    two = "a" * 29 + " " + "a" * 29
+    assert truncate(two + " " + "W" * 40, 60, line=30) == two + ELL
+    # In an Arabic style a Latin letter counts 5/4 of an Arabic one.
+    assert truncate(DAD * 45, 40, language=AR) == DAD * 39 + ELL
+    assert truncate("W" * 80, 40, language=AR) == "W" * 31 + ELL
+    assert truncate("W" * 32, 40, language=AR) == "W" * 32
+
+
 def test_hook_at_zero_and_teaser_at_end() -> None:
     part = _part(1, 2, teaser="What comes")
     assert _windows(_headlines(part, 10_000)) == [
@@ -154,6 +190,9 @@ def test_hook_at_zero_and_teaser_at_end() -> None:
         (2_500, 4_000, "Next: What comes"),
     ]
     assert _windows(_headlines(part, 2_000)) == [(0, 2_000, "Hook")]
+    # Under MIN_OVERLAY_MS after the hook: no teaser flash.
+    assert _windows(_headlines(part, 2_600)) == [(0, 2_500, "Hook")]
+    assert _windows(_headlines(part, 3_500))[-1] == (2_500, 3_500, "Next: What comes")
 
 
 def test_recap_only_from_part_two_and_dropped_when_no_room() -> None:
@@ -269,11 +308,11 @@ def test_card_text_fallbacks() -> None:
 
 def test_card_events_over_the_slot() -> None:
     scene = _scene("s", "A {title}")
-    assert card_events(scene, _slot("s", 1_000, 4_000)) == [
+    assert card_events(scene, _slot("s", 1_000, 4_000), EN) == [
         AssEvent(1_000, 4_000, "Card", "{\\an5\\pos(474,815)\\fad(150,200)}A (title)")
     ]
-    assert card_events(_scene("s", text=" "), _slot("s", 0, 1_000)) == []
-    assert card_events(scene, _slot("s", 1_000, 1_000)) == []
+    assert card_events(_scene("s", text=" "), _slot("s", 0, 1_000), EN) == []
+    assert card_events(scene, _slot("s", 1_000, 1_000), EN) == []
 
 
 def _wide(language: Language, n: int) -> str:
@@ -289,6 +328,8 @@ def _prose(language: Language, n: int) -> str:
 def test_headline_60_chars_inside_top_bar(render_tools: RenderTools, tmp_path: Path) -> None:
     # The widest 60-char headline, a 60-char prose headline, a 24-char badge of wide
     # letters and a two-digit part label: each inside TOP_BAR, and no two collide.
+    # Arabic headlines are cut to OVERLAY_MAX_CHARS_AR (one line) before rendering, so
+    # the Arabic case checks that cut of the 60-char text.
     for language in Language:
         for kind, make in (("wide", _wide), ("prose", _prose)):
             headline = make(language, OVERLAY_MAX_CHARS)
@@ -312,8 +353,54 @@ def test_card_inside_stage(render_tools: RenderTools, tmp_path: Path) -> None:
     for language in Language:
         for kind, make in (("wide", _wide), ("prose", _prose)):
             scene = _scene("s1", card_text=make(language, 80))
-            event = card_events(scene, _slot("s1", 0, 3_000))[0]
+            event = card_events(scene, _slot("s1", 0, 3_000), language)[0]
             frame = still(
                 render_tools, tmp_path / f"{language.value}-{kind}", language, [event], 1_500
             )
             assert_in_zone(bbox(ink(frame)), STAGE, f"{language.value} {kind} card")
+
+
+def _headline_box(tools: RenderTools, work: Path, language: Language, hook: str) -> Rect:
+    part = _part(1, 1, hook=hook)
+    events = overlay_events(_series(language, part), part, _timeline(part, [("s1", 0, 3_000)]))
+    event = next(e for e in events if e.style == "Headline" and e.start_ms == 0)
+    return bbox(ink(still(tools, work, language, [event], 500)))
+
+
+def test_arabic_headline_worst_cases_inside_top_bar(
+    render_tools: RenderTools, tmp_path: Path
+) -> None:
+    # sad/dad words (the widest Arabic letters) and Latin capitals on an Arabic channel,
+    # both well past the Arabic cap: one line, inside TOP_BAR.
+    cases = {
+        "sad": " ".join(["\u0635" * 4] * 20),
+        "dad": " ".join([DAD * 4] * 20),
+        "sad-dad": _wide(AR, 80),
+        "latin-caps": "WWWWW MMMMM " * 8,
+        "latin-long-words": "W" * 20 + " " + "M" * 20 + " " + "W" * 20,
+    }
+    for name, hook in cases.items():
+        box = _headline_box(render_tools, tmp_path / name, AR, hook)
+        assert_in_zone(box, TOP_BAR, f"ar {name} headline")
+        assert box.h < 60, f"ar {name} headline wraps: {box}"
+
+
+def test_unbroken_strings_stay_inside_their_zones(
+    render_tools: RenderTools, tmp_path: Path
+) -> None:
+    for language in Language:
+        for name, text in (("w80", "W" * 80), ("dad45", DAD * 45)):
+            if language is EN and name == "dad45":
+                continue  # Noto Sans has no Arabic; the glyph warning covers it
+            work = tmp_path / f"{language.value}-{name}"
+            box = _headline_box(render_tools, work / "headline", language, text)
+            assert_in_zone(box, TOP_BAR, f"{language.value} {name} headline")
+            part = _part(1, 1, scenes=[_scene("s1", text)])
+            tl = _timeline(part, [("s1", 0, 3_000)])
+            events = overlay_events(_series(language, part), part, tl)
+            badge = next(e for e in events if e.style == "TopRight")
+            box = bbox(ink(still(render_tools, work / "badge", language, [badge], 500)))
+            assert_in_zone(box, TOP_BAR, f"{language.value} {name} badge")
+            card = card_events(_scene("s1", card_text=text), _slot("s1", 0, 3_000), language)
+            frame = still(render_tools, work / "card", language, card, 1_500)
+            assert_in_zone(bbox(ink(frame)), STAGE, f"{language.value} {name} card")

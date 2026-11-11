@@ -40,6 +40,7 @@ _MODE = 0o644
 _HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 _NEWLINES = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 _ESCAPES = str.maketrans({"\\": "/", "{": "(", "}": ")"})  # glyphs every bundled font has
+_TAGS = re.compile(r"\{[^}]*\}")
 
 _STYLE_FORMAT = (
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
@@ -78,6 +79,11 @@ def ass_time(ms: int) -> str:
 def escape_text(s: str) -> str:
     """Neutralise override syntax in user text: no braces, backslashes or newlines."""
     return _NEWLINES.sub(" ", s.translate(_ESCAPES))
+
+
+def strip_tags(text: str, sep: str = "") -> str:
+    """`text` with every ``{...}`` override block replaced by `sep`."""
+    return _TAGS.sub(sep, text)
 
 
 def karaoke(words: Sequence[tuple[str, int]], event_start_ms: int) -> str:

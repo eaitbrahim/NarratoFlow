@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import re
-
 from narratoflow.audio.timeline import PartTimeline
 from narratoflow.captions.ass import (
     AssDocument,
     AssEvent,
     build_styles,
     caption_events,
+    strip_tags,
     style_font_id,
 )
-from narratoflow.captions.overlays import card_events, overlay_events
+from narratoflow.captions.overlays import card_events, overlay_events, timeline_scenes
 from narratoflow.captions.verse import check_verse_text, verse_events
 from narratoflow.errors import RenderError
 from narratoflow.models import Language, Part, SceneKind, Series, VisualSource
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.render.assets import FontPack
-
-_TAGS = re.compile(r"\{[^}]*\}")
 
 
 def _glyph_warnings(
@@ -28,7 +25,7 @@ def _glyph_warnings(
     """One warning per font naming the codepoints its events' text lacks."""
     texts: dict[str, list[str]] = {}
     for e in events:
-        texts.setdefault(style_font_id(language, e.style), []).append(_TAGS.sub("", e.text))
+        texts.setdefault(style_font_id(language, e.style), []).append(strip_tags(e.text))
     warnings: list[str] = []
     for font_id, parts in texts.items():
         missing = fonts.missing_glyphs(font_id, " ".join(parts))
@@ -48,13 +45,9 @@ def build_part_ass(
 ) -> tuple[AssDocument, list[str]]:
     """The part's `AssDocument` and its glyph warnings; a bad verse raises ``FAIL``."""
     language = series.language
-    scenes = {s.id: s for s in part.scenes}
     events: list[AssEvent] = []
     warnings: list[str] = []
-    for timing in timeline.scenes:
-        scene = scenes.get(timing.scene_id)
-        if scene is None:
-            raise RenderError(f"timeline scene {timing.scene_id} is not in part {part.index}")
+    for timing, scene in timeline_scenes(part, timeline):
         if timing.kind is SceneKind.VERSE:
             if corpus is None:
                 raise RenderError(f"FAIL: verse scene {scene.id} needs the Quran corpus")
@@ -63,7 +56,7 @@ def build_part_ass(
             continue
         own = caption_events(timing, language)
         if scene.visual.source is VisualSource.TEXT_CARD:
-            own += card_events(scene, timing)
+            own += card_events(scene, timing, language)
         warnings += _glyph_warnings(scene.id, own, language, fonts)
         events += own
     overlays = overlay_events(series, part, timeline)

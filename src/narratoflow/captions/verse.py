@@ -8,14 +8,13 @@ page appears whole at its share of the ayah span.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from narratoflow.audio.recitation import display_words
 from narratoflow.audio.timeline import AyahTiming, SceneTiming, TimingSource
 from narratoflow.audio.words import split_ms
-from narratoflow.captions.ass import AssEvent, karaoke
+from narratoflow.captions.ass import AssEvent, karaoke, strip_tags
 from narratoflow.errors import RenderError
 from narratoflow.models import Language, Scene, VerseRef
 from narratoflow.quran.corpus import QuranCorpus
@@ -27,7 +26,6 @@ VERSE_FADE_MS = 150
 VERSE_FONT = "amiri-quran"
 
 _ARABIC_DIGITS = str.maketrans("0123456789", "".join(chr(0x0660 + d) for d in range(10)))
-_TAGS = re.compile(r"\{[^}]*\}")
 
 
 @dataclass(frozen=True)
@@ -148,4 +146,4 @@ def verse_events(
 
 def shown_text(events: Sequence[AssEvent]) -> str:
     """The verse text on screen: tags stripped, pages joined, whitespace collapsed."""
-    return " ".join(" ".join(_TAGS.sub(" ", e.text) for e in events if e.style == "Verse").split())
+    return " ".join(" ".join(strip_tags(e.text, " ") for e in events if e.style == "Verse").split())

@@ -147,3 +147,16 @@ def test_run_timeout_and_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
     lines = str(exc.value).splitlines()
     assert len(lines) == 5
     assert all(len(ln) <= 260 for ln in lines)
+
+
+def test_resample_to_16k_length(ffmpeg_bin: str) -> None:
+    src = tone(2000)
+    out = aio.resample(src, 16_000)
+    assert out.dtype == np.float32
+    assert abs(len(out) - 32_000) <= 16_000 * 30 // 1000
+    assert float(np.sqrt(np.mean(out**2))) > 0.05
+
+
+def test_resample_rejects_bad_rate() -> None:
+    with pytest.raises(AudioError, match="sample rate"):
+        aio.resample(tone(10), 0)

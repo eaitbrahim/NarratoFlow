@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from narratoflow.align import Aligner
 from narratoflow.models import AspectRatio, Project, Scene, Visual
 from narratoflow.tts import SpeechProvider
 
@@ -26,4 +27,4 @@ class Renderer(Protocol):
     def render(self, project: Project, aspect: AspectRatio, out_path: Path) -> Path: ...
 
 
-__all__ = ["Diacritizer", "Renderer", "SpeechProvider", "VisualProvider"]
+__all__ = ["Aligner", "Diacritizer", "Renderer", "SpeechProvider", "VisualProvider"]

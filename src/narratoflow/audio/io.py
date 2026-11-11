@@ -86,6 +86,35 @@ def decode(data: bytes) -> Samples:
     return samples
 
 
+def resample(samples: Samples, rate: int) -> Samples:
+    """Mono float32 at `SAMPLE_RATE` resampled to `rate` Hz through ffmpeg."""
+    if rate <= 0:
+        raise AudioError(f"invalid sample rate: {rate}")
+    out, _ = _run(
+        [
+            "-v",
+            "error",
+            "-f",
+            "f32le",
+            "-ar",
+            str(SAMPLE_RATE),
+            "-ac",
+            "1",
+            "-i",
+            "pipe:0",
+            "-f",
+            "f32le",
+            "-ac",
+            "1",
+            "-ar",
+            str(rate),
+            "pipe:1",
+        ],
+        _raw(samples),
+    )
+    return _from_raw(out)
+
+
 def encode_flac(samples: Samples, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")

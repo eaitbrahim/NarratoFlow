@@ -1,0 +1,32 @@
+# Licensed reciter allow-list for verse scenes (spec 2.2e).
+#
+# No reciter is shipped yet: unlicensed recitation is not allowed, and no source
+# checked on 2026-11-11 grants permission to use its recordings in published
+# (possibly monetised) videos:
+# - quran.com terms: "FOR YOUR PERSONAL, NON-COMMERCIAL USE ONLY"
+#   (https://quran.com/terms-and-conditions); the v4 Content API now needs Quran
+#   Foundation OAuth2 credentials (https://api-docs.quran.foundation/docs/quickstart/).
+# - quranicaudio.com: "you may not use these files for commercial purposes"
+#   (https://quranicaudio.com/about).
+# - everyayah.com: states no licence at all (https://everyayah.com/recitations_ayat.html).
+# With this list empty, every verse scene FAILs with "no allow-listed reciter for
+# riwaya hafs; unlicensed recitation is not allowed".
+#
+# Add a reciter only after reading its terms on a primary source page and only
+# when they allow use in published videos. Each entry is one [[reciters]] table:
+#
+#   [[reciters]]
+#   id = "example-hafs"                # lowercase words joined by "-"
+#   name = "Reciter name"
+#   riwaya = "hafs"
+#   kind = "files"                     # or "qurancom" (recitation_id, segments_source)
+#   audio_url = "https://host/path/{surah:03d}{ayah:03d}.mp3"
+#   license = "Licence name"
+#   license_url = "https://..."        # page with the licence text
+#   source = "https://..."             # page the recordings come from
+#   checked = 2026-11-11               # date the terms were read
+#
+# kind "qurancom" takes recitation_id = <n> and segments_source = "quran.com"
+# instead of audio_url; kind "files" has no segments (whole ayah revealed).
+# Every URL is https://; ids are unique. Also list each reciter in assets/LICENSES.md.
+reciters = []

@@ -53,6 +53,7 @@ packages = ["src/narratoflow"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "assets/icons" = "narratoflow/assets/icons"
+"assets/reciters" = "narratoflow/assets/reciters"
 
 [tool.ruff]
 line-length = 100

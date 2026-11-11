@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from narratoflow.errors import LibraryError
 from narratoflow.library.blobs import BlobStore
 from narratoflow.library.db import open_library
+from narratoflow.library.keys import IdeaKey, parse_idea_key
 from narratoflow.library.orm import Channel, Sketch, StyleVersion
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
 from narratoflow.settings import Settings
@@ -14,21 +15,13 @@ from narratoflow.settings import Settings
 _REUSABLE = (SketchStatus.PASSED, SketchStatus.UNCHECKED)
 
 
+def _canonical_key(idea_key: str | IdeaKey) -> str:
+    """Validate and normalize an idea key; raises InvalidIdeaKeyError."""
+    return str(parse_idea_key(str(idea_key)))
+
+
 def _record(row: Sketch) -> SketchRecord:
-    return SketchRecord(
-        id=row.id,
-        style_version_id=row.style_version_id,
-        idea_key=row.idea_key,
-        idea_description=row.idea_description,
-        blob_hash=row.blob_hash,
-        suffix=row.suffix,
-        origin=row.origin,
-        status=row.status,
-        status_reason=row.status_reason,
-        mirror_safe=row.mirror_safe,
-        provenance=Provenance.model_validate(row.provenance),
-        created_at=row.created_at,
-    )
+    return SketchRecord.model_validate(row, from_attributes=True)
 
 
 class SketchLibrary:
@@ -72,7 +65,7 @@ class SketchLibrary:
     def add_sketch(
         self,
         style_version_id: int,
-        idea_key: str,
+        idea_key: str | IdeaKey,
         data: bytes,
         suffix: str,
         origin: SketchOrigin,
@@ -86,16 +79,18 @@ class SketchLibrary:
         """Store a sketch, deduplicated on (style version, idea key, blob hash).
 
         Returns the existing record if present; its status is authoritative and may be FAILED.
-        Re-adding identical content never un-quarantines it.
+        Re-adding identical content never un-quarantines it. The idea key is normalized
+        with ``parse_idea_key``; an invalid key raises InvalidIdeaKeyError.
         """
+        key = _canonical_key(idea_key)
         blob_hash = self._blobs.put(data, suffix)
         with Session(self._engine) as s:
-            existing = self._find_existing(s, style_version_id, idea_key, blob_hash)
+            existing = self._find_existing(s, style_version_id, key, blob_hash)
             if existing is not None:
                 return _record(existing)
             new = Sketch(
                 style_version_id=style_version_id,
-                idea_key=idea_key,
+                idea_key=key,
                 idea_description=description,
                 blob_hash=blob_hash,
                 suffix=suffix,
@@ -108,11 +103,11 @@ class SketchLibrary:
             s.add(new)
             try:
                 s.commit()
-            except IntegrityError:
+            except IntegrityError as e:
                 s.rollback()
-                existing = self._find_existing(s, style_version_id, idea_key, blob_hash)
+                existing = self._find_existing(s, style_version_id, key, blob_hash)
                 if existing is None:
-                    raise LibraryError("could not add sketch: integrity violation") from None
+                    raise LibraryError("could not add sketch: integrity violation") from e
                 return _record(existing)
             return _record(new)
 
@@ -128,13 +123,14 @@ class SketchLibrary:
             )
         ).first()
 
-    def find_reusable(self, style_version_id: int, idea_key: str) -> list[SketchRecord]:
+    def find_reusable(self, style_version_id: int, idea_key: str | IdeaKey) -> list[SketchRecord]:
+        key = _canonical_key(idea_key)
         with Session(self._engine) as s:
             rows = s.scalars(
                 select(Sketch)
                 .where(
                     Sketch.style_version_id == style_version_id,
-                    Sketch.idea_key == idea_key,
+                    Sketch.idea_key == key,
                     Sketch.status.in_(_REUSABLE),
                 )
                 .order_by(Sketch.id)
@@ -212,13 +208,13 @@ class SketchLibrary:
             s.add(new)
             try:
                 s.commit()
-            except IntegrityError:
+            except IntegrityError as e:
                 s.rollback()
                 existing = self._find_existing(
                     s, target_style_version_id, src.idea_key, src.blob_hash
                 )
                 if existing is None:
-                    raise LibraryError("could not copy sketch: integrity violation") from None
+                    raise LibraryError("could not copy sketch: integrity violation") from e
                 return _record(existing)
             return _record(new)
 

@@ -70,6 +70,8 @@ def _store(library: SketchLibrary, key: str, status: SketchStatus = SketchStatus
         ("eye|generic", "eye|generic"),
         ("  Old Scroll|Roman ", "old-scroll|roman"),
         ("papyrus|ancient_egypt", "papyrus|ancient-egypt"),
+        ("scroll | roman", "scroll|roman"),
+        (" Old Scroll  |  Ancient Egypt ", "old-scroll|ancient-egypt"),
     ],
 )
 def test_parse_normalizes(raw: str, expected: str) -> None:

@@ -77,11 +77,18 @@ def test_library_keys_and_copy(channel_file: Path, data_dir: Path, tmp_path: Pat
     version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
     prov = Provenance(source="test", license="CC0", created_at=datetime(2026, 1, 1, tzinfo=UTC))
     record = library.add_sketch(
-        version, "alpha", b"A", ".png", SketchOrigin.GENERATED, SketchStatus.PASSED, True, prov
+        version,
+        "alpha|generic",
+        b"A",
+        ".png",
+        SketchOrigin.GENERATED,
+        SketchStatus.PASSED,
+        True,
+        prov,
     )
     keys = runner.invoke(cli.app, ["library", "keys", str(channel_file)])
     assert keys.exit_code == 0, keys.output
-    assert keys.output.splitlines() == ["alpha"]
+    assert keys.output.splitlines() == ["alpha|generic"]
 
     other = tmp_path / "other.toml"
     other.write_text(

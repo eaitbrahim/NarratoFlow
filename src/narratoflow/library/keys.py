@@ -25,8 +25,7 @@ class IdeaKey:
 
 def parse_idea_key(raw: str) -> IdeaKey:
     """Normalize and validate a raw idea key."""
-    normalized = _SEPARATORS.sub("-", raw.strip().lower())
-    parts = normalized.split("|")
+    parts = [_SEPARATORS.sub("-", part.strip()) for part in raw.lower().split("|")]
     if len(parts) != 2 or not all(_PART.fullmatch(p) for p in parts):
         raise InvalidIdeaKeyError(f"invalid idea key: {raw!r}")
     return IdeaKey(parts[0], parts[1])

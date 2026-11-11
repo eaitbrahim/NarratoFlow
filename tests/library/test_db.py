@@ -172,3 +172,17 @@ def test_enable_wal_gives_up_after_timeout(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(sqlite3.OperationalError):
         db._enable_wal(cursor)
     assert cursor.calls == 1
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_env_without_connection_explains_open_library(offline: bool) -> None:
+    from importlib import resources
+
+    from alembic.config import Config
+
+    config = Config()
+    location = resources.files("narratoflow.library") / "migrations"
+    with resources.as_file(location) as path:
+        config.set_main_option("script_location", str(path))
+        with pytest.raises(LibraryError, match="open_library"):
+            alembic_command.upgrade(config, "head", sql=offline)

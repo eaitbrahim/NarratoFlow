@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 
 class SketchOrigin(StrEnum):
@@ -23,7 +23,7 @@ class Provenance(BaseModel):
     license: str
     provider: str | None = None
     model: str | None = None
-    created_at: datetime
+    created_at: AwareDatetime
     usage_terms: str | None = None
     copied_from_sketch_id: int | None = None
 

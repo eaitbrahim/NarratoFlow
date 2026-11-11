@@ -78,3 +78,15 @@ class SketchRejectedError(NarratoFlowError):
 
 class StrokeDataError(NarratoFlowError):
     """Stroke data is malformed (bad JSON, out-of-range points) or the ink mask is invalid."""
+
+
+class AudioError(NarratoFlowError):
+    """Audio decoding, encoding, loudness or assembly failed."""
+
+
+class ReciterError(AudioError):
+    """A verse recitation could not be resolved (no TTS fallback exists)."""
+
+
+class AlignerUnavailableError(AudioError):
+    """The forced aligner is not installed or cannot run."""

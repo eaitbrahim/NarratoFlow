@@ -3,7 +3,8 @@
 `render_current_checks` compares the render report with the series and the audio
 timeline as they are now. Limit (G18): narration text edited after render, with the
 same scene ids, is not detected here, the same as render's `check_timeline`; the
-render report records no narration hash. The stale content review WARNs on it.
+render report records no narration hash. The stale content review flags it (a WARN,
+or a FAIL when the review found a clear violation).
 """
 
 from __future__ import annotations
@@ -71,7 +72,7 @@ def render_current_checks(inputs: PartInputs) -> list[CheckResult]:
                 )
     for name in (render.video_file, render.captions_file):
         if not (inputs.render_dir / name).is_file():
-            out.append(_fail(f"{name} is missing from {inputs.render_dir}"))
+            out.append(_fail(f"{name} is missing from the render directory"))
     return summarize(
         CheckId.RENDER_CURRENT, out, "the video matches the series and its audio timeline"
     )
@@ -124,7 +125,7 @@ def sketch_checks(inputs: PartInputs) -> list[CheckResult]:
                 )
             )
     ok = (
-        f"{checked} sketches passed the face/figure/logo check"
+        f"{checked} sketch{'' if checked == 1 else 'es'} passed the face/figure/logo check"
         if checked
         else ("no sketches in this part")
     )

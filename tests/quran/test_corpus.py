@@ -67,6 +67,13 @@ def test_corpus_malformed_line(tmp_path: Path) -> None:
         QuranCorpus.from_files(tmp_path / "missing.txt", bad)
 
 
+def test_corpus_not_utf8_is_a_corpus_error(tmp_path: Path) -> None:
+    bad = tmp_path / "latin1.txt"
+    bad.write_bytes(b"1|1|caf\xe9\n")
+    with pytest.raises(VerseCorpusError, match="cannot read corpus file"):
+        QuranCorpus.from_files(bad, UTHMANI)
+
+
 def _settings(data_dir: Path) -> Settings:
     return Settings(data_dir=data_dir)
 

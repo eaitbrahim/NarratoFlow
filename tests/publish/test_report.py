@@ -251,6 +251,53 @@ def test_markdown_lists_every_fail_and_warn_reason_and_disclosure(
     assert str(Path.home()) not in md and str(Path.home()) not in md_ok
 
 
+def test_copy_failure_report_names_the_error_not_fails(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _inputs(tmp_path, library, channel)
+    report = build_report(
+        inputs,
+        checks=[_check(Severity.WARN, "loud-ish")],
+        facts=FACTS,
+        disclosure="d",
+        labels={},
+        rules=_rules(),
+        prices=PRICES,
+        exported=False,
+        export_file=None,
+        now=NOW,
+        export_error="part 1: cannot copy part-01.mp4 | disk full",
+    )
+    md = report.to_markdown()
+    assert (
+        "**Verdict: WARN** - not exported: the export copy failed "
+        "(part 1: cannot copy part-01.mp4 \\| disk full); fix the cause and run publish again"
+    ) in md
+    assert "fix every FAIL" not in md
+    path = tmp_path / "part-01.publish.json"
+    report.save(path)
+    assert PublishReport.load(path).export_error == report.export_error
+    with pytest.raises(ValueError, match="export_error"):
+        PublishReport.model_validate(
+            report.model_dump() | {"exported": True, "export_file": "part-01.mp4"}
+        )
+
+
+def test_markdown_money_uses_format_usd(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _inputs(tmp_path, library, channel)
+    part = inputs.part.model_copy(
+        update={
+            "spent_usd": Decimal("0.03570"),
+            "spend": {"llm a/m": Decimal("2.5E-7"), "voice e/v": Decimal("0.0357")},
+        }
+    )
+    md = _report(replace(inputs, part=part)).to_markdown()
+    assert "- llm a/m: $0.0000" in md and "- voice e/v: $0.0357" in md
+    assert "actual $0.0357" in md and "E-" not in md
+
+
 def test_markdown_escapes_pipes_in_scene_text(
     tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
 ) -> None:

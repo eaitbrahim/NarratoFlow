@@ -114,24 +114,8 @@ def _severity(
     return Severity.WARN
 
 
-def content_checks(part: Part, rules: Rules) -> list[CheckResult]:
-    """`CONTENT_RULES` results for `part` from its stored review."""
-    review = part.content_review
-    if review is None:
-        return [
-            CheckResult(check=CheckId.CONTENT_RULES, severity=Severity.WARN, reason=NOT_CHECKED)
-        ]
-    if _stale(part, review, rules):
-        return [
-            CheckResult(
-                check=CheckId.CONTENT_RULES,
-                severity=Severity.WARN,
-                reason=(
-                    "content review is stale (the part or the platform rules changed since "
-                    f"{review.reviewed_at.date().isoformat()}); run narratoflow review"
-                ),
-            )
-        ]
+def _findings(part: Part, review: ContentReview, rules: Rules) -> list[CheckResult]:
+    """The stored findings as results, judged against `part` and `rules`."""
     scene_ids = {s.id for s in part.scenes}
     verse_ids = {s.id for s in part.scenes if s.kind is SceneKind.VERSE}
     results: list[CheckResult] = []
@@ -149,6 +133,41 @@ def content_checks(part: Part, rules: Rules) -> list[CheckResult]:
                 scene_id=scene_id,
             )
         )
+    return results
+
+
+def content_checks(part: Part, rules: Rules) -> list[CheckResult]:
+    """`CONTENT_RULES` results for `part` from its stored review. A stale review is a
+    WARN, except that a clear violation it found stays a FAIL: editing the text never
+    turns a FAIL into a WARN; only a fresh review can clear it."""
+    review = part.content_review
+    if review is None:
+        return [
+            CheckResult(check=CheckId.CONTENT_RULES, severity=Severity.WARN, reason=NOT_CHECKED)
+        ]
+    results = _findings(part, review, rules)
+    if _stale(part, review, rules):
+        fails = [
+            r.model_copy(
+                update={
+                    "reason": f"stale review previously found {r.reason}; re-run narratoflow review"
+                }
+            )
+            for r in results
+            if r.severity is Severity.FAIL
+        ]
+        if fails:
+            return fails
+        return [
+            CheckResult(
+                check=CheckId.CONTENT_RULES,
+                severity=Severity.WARN,
+                reason=(
+                    "content review is stale (the part or the platform rules changed since "
+                    f"{review.reviewed_at.date().isoformat()}); run narratoflow review"
+                ),
+            )
+        ]
     if results:
         return results
     return [

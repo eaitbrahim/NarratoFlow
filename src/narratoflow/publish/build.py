@@ -45,7 +45,14 @@ from narratoflow.errors import AudioError, PlanningError, PublishError, RenderEr
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.library.schemas import SketchRecord
 from narratoflow.models import Part, Series
-from narratoflow.publish.checks import CheckId, CheckResult, PartInputs, Severity, worst
+from narratoflow.publish.checks import (
+    CheckId,
+    CheckResult,
+    PartInputs,
+    Severity,
+    bare_paths,
+    worst,
+)
 from narratoflow.publish.consistency import render_current_checks, sketch_checks
 from narratoflow.publish.content import content_checks
 from narratoflow.publish.disclosure import disclosure_checks, disclosure_text, platform_labels
@@ -67,7 +74,6 @@ SUMMARY_STEM = "series.publish"
 _MODE = 0o644
 _CHUNK = 1 << 20
 _POINTER = re.compile(r"\s*@\s*0x[0-9a-fA-F]+")
-_ABS_PATH = re.compile(r"(?<![\w.])/(?:[^\s/'\"]+/)*([^\s/'\":]+)")
 _MAX_DETAIL = 200
 
 
@@ -125,7 +131,7 @@ def _short_error(exc: Exception, video: Path) -> str:
     """`exc` as one short line for a report: what failed and the first meaningful line
     of its detail, with absolute paths cut to the file name and `@ 0x...` pointers
     dropped (a tool's stderr carries both)."""
-    text = _ABS_PATH.sub(r"\1", _POINTER.sub("", str(exc).replace(str(video), video.name)))
+    text = bare_paths(_POINTER.sub("", str(exc).replace(str(video), video.name)))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return type(exc).__name__
@@ -333,7 +339,7 @@ class _Run:
         labels = platform_labels(self.rules)
         export_name = f"{_stem(n)}.mp4"
 
-        def report(exported: bool) -> PublishReport:
+        def report(exported: bool, error: str | None = None) -> PublishReport:
             return build_report(
                 inputs,
                 checks=checks,
@@ -345,6 +351,7 @@ class _Run:
                 exported=exported,
                 export_file=export_name if exported else None,
                 now=self.now,
+                export_error=error,
             )
 
         if worst(checks) is Severity.FAIL:
@@ -359,8 +366,8 @@ class _Run:
             _, disclosure_path, md_path = self.export_files(n)
             _write_text(disclosure_path, exported.disclosure_text)
             _write_text(md_path, exported.to_markdown())
-        except PublishError:
-            self.save(report(False), n)
+        except PublishError as exc:
+            self.save(report(False, _short_error(exc, video)), n)
             for path in self.export_files(n):  # best effort: the error above is what counts
                 with contextlib.suppress(OSError):
                     path.unlink(missing_ok=True)

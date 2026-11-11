@@ -221,7 +221,8 @@ def _record_findings(record: AssetRecord, rules: Rules) -> list[CheckResult]:
             CheckResult(
                 check=CheckId.ASSET_PROVENANCE,
                 severity=Severity.WARN,
-                reason=f"{label}: licence {licence}: {rule.note}",
+                reason=f"{label}: licence {licence}"
+                + (f": {rule.note.strip()}" if rule.note.strip() else ""),
                 scene_id=scene,
             )
         )
@@ -281,6 +282,13 @@ def provenance_checks(
     narrated = any(s.kind is SceneKind.NARRATION for s in inputs.part.scenes)
     if narrated and inputs.timeline.voice is None:
         findings.append(_fail("the narration voice is not recorded; rebuild audio"))
+    listed = {use.asset_id for use in inputs.timeline.assets}
+    unlisted: dict[str, str] = {}
+    for hit in inputs.timeline.sfx:
+        if hit.asset_id not in listed:
+            unlisted.setdefault(hit.asset_id, hit.scene_id)
+    for asset_id, scene_id in unlisted.items():
+        findings.append(_fail(f"sfx {asset_id}: no provenance recorded; rebuild audio", scene_id))
     records = asset_records(inputs)
     for record in records:
         findings += _record_findings(record, rules)

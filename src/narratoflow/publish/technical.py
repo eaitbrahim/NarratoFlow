@@ -75,14 +75,15 @@ def _platform_findings(p: PlatformRules, media: MediaProbe) -> list[str]:
         reasons.append(f"video duration unknown; {p.name} allows at most {p.max_duration_s} s")
     elif media.video_ms > p.max_duration_s * 1000:
         reasons.append(
-            f"{_s(media.video_ms)} s is longer than {p.name}'s {p.max_duration_s} s limit"
+            f"{_s(media.video_ms)} s is longer than the {p.name} limit of {p.max_duration_s} s"
         )
     if (media.width, media.height) != (p.width, p.height):
         reasons.append(
-            f"{_show(media.width)}x{_show(media.height)} is not {p.name}'s {p.width}x{p.height}"
+            f"{_show(media.width)}x{_show(media.height)} is not the {p.name} size "
+            f"{p.width}x{p.height}"
         )
     if media.fps != Fraction(p.fps):
-        reasons.append(f"{_show(media.fps)} fps is not {p.name}'s {p.fps} fps")
+        reasons.append(f"{_show(media.fps)} fps is not the {p.name} rate of {p.fps} fps")
     listed = (
         ("video codec", media.video_codec, p.video_codecs),
         ("pixel format", media.pix_fmt, p.pix_fmts),
@@ -90,10 +91,12 @@ def _platform_findings(p: PlatformRules, media: MediaProbe) -> list[str]:
     )
     for label, value, allowed in listed:
         if value not in allowed:
-            reasons.append(f"{label} {_show(value)} is not one of {p.name}'s {', '.join(allowed)}")
+            reasons.append(
+                f"{label} {_show(value)} is not allowed by {p.name} ({', '.join(allowed)})"
+            )
     if media.audio_rate != p.audio_rate:
         reasons.append(
-            f"audio rate {_show(media.audio_rate)} Hz is not {p.name}'s {p.audio_rate} Hz"
+            f"audio rate {_show(media.audio_rate)} Hz is not the {p.name} rate of {p.audio_rate} Hz"
         )
     return reasons
 

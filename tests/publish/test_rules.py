@@ -109,6 +109,16 @@ def test_rules_age_warns_after_180_days(tmp_path: Path) -> None:
     assert "over 180 days ago" in warn.reason
 
 
+def test_rules_checked_in_the_future_warns(tmp_path: Path) -> None:
+    rules = default_rules(_settings(tmp_path))
+    (warn,) = rules_checks(rules, rules.file.checked - timedelta(days=1))
+    assert warn.severity is Severity.WARN
+    assert warn.reason == (
+        "platform rules 2026-11-11.1 have a checked date 2026-11-11 in the future; "
+        "fix data/platform_rules.toml"
+    )
+
+
 def test_loudness_peak_order_rejected(tmp_path: Path) -> None:
     bad = _packaged_text().replace("warn_true_peak_dbtp = -1.0", "warn_true_peak_dbtp = 0.5")
     with pytest.raises(PublishError, match="warn_true_peak_dbtp"):

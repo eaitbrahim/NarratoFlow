@@ -124,6 +124,7 @@ def test_missing_video_or_captions_fails(
     (tmp_path / inputs.render.captions_file).unlink()
     fails = _fails(render_current_checks(inputs))
     assert len(fails) == 2
+    assert all(str(tmp_path) not in r.reason for r in fails)
     assert {inputs.render.video_file, inputs.render.captions_file} == {
         next(n for n in (inputs.render.video_file, inputs.render.captions_file) if n in r.reason)
         for r in fails
@@ -166,7 +167,7 @@ def test_style_outlier_warns(
     assert [(r.severity, r.reason) for r in style] == [(Severity.WARN, "warn: style outlier; busy")]
     likeness = [r for r in results if r.check is CheckId.SKETCH_LIKENESS]
     assert likeness[0].severity is Severity.PASS
-    assert likeness[0].reason == "1 sketches passed the face/figure/logo check"
+    assert likeness[0].reason == "1 sketch passed the face/figure/logo check"
 
 
 def test_no_sketch_part_passes_both(

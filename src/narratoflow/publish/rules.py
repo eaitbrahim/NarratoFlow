@@ -135,6 +135,17 @@ def default_rules(settings: Settings) -> Rules:
 
 def rules_checks(rules: Rules, today: date) -> list[CheckResult]:
     version, checked = rules.file.version, rules.file.checked
+    if checked > today:
+        return [
+            CheckResult(
+                check=CheckId.RULES_FILE,
+                severity=Severity.WARN,
+                reason=(
+                    f"platform rules {version} have a checked date {checked.isoformat()} "
+                    "in the future; fix data/platform_rules.toml"
+                ),
+            )
+        ]
     if (today - checked).days > RULES_MAX_AGE_DAYS:
         return [
             CheckResult(

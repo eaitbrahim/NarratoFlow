@@ -400,3 +400,27 @@ def test_ai_transcribed_named_in_pass_reason(
     assert result.reason == (
         "script: Al-Bidaya, Ibn Kathir (public_domain); AI transcription - proofread"
     )
+
+
+def test_sfx_hit_without_asset_record_fails(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    hits = [
+        SfxHit(scene_id="s1", stroke_index=0, at_ms=0, duration_ms=10, asset_id="ghost", gain_db=0)
+    ] * 2
+    timeline = inputs.timeline.model_copy(update={"assets": [], "sfx": hits})
+    [result] = provenance_checks(replace(inputs, timeline=timeline), _voice_pass(tmp_path), EMPTY)
+    assert result.severity is Severity.FAIL and result.scene_id == "s1"
+    assert result.reason == "sfx ghost: no provenance recorded; rebuild audio"
+
+
+def test_warn_licence_with_blank_note_has_no_dangling_colon(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    rules = _rules(
+        tmp_path, **{"licences.voice.elevenlabs-terms": {"verdict": "warn", "note": " "}}
+    )
+    [warn] = _warns(provenance_checks(inputs, rules, EMPTY))
+    assert warn.endswith("licence elevenlabs-terms"), warn

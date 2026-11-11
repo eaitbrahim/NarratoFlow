@@ -16,7 +16,14 @@ from narratoflow.captions.ass import AssEvent, ass_round_ms, parse_events
 from narratoflow.captions.verse import shown_text, verse_ref_label
 from narratoflow.errors import NarratoFlowError
 from narratoflow.models import Language, Scene, SceneKind, VerseRef
-from narratoflow.publish.checks import CheckId, CheckResult, PartInputs, Severity, summarize
+from narratoflow.publish.checks import (
+    CheckId,
+    CheckResult,
+    PartInputs,
+    Severity,
+    bare_paths,
+    summarize,
+)
 from narratoflow.quran.corpus import QuranCorpus
 
 RERENDER = "re-render: narratoflow render"
@@ -52,7 +59,7 @@ def _load_events(inputs: PartInputs) -> tuple[list[AssEvent] | None, str]:
     except FileNotFoundError:
         return None, f"captions file {name} is missing; {RERENDER}"
     except (OSError, UnicodeDecodeError, ValueError) as exc:
-        return None, f"captions file {name} cannot be read ({exc}); {RERENDER}"
+        return None, f"captions file {name} cannot be read ({bare_paths(str(exc))}); {RERENDER}"
 
 
 def _burned(events: list[AssEvent], slot: SceneTiming) -> str:
@@ -113,7 +120,9 @@ def verse_checks(inputs: PartInputs, corpus: Callable[[], QuranCorpus]) -> list[
     try:
         loaded = corpus()
     except NarratoFlowError as exc:
-        return [_fail(f"cannot load the Quran corpus to check the verse text: {exc}")]
+        return [
+            _fail(f"cannot load the Quran corpus to check the verse text: {bare_paths(str(exc))}")
+        ]
     events, problem = _load_events(inputs)
     findings = [_fail(problem)] if events is None else []
     for scene in scenes:

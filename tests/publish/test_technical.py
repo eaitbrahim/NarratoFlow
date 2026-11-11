@@ -83,7 +83,7 @@ def test_too_long_fails_per_platform(inputs: PartInputs, rules: Rules) -> None:
     results = technical_checks(inputs, _facts(_probe(video_ms=200_000)), rules)
     fails = _by(results, Severity.FAIL)
     assert [(f.platform, f.reason) for f in fails] == [
-        ("youtube-shorts", "200.0 s is longer than YouTube Shorts's 180 s limit")
+        ("youtube-shorts", "200.0 s is longer than the YouTube Shorts limit of 180 s")
     ]
     assert all(r.check is CheckId.TECHNICAL for r in results)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -35,6 +36,15 @@ class CheckId(StrEnum):
     AI_DISCLOSURE = "ai_disclosure"
     CONTENT_RULES = "content_rules"
     TECHNICAL = "technical"
+
+
+_ABS_PATH = re.compile(r"(?<![\w.])/(?:[^\s/'\"]+/)*([^\s/'\":]+)")
+
+
+def bare_paths(text: str) -> str:
+    """`text` with every absolute path cut to its last part (the file or directory
+    name), so a check reason never carries the user's directories."""
+    return _ABS_PATH.sub(r"\1", text)
 
 
 _RANK = {Severity.PASS: 0, Severity.WARN: 1, Severity.FAIL: 2}

@@ -25,6 +25,7 @@ from narratoflow.channels.config import ChannelConfig, style_fingerprint, vision
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import PlanningError, PublishError
 from narratoflow.models import AspectRatio, Part, SceneKind, ScriptSource, Series, VerseRef
+from narratoflow.money import format_usd
 from narratoflow.publish.checks import CheckResult, PartInputs, Severity, worst
 from narratoflow.publish.provenance import AssetRecord, asset_records
 from narratoflow.publish.rules import Rules
@@ -63,7 +64,7 @@ def _bare(name: str) -> bool:
 
 
 def _usd(value: Decimal) -> str:
-    return f"${value}"
+    return format_usd(value)
 
 
 # -- atomic save / strict load, as `RenderReport` --------------------------------------
@@ -255,6 +256,7 @@ class PublishReport(BaseModel):
     verdict: Severity
     exported: bool
     export_file: str | None
+    export_error: str | None = None
     disclosure_text: str
     platform_labels: dict[str, str]
     warnings: list[str]
@@ -267,6 +269,8 @@ class PublishReport(BaseModel):
             )
         if self.exported and self.verdict is Severity.FAIL:
             raise ValueError("a FAIL report cannot be exported")
+        if self.exported and self.export_error is not None:
+            raise ValueError("an exported report cannot carry an export_error")
         if self.exported and self.export_file is None:
             raise ValueError("an exported report must name its export_file")
         for field in ("video_file", "export_file"):
@@ -290,8 +294,14 @@ class PublishReport(BaseModel):
         ]
         if self.exported and self.export_file is not None:
             out.append(f"**Verdict: {self.verdict}** - exported as {md_cell(self.export_file)}")
-        else:
+        elif self.verdict is Severity.FAIL:
             out.append(f"**Verdict: {self.verdict}** - export blocked: fix every FAIL below")
+        else:
+            why = f" ({md_cell(self.export_error)})" if self.export_error else ""
+            out.append(
+                f"**Verdict: {self.verdict}** - not exported: the export copy failed{why}; "
+                "fix the cause and run publish again"
+            )
         out += self._md_checks()
         out += self._md_disclosure()
         out += self._md_scenes()
@@ -426,6 +436,7 @@ def build_report(
     exported: bool,
     export_file: str | None,
     now: datetime,
+    export_error: str | None = None,
 ) -> PublishReport:
     """The production report for one part; `style_fingerprint` may raise
     `ChannelConfigError` (`build_publish` calls it in preflight)."""
@@ -459,6 +470,7 @@ def build_report(
         verdict=worst(checks),
         exported=exported,
         export_file=export_file,
+        export_error=export_error,
         disclosure_text=disclosure,
         platform_labels=dict(labels),
         warnings=[*render.warnings, *inputs.timeline.warnings],

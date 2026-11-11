@@ -36,7 +36,7 @@ from narratoflow.audio.timeline import AssetUse, PartTimeline, VoiceUsed
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.costs.prices import PriceTable
 from narratoflow.costs.tracker import TrackedLLM
-from narratoflow.errors import PlanningError, PublishError, RenderError
+from narratoflow.errors import PlanningError, PublishCheckFailedError, PublishError, RenderError
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.models import Series
 from narratoflow.publish import build as build_module
@@ -445,6 +445,10 @@ def test_export_hash_mismatch_raises(
         _publish(one_part, channel, settings, tmp_path, render_tools, library)
     report = PublishReport.load(tmp_path / "video" / "part-01.publish.json")
     assert report.exported is False and report.export_file is None
+    assert report.verdict is not Severity.FAIL
+    assert report.export_error is not None and "sha256" in report.export_error
+    md = (tmp_path / "video" / "part-01.publish.md").read_text(encoding="utf-8")
+    assert "not exported: the export copy failed (" in md and "fix every FAIL" not in md
     assert not (tmp_path / "video" / "series.publish.json").exists()
     export = tmp_path / "export"
     assert [p.name for p in export.iterdir()] == []  # no temp file, no export
@@ -474,7 +478,10 @@ def test_export_copy_failure_raises(
     finally:
         (tmp_path / "export").chmod(0o755)
     assert list((tmp_path / "export").iterdir()) == []
-    assert PublishReport.load(tmp_path / "video" / "part-01.publish.json").exported is False
+    report = PublishReport.load(tmp_path / "video" / "part-01.publish.json")
+    assert report.exported is False and report.export_error is not None
+    assert report.export_error.startswith("part 1: cannot copy part-01.mp4 to part-01.mp4")
+    assert str(tmp_path) not in report.export_error
 
 
 def test_old_export_that_cannot_be_removed_is_error(
@@ -786,6 +793,7 @@ def test_cli_publish_fail_blocks_exit_1(
     undisclosed = one_part.model_copy(update={"ai_disclosure": False})
     out, path, before = _cli_publish(undisclosed, channel_file, tmp_path, monkeypatch, render_tools)
     assert out.exit_code == 1
+    assert isinstance(out.exception, PublishCheckFailedError)
     assert "FAIL" in out.output and "not exported" in out.output
     export = tmp_path / "export"
     assert not export.exists() or list(export.iterdir()) == []

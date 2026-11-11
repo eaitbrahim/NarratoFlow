@@ -518,7 +518,7 @@ _STALE = (
 
 def test_edited_after_review_is_stale_warn() -> None:
     rules = _rules()
-    part = _reviewed(_series().parts[0], rules, _finding(clear=True))
+    part = _reviewed(_series().parts[0], rules, _finding(clear=False))
     part.scenes[0].narration.source_text = "Edited words."
     assert [(r.severity, r.reason) for r in content_checks(part, rules)] == [
         (Severity.WARN, _STALE)
@@ -528,6 +528,28 @@ def test_edited_after_review_is_stale_warn() -> None:
     assert [(r.severity, r.reason) for r in content_checks(clean, rules)] == [
         (Severity.WARN, _STALE)
     ]
+
+
+def test_stale_review_keeps_a_clear_violation_fail() -> None:
+    rules = _rules()
+    part = _reviewed(
+        _series().parts[0],
+        rules,
+        _finding(clear=True),
+        _finding("s2", clear=False, reason="mentions a war"),
+    )
+    assert _severities(content_checks(part, rules)) == [Severity.FAIL, Severity.WARN]
+    part.scenes[0].title = "A softer title"
+    assert [(r.severity, r.scene_id, r.reason) for r in content_checks(part, rules)] == [
+        (
+            Severity.FAIL,
+            "s1",
+            "stale review previously found graphic_violence: describes a battle; "
+            "re-run narratoflow review",
+        )
+    ]
+    newer = replace(rules, file=rules.file.model_copy(update={"version": "2027-01-01.1"}))
+    assert _severities(content_checks(part, newer)) == [Severity.FAIL]
 
 
 @pytest.mark.parametrize("field", ["title", "card_text", "tts_text", "caption_text"])

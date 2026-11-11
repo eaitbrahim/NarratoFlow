@@ -264,6 +264,22 @@ def test_corpus_errors_fail_without_raising(
     assert "31:33" in fails[0].reason
 
 
+def test_corpus_and_captions_read_errors_fail_with_bare_names(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _verse_inputs(tmp_path, library, channel)
+    bad = tmp_path / "quran-simple-clean.txt"
+    bad.write_bytes(b"31|33|\xff\xfe\n")
+    [fail] = _fails(verse_checks(inputs, lambda: QuranCorpus.from_files(bad, bad)))
+    assert "cannot load the Quran corpus" in fail.reason
+    assert "quran-simple-clean.txt" in fail.reason and str(tmp_path) not in fail.reason
+    _ass(inputs).unlink()
+    _ass(inputs).mkdir()
+    fails = _fails(verse_checks(inputs, _corpus))
+    assert fails[0].reason.startswith(f"captions file {inputs.render.captions_file} cannot be read")
+    assert all(str(tmp_path) not in f.reason for f in fails)
+
+
 def test_report_hash_is_sha256_of_expected_text(
     tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
 ) -> None:

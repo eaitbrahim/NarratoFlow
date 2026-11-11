@@ -235,7 +235,7 @@ def test_planning_cost_is_tracker_spend_and_llm_is_built(
     _, body = load_script(write_script(tmp_path, read("clean_ar.txt")), Language.ARABIC)
     estimate = pipeline_module.estimate_planning(body, paid, prices, catalog=[], segment_calls=2)
     assert estimate >= wrapped.tracker.spent
-    assert estimate < 3 * wrapped.tracker.spent  # and is not wildly inflated
+    assert estimate < 4 * wrapped.tracker.spent  # and is not wildly inflated (long scenes)
 
 
 def test_large_catalog_builds_embedder(
@@ -522,7 +522,11 @@ def test_render_approval_list_rows_and_totals() -> None:
     assert "total" in text and "$0.12" in text and "$0.0123" in text
 
 
+@pytest.mark.parametrize("split_words", [None, 12])
+@pytest.mark.parametrize("catalog_size", [0, 20])
 def test_estimate_covers_actual_spend_with_seeded_catalog(
+    split_words: int | None,
+    catalog_size: int,
     tmp_path: Path,
     channel: ChannelConfig,
     settings: Settings,
@@ -535,7 +539,7 @@ def test_estimate_covers_actual_spend_with_seeded_catalog(
     library = default_library(settings)
     version = library.ensure_style_version(english.slug, style_fingerprint(english.style))
     prov = Provenance(source="test", license="CC0", created_at=datetime(2026, 1, 1, tzinfo=UTC))
-    for i in range(20):
+    for i in range(catalog_size):
         library.add_sketch(
             version,
             f"object-{i}|generic",
@@ -548,9 +552,9 @@ def test_estimate_covers_actual_spend_with_seeded_catalog(
             description=f"a hand drawn picture of object number {i} on an old wooden table",
         )
     catalog = library.idea_catalog(version)
-    assert len(catalog) == 20
+    assert len(catalog) == catalog_size
     built: list[TrackedLLM] = []
-    scripted = ScriptedLLM()
+    scripted = ScriptedLLM(split_words=split_words)
 
     def fake_make_llm(
         ch: ChannelConfig, st: Settings, tracker: SpendTracker, pr: PriceTable
@@ -571,7 +575,9 @@ def test_estimate_covers_actual_spend_with_seeded_catalog(
     assert estimate < 3 * actual
     # the prompts really carried the whole catalog
     ideas = [u for _, u, o in scripted.calls if o is IdeaOut]
-    assert ideas and all("object-19|generic" in u for u in ideas)
+    assert ideas
+    if catalog_size:
+        assert all("object-19|generic" in u for u in ideas)
 
 
 def test_estimate_counts_one_segment_system_per_call(

@@ -11,7 +11,14 @@ from narratoflow.settings import Settings
 SIMPLE_NAME = "quran-simple-clean.txt"
 UTHMANI_NAME = "quran-uthmani.txt"
 
-_FETCH_HINT = "run `uv run python scripts/fetch_quran.py` to download the Tanzil Qur'an text"
+
+def _missing_hint(data_dir: Path) -> str:
+    target = data_dir / "quran"
+    return (
+        f"put {SIMPLE_NAME} and {UTHMANI_NAME} (Tanzil Qur'an text) in {target}/; "
+        f"from a source checkout, `uv run python scripts/fetch_quran.py --out {target}` "
+        "downloads them"
+    )
 
 
 @dataclass(frozen=True)
@@ -97,4 +104,4 @@ def default_corpus(settings: Settings) -> QuranCorpus:
     for directory in (settings.data_dir / "quran", _dev_quran_dir()):
         if _has_files(directory):
             return QuranCorpus.from_files(directory / SIMPLE_NAME, directory / UTHMANI_NAME)
-    raise VerseCorpusError(f"Qur'an corpus not found; {_FETCH_HINT}")
+    raise VerseCorpusError(f"Qur'an corpus not found; {_missing_hint(settings.data_dir)}")

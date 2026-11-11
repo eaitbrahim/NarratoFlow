@@ -1,3 +1,4 @@
+import shutil
 import sys
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -400,6 +401,11 @@ def test_cli_budget_error_exit_1(
 ) -> None:
     monkeypatch.setenv("NARRATOFLOW_IMAGE_API_KEY", "img")
     monkeypatch.setenv("NARRATOFLOW_LLM_API_KEY", "llm")
+    # CI has no assets/quran: provide the fixture corpus where default_corpus looks first
+    quran = data_dir / "quran"
+    quran.mkdir(parents=True)
+    for name in ("quran-simple-clean.txt", "quran-uthmani.txt"):
+        shutil.copy(Path(__file__).parent / "fixtures" / "quran" / name, quran / name)
     _set_toml(channel_file, 'slug = "history"', 'slug = "history"\nspending_limit_usd = 0.0001')
     _set_toml(
         channel_file,

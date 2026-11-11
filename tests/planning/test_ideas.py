@@ -47,6 +47,17 @@ def test_name_card_allowed() -> None:
     )
 
 
+@pytest.mark.parametrize("word", ["logos", "trademark", "brand", "brands", "mascot", "logo"])
+def test_brand_words_rejected_in_object_and_description(word: str) -> None:
+    assert validate_idea(_idea(f"{word}-sign|generic"))
+    assert validate_idea(_idea("sign|generic", f"a sign with a {word} on it"))
+
+
+def test_brand_word_object_reports_once() -> None:
+    [violation] = validate_idea(_idea("mascot|generic"))
+    assert "mascot" in violation
+
+
 def test_logo_rejected() -> None:
     violations = validate_idea(_idea("phone|generic", logo=True))
     assert len(violations) == 1

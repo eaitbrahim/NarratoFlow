@@ -76,6 +76,8 @@ _ALLOWED_BODY_WORDS = frozenset({"hand", "hands", "eye", "eyes", "footprint", "f
 _LETTERS = re.compile(r"[^\W\d_]+")
 _IRREGULAR_PLURALS = {"men": "man", "women": "woman", "children": "child"}
 NAME_CARD = "name-card"
+# Brand vocabulary: never acceptable in an object or a description, whatever the flags say.
+BRAND_WORDS = frozenset({"logo", "logos", "trademark", "brand", "brands", "mascot"})
 MAX_DESCRIPTION_WORDS = 15
 _DASH = "\u2014"
 
@@ -143,6 +145,15 @@ def validate_idea(out: IdeaOut) -> list[str]:
             f"{key}: the description mentions {described!r}; describe only objects and "
             "symbols, never a person or a figure"
         )
+    for field, text in (("object", key.object), ("description", out.description)):
+        # "logo" is already reported by the forbidden-word checks above
+        words = _LETTERS.findall(text.lower())
+        brand = next((w for w in words if w in BRAND_WORDS and w not in FORBIDDEN_OBJECTS), None)
+        if brand is not None:
+            violations.append(
+                f"{key}: the {field} mentions {brand!r}; no logos or brands, "
+                "draw the generic object"
+            )
     return violations
 
 

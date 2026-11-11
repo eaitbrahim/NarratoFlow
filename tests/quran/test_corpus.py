@@ -93,8 +93,12 @@ def test_default_corpus_missing_explains_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(corpus_module, "_dev_quran_dir", lambda: tmp_path / "nowhere")
-    with pytest.raises(VerseCorpusError, match=r"fetch_quran\.py"):
+    with pytest.raises(VerseCorpusError) as info:
         default_corpus(_settings(tmp_path / "nodata"))
+    message = str(info.value)
+    assert str(tmp_path / "nodata" / "quran") in message
+    assert "quran-simple-clean.txt" in message and "quran-uthmani.txt" in message
+    assert "fetch_quran.py --out" in message
 
 
 def test_quran_sources_are_ascii() -> None:

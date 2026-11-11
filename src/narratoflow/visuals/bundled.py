@@ -1,5 +1,6 @@
 """Free bundled icons, usable only for generic idea keys."""
 
+import logging
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -8,6 +9,8 @@ from pydantic import BaseModel
 
 from narratoflow.errors import ChannelConfigError, InvalidIdeaKeyError
 from narratoflow.library.keys import IdeaKey, parse_idea_key
+
+logger = logging.getLogger(__name__)
 
 
 class BundledIcon(BaseModel):
@@ -55,4 +58,7 @@ def _dev_index() -> Path:
 def default_bundled_icons() -> BundledIcons:
     """The repository's bundled icon index, or no icons when it is not present."""
     index = _dev_index()
-    return BundledIcons.from_index(index) if index.is_file() else BundledIcons({})
+    if not index.is_file():
+        logger.warning("bundled icon index not found; bundled icons disabled")
+        return BundledIcons({})
+    return BundledIcons.from_index(index)

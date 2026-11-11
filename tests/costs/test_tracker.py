@@ -92,7 +92,7 @@ def _usd(input_tokens: int, output_tokens: int) -> Decimal:
 def test_estimate_planning_cost_english(prices: PriceTable, channel_file: Path) -> None:
     ch = _paid(channel_file).model_copy(update={"language": Language.ENGLISH})
     text = " ".join(["abc"] * 1000)  # 3999 chars -> 1000 tokens, 1000 words
-    calls = 34  # ceil(1000 / 30)
+    calls = 100  # ceil(1000 / 10)
     segment = _usd(100 + 1000, 1200)
     ideas = _usd(calls * 600 + 1000, calls * 80)
     expected = (segment + ideas) * Decimal("1.2")

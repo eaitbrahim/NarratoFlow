@@ -32,15 +32,16 @@ def add_fatha(text: str) -> str:
 class ScriptedLLM:
     """An `LLMClient` whose answers are computed from the user prompt.
 
-    SegmentOut: the stretch split at sentence ends; IdeaOut: `scroll|generic`;
-    Vocalized: the text with a fatha after each Arabic letter. Usage is the
-    `estimate_tokens` of the prompt and of the JSON answer.
+    SegmentOut: the stretch split at sentence ends (or every `split_words` words);
+    IdeaOut: `scroll|generic`; Vocalized: the text with a fatha after each Arabic letter.
+    Usage is the `estimate_tokens` of the prompt and of the JSON answer.
     """
 
     name: str = "scripted"
 
-    def __init__(self, model: str = "scripted-model") -> None:
+    def __init__(self, model: str = "scripted-model", split_words: int | None = None) -> None:
         self.model = model
+        self.split_words = split_words
         self.calls: list[tuple[str, str, type[BaseModel]]] = []
         self._groups = 0
 
@@ -48,7 +49,12 @@ class ScriptedLLM:
         stretch = user.split(_TEXT_MARK, 1)[1]
         self._groups += 1
         title = f"Section {self._groups}"
-        parts = [p.strip() for p in _SENTENCE_END.split(stretch) if p.strip()]
+        if self.split_words is None:
+            parts = [p.strip() for p in _SENTENCE_END.split(stretch) if p.strip()]
+        else:  # fixed-size scenes, as SEGMENT_SYSTEM's 5-10 s scenes would give
+            words = stretch.split()
+            n = self.split_words
+            parts = [" ".join(words[i : i + n]) for i in range(0, len(words), n)]
         return SegmentOut(scenes=[SegmentSpan(text=p, title=title) for p in parts])
 
     def complete_structured[T: BaseModel](

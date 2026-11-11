@@ -7,7 +7,12 @@ import logging
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.costs.prices import PriceTable
 from narratoflow.costs.tracker import SpendTracker
-from narratoflow.errors import ChannelConfigError, MissingApiKeyError, ProviderError
+from narratoflow.errors import (
+    BilledProviderError,
+    ChannelConfigError,
+    MissingApiKeyError,
+    ProviderError,
+)
 from narratoflow.images import GeneratedImage, ImageProvider, ImageRequest
 from narratoflow.images.local_diffusion import LocalDiffusionProvider
 from narratoflow.images.openai_images import OpenAIImageProvider
@@ -18,7 +23,12 @@ KEY_ENV_VAR = "NARRATOFLOW_IMAGE_API_KEY"
 
 
 class TrackedImageProvider:
-    """Wraps a provider: checks the budget before each call, charges after success."""
+    """Wraps a provider: checks the budget before each call, charges after success.
+
+    A `BilledProviderError` (the provider billed an unusable response) charges the
+    pre-call price, sets `cost_estimated`, and is re-raised; any other failure
+    charges nothing.
+    """
 
     def __init__(
         self,
@@ -37,6 +47,7 @@ class TrackedImageProvider:
         self.prices = prices
         self.provider = provider
         self.model_key = model
+        self.cost_estimated = False
 
     def generate(self, req: ImageRequest) -> GeneratedImage:
         what = f"image {self.provider}/{self.model_key}"
@@ -44,6 +55,11 @@ class TrackedImageProvider:
         self.tracker.ensure_room(cost, what)
         try:
             out = self.inner.generate(req)
+        except BilledProviderError as err:
+            logger.warning("image call failed (%s/%s): %s", self.provider, self.model_key, err)
+            self.cost_estimated = True
+            self.tracker.charge(cost, what)
+            raise
         except ProviderError as err:
             logger.warning("image call failed (%s/%s): %s", self.provider, self.model_key, err)
             raise

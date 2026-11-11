@@ -26,7 +26,13 @@ from narratoflow.costs.tracker import (
     require_prices,
     voice_chars,
 )
-from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
+from narratoflow.errors import (
+    BilledProviderError,
+    BudgetExceededError,
+    PlanningError,
+    ProviderError,
+    ProviderRefusalError,
+)
 from narratoflow.llm.base import Usage
 from narratoflow.models import Language, Narration, Part, Scene, SceneKind
 from narratoflow.settings import Settings
@@ -444,3 +450,29 @@ def test_voice_chars_excludes_verses() -> None:
         ],
     )
     assert voice_chars(part) == 4 + 7
+
+
+def test_tracked_llm_billed_failure_charges_the_estimate_and_reraises(prices: PriceTable) -> None:
+    error = BilledProviderError("Anthropic output did not match Out")
+    fake = FakeLLM([error])
+    t = SpendTracker(None)
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    assert llm.cost_estimated is False
+    with pytest.raises(BilledProviderError) as info:
+        llm.complete_structured(system="s" * 40, user="u" * 40, output=Out, images=[b"a"])
+    assert info.value is error
+    estimate = estimate_llm_call(
+        prices, "anthropic", "claude-opus-5-5", "s" * 40 + "u" * 40, images=1
+    )
+    assert t.spent == estimate > 0
+    assert [e.what for e in t.entries] == ["llm anthropic/claude-opus-5-5"]
+    assert llm.cost_estimated is True
+
+
+def test_tracked_llm_refusal_still_charges_nothing(prices: PriceTable) -> None:
+    fake = FakeLLM([ProviderRefusalError("cyber")])
+    t = SpendTracker(None)
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    with pytest.raises(ProviderRefusalError):
+        llm.complete_structured(system="s", user="u", output=Out)
+    assert t.spent == 0 and llm.cost_estimated is False

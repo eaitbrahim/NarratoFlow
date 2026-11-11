@@ -15,6 +15,7 @@ from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import SpendTracker
 from narratoflow.errors import (
+    BilledProviderError,
     BudgetExceededError,
     ChannelConfigError,
     MissingApiKeyError,
@@ -41,14 +42,15 @@ class FakeImage:
     name = "fake"
     model = "m1"
 
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self, fail: bool = False, error: Exception | None = None) -> None:
         self.calls = 0
         self.fail = fail
+        self.error = error if error is not None else ProviderError("boom")
 
     def generate(self, req: ImageRequest) -> GeneratedImage:
         self.calls += 1
         if self.fail:
-            raise ProviderError("boom")
+            raise self.error
         return GeneratedImage(png_bytes(), "fake", "m1", None)
 
 
@@ -87,6 +89,19 @@ def test_tracked_failure_charges_nothing() -> None:
     with pytest.raises(ProviderError):
         tracked(FakeImage(fail=True), tracker).generate(ImageRequest("p", None))
     assert tracker.spent == 0
+
+
+def test_tracked_billed_failure_charges_the_estimate_and_reraises() -> None:
+    tracker = SpendTracker(None)
+    error = BilledProviderError("OpenAI response has no data[0].b64_json")
+    t = tracked(FakeImage(fail=True, error=error), tracker)
+    assert t.cost_estimated is False
+    with pytest.raises(BilledProviderError) as info:
+        t.generate(ImageRequest("p", None))
+    assert info.value is error
+    assert tracker.spent == Decimal("0.04")
+    assert tracker.entries[0].what == "image fake/m1"
+    assert t.cost_estimated is True
 
 
 def _channel(channel_file: Path, provider: str, model: str = "gpt-image-1") -> ChannelConfig:

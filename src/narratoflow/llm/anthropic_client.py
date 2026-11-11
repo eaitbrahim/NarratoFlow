@@ -21,7 +21,7 @@ from anthropic.types.anthropic_beta_param import AnthropicBetaParam
 from anthropic.types.beta.parsed_beta_message import ParsedBetaMessage
 from pydantic import BaseModel, SecretStr, ValidationError
 
-from narratoflow.errors import ProviderError, ProviderRefusalError
+from narratoflow.errors import BilledProviderError, ProviderError, ProviderRefusalError
 from narratoflow.llm.base import Effort, StructuredResult, Usage
 
 FALLBACK_BETA: AnthropicBetaParam = "server-side-fallback-2026-07-01"
@@ -82,28 +82,30 @@ class AnthropicClient:
         images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
         raw = self._send(system=system, user=user, output=output, images=images)
+        # From here the API answered 2xx and bills the call: an unusable response is a
+        # BilledProviderError so the tracker charges it. A refusal is kept as it was.
         try:
             envelope = _Envelope.model_validate(raw.json())
         except ValueError as e:
-            raise ProviderError("Anthropic returned a malformed response body") from e
+            raise BilledProviderError("Anthropic returned a malformed response body") from e
         if envelope.stop_reason == "refusal":
             details = envelope.stop_details
             raise ProviderRefusalError(details.category if details else None)
         if envelope.stop_reason == "max_tokens":
-            raise ProviderError(
+            raise BilledProviderError(
                 f"Anthropic output truncated at max_tokens={self.max_tokens}; "
                 "raise llm.max_tokens in the channel config"
             )
         try:
             message = raw.parse()
         except ValidationError as e:
-            raise ProviderError(
+            raise BilledProviderError(
                 f"Anthropic output did not match {output.__name__} "
                 f"(stop_reason: {envelope.stop_reason})"
             ) from e
         value = message.parsed_output
         if value is None:
-            raise ProviderError(
+            raise BilledProviderError(
                 f"Anthropic returned no structured output (stop_reason: {envelope.stop_reason})"
             )
         usage = Usage(

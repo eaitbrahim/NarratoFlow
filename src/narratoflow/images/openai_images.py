@@ -25,7 +25,7 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 from pydantic import SecretStr
 
-from narratoflow.errors import ProviderError
+from narratoflow.errors import BilledProviderError, ProviderError
 from narratoflow.images import GeneratedImage, ImageRequest
 
 BASE_URL = "https://api.openai.com/v1"
@@ -84,6 +84,13 @@ class OpenAIImageProvider:
             raise ProviderError(f"Cannot reach OpenAI images: {self._scrub(str(e))}") from e
         if not response.is_success:
             raise ProviderError(self._http_error(response))
+        try:
+            return self._image(response)
+        except ProviderError as e:
+            # A 2xx response is billed by OpenAI even when it is unusable.
+            raise BilledProviderError(str(e)) from e
+
+    def _image(self, response: httpx.Response) -> GeneratedImage:
         try:
             body: Any = response.json()
         except ValueError as e:

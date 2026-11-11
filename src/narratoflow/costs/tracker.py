@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
-from narratoflow.channels.config import ChannelConfig
+from narratoflow.channels.config import ChannelConfig, vision_model
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.llm.base import LLMClient, StructuredResult, Usage
@@ -33,6 +33,7 @@ CANDIDATE_TOP_K = 5
 IDEA_OUTPUT_TOKENS = 80
 _TASHKEEL_OUTPUT_FACTOR = Decimal("2.5")
 PLANNING_MARGIN = Decimal("1.2")
+VISION_IMAGES_PER_CHECK = 2  # the candidate sketch plus the channel's reference sketch
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,22 @@ def _llm_cost(
 ) -> Decimal:
     price_in, price_out = prices.llm(provider, model)
     return (input_tokens * price_in + output_tokens * price_out) / _MILLION
+
+
+def estimate_llm_call(
+    prices: PriceTable, provider: str, model: str, text: str, *, images: int = 0
+) -> Decimal:
+    """Pre-call estimate of one LLM call over `text` (system + user), as `TrackedLLM` checks it.
+
+    Output is 1.2x the input tokens (at least 1); each image adds the vision price.
+    """
+    tokens = estimate_tokens(text)
+    estimate = _llm_cost(
+        prices, provider, model, tokens, max(1, math.ceil(tokens * _OUTPUT_FACTOR))
+    )
+    if images:
+        estimate += images * prices.vision(provider, model)
+    return estimate
 
 
 def estimate_planning_cost(
@@ -141,24 +158,40 @@ def require_prices(channel: ChannelConfig, prices: PriceTable, *, embed: bool = 
 
     Called before any paid call so a missing entry cannot surface after spend.
     """
-    llm, style, voice = channel.llm, channel.style, channel.voice
+    llm, voice = channel.llm, channel.voice
     prices.llm(llm.provider, llm.model)
-    prices.vision(llm.provider, llm.model)
-    prices.image(style.image_provider, style.image_model)
+    require_generation_prices(channel, prices, vision=True)
     prices.voice(voice.provider, voice.model)
     if embed:
         prices.embed(channel.embed.provider, channel.embed.model)
 
 
+def require_generation_prices(channel: ChannelConfig, prices: PriceTable, *, vision: bool) -> None:
+    """Raise `PlanningError` unless the image price and, with `vision`, the vision
+    model's LLM and per-image prices are known (`channel.vision`, else the channel LLM).
+    """
+    style = channel.style
+    prices.image(style.image_provider, style.image_model)
+    if vision:
+        provider, model = vision_model(channel)
+        prices.llm(provider, model)
+        prices.vision(provider, model)
+
+
 def estimate_part_cost(
     part: Part, channel: ChannelConfig, prices: PriceTable, *, voice_chars: int
 ) -> Decimal:
-    """New sketches x (image + vision check) plus voice characters x per-kchar price."""
+    """New sketches x (image + vision check) plus voice characters x per-kchar price.
+
+    A vision check sends `VISION_IMAGES_PER_CHECK` images (candidate and reference)
+    to the vision model (`channel.vision`, else the channel LLM).
+    """
     new = sum(1 for scene in part.scenes if scene.match == "new")
-    style, llm, voice = channel.style, channel.llm, channel.voice
-    per_sketch = prices.image(style.image_provider, style.image_model) + prices.vision(
-        llm.provider, llm.model
-    )
+    style, voice = channel.style, channel.voice
+    vision_provider, vision_name = vision_model(channel)
+    per_sketch = prices.image(
+        style.image_provider, style.image_model
+    ) + VISION_IMAGES_PER_CHECK * prices.vision(vision_provider, vision_name)
     speech = Decimal(voice_chars) / 1000 * prices.voice(voice.provider, voice.model)
     return new * per_sketch + speech
 
@@ -190,16 +223,9 @@ class TrackedLLM:
         output: type[T],
         images: Sequence[bytes] = (),
     ) -> StructuredResult[T]:
-        tokens = estimate_tokens(system + user)
-        estimate = _llm_cost(
-            self.prices,
-            self.provider,
-            self.model,
-            tokens,
-            max(1, math.ceil(tokens * _OUTPUT_FACTOR)),
+        estimate = estimate_llm_call(
+            self.prices, self.provider, self.model, system + user, images=len(images)
         )
-        if images:
-            estimate += len(images) * self.prices.vision(self.provider, self.model)
         self.tracker.ensure_room(estimate, f"llm {self.provider}/{self.model}")
         try:
             result = self.inner.complete_structured(

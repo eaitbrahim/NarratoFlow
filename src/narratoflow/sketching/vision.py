@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Annotated
 
 from pydantic import BaseModel, BeforeValidator, Field
 
 from narratoflow.channels.config import StyleConfig
+from narratoflow.costs.prices import PriceTable
+from narratoflow.costs.tracker import estimate_llm_call
 from narratoflow.library.keys import parse_idea_key
 from narratoflow.library.schemas import SketchStatus
 from narratoflow.llm.base import LLMClient
@@ -42,6 +45,26 @@ def _user_text(style: StyleConfig, idea_key: str, with_reference: bool) -> str:
             "for the style_outlier judgment; do not check the reference itself."
         )
     return text
+
+
+def estimate_check_cost(
+    style: StyleConfig,
+    idea_key: str,
+    prices: PriceTable,
+    provider: str,
+    model: str,
+    *,
+    with_reference: bool,
+) -> Decimal:
+    """The pre-call estimate `TrackedLLM` will check for this `check_sketch` call."""
+    key = str(parse_idea_key(idea_key))
+    return estimate_llm_call(
+        prices,
+        provider,
+        model,
+        VISION_SYSTEM + _user_text(style, key, with_reference),
+        images=2 if with_reference else 1,
+    )
 
 
 def check_sketch(

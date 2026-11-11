@@ -55,6 +55,14 @@ def make_image_provider(
     channel: ChannelConfig, settings: Settings, tracker: SpendTracker, prices: PriceTable
 ) -> ImageProvider:
     style = channel.style
+    inner = build_image_provider(channel, settings)
+    provider = style.image_provider.strip().lower()
+    return TrackedImageProvider(inner, tracker, prices, provider, style.image_model)
+
+
+def build_image_provider(channel: ChannelConfig, settings: Settings) -> ImageProvider:
+    """The untracked provider; callers wrap it in `TrackedImageProvider` before any call."""
+    style = channel.style
     provider = style.image_provider.strip().lower()
     inner: ImageProvider
     if provider == "openai":
@@ -66,4 +74,4 @@ def make_image_provider(
         inner = LocalDiffusionProvider(style.image_model)
     else:
         raise ChannelConfigError(f"unsupported image provider {style.image_provider!r}")
-    return TrackedImageProvider(inner, tracker, prices, provider, style.image_model)
+    return inner

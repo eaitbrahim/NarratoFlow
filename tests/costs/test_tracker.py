@@ -7,14 +7,17 @@ import pytest
 from llm.fakes import FakeLLM
 from pydantic import BaseModel
 
-from narratoflow.channels.config import ChannelConfig, EmbedConfig, load_channel
+from narratoflow.channels.config import ChannelConfig, EmbedConfig, VisionConfig, load_channel
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import (
     SpendTracker,
     TrackedLLM,
+    estimate_llm_call,
     estimate_part_cost,
     estimate_planning_cost,
     estimate_tokens,
+    require_generation_prices,
+    require_prices,
 )
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.llm.base import Usage
@@ -165,7 +168,40 @@ def test_estimate_part_cost(prices: PriceTable, channel_file: Path) -> None:
         scenes=[scene(1, "new"), scene(2, "new"), scene(3, "reused")],
     )
     cost = estimate_part_cost(part, ch, prices, voice_chars=2000)
-    assert cost == 2 * (Decimal("0.04") + Decimal("0.01")) + Decimal("0.60")
+    # each check sends the candidate and the reference sketch: two vision images
+    assert cost == 2 * (Decimal("0.04") + 2 * Decimal("0.01")) + Decimal("0.60")
+    haiku = ch.model_copy(
+        update={"vision": VisionConfig(provider="anthropic", model="claude-haiku-5-5")}
+    )
+    cost = estimate_part_cost(part, haiku, prices, voice_chars=2000)
+    assert cost == 2 * (Decimal("0.04") + 2 * Decimal("0.0003")) + Decimal("0.60")
+
+
+def test_estimate_llm_call_matches_tracked_llm_check(prices: PriceTable) -> None:
+    text = "x" * 400  # 100 tokens in, 120 out
+    plain = estimate_llm_call(prices, "anthropic", "claude-opus-5-5", text)
+    assert plain == (100 * Decimal("4.00") + 120 * Decimal("20.00")) / 1_000_000
+    with_images = estimate_llm_call(prices, "anthropic", "claude-opus-5-5", text, images=2)
+    assert with_images == plain + 2 * Decimal("0.01")
+    assert estimate_llm_call(prices, "ollama", "llava", text, images=2) == 0
+
+
+def test_require_generation_prices_uses_vision_config(
+    prices: PriceTable, channel_file: Path
+) -> None:
+    base = load_channel(channel_file)  # ollama LLM, openai/gpt-image-1
+    require_generation_prices(base, prices, vision=True)
+    paid = base.model_copy(update={"vision": VisionConfig(provider="anthropic", model="unpriced")})
+    with pytest.raises(PlanningError, match="anthropic/unpriced"):
+        require_generation_prices(paid, prices, vision=True)
+    require_generation_prices(paid, prices, vision=False)
+    with pytest.raises(PlanningError, match="anthropic/unpriced"):
+        require_prices(paid, prices)
+    no_image = base.model_copy(
+        update={"style": base.style.model_copy(update={"image_model": "unpriced"})}
+    )
+    with pytest.raises(PlanningError, match="openai/unpriced"):
+        require_generation_prices(no_image, prices, vision=False)
 
 
 def _opus_channel(channel_file: Path) -> ChannelConfig:

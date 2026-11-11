@@ -83,6 +83,16 @@ class ChannelConfig(BaseModel):
         return self
 
 
+def vision_model(channel: ChannelConfig) -> tuple[str, str]:
+    """`(provider, model)` of the vision check: `channel.vision`, else the channel LLM's.
+
+    The provider is normalized (stripped, lower case) the way the factories use it.
+    """
+    provider = channel.vision.provider or channel.llm.provider
+    model = channel.vision.model or channel.llm.model
+    return provider.strip().lower(), model
+
+
 def load_channel(path: Path) -> ChannelConfig:
     try:
         with path.open("rb") as fh:

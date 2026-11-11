@@ -21,7 +21,11 @@ from narratoflow.errors import (
     ProviderError,
 )
 from narratoflow.images import GeneratedImage, ImageProvider, ImageRequest
-from narratoflow.images.factory import TrackedImageProvider, make_image_provider
+from narratoflow.images.factory import (
+    TrackedImageProvider,
+    build_image_provider,
+    make_image_provider,
+)
 from narratoflow.images.local_diffusion import LocalDiffusionProvider
 from narratoflow.images.openai_images import OpenAIImageProvider
 from narratoflow.settings import Settings
@@ -107,6 +111,13 @@ def test_make_openai_case_insensitive(channel_file: Path) -> None:
     assert isinstance(p, TrackedImageProvider)
     assert isinstance(p.inner, OpenAIImageProvider)
     assert (p.name, p.model) == ("openai", "gpt-image-1")
+
+
+def test_build_image_provider_is_untracked(channel_file: Path) -> None:
+    p = build_image_provider(
+        _channel(channel_file, "openai"), Settings(image_api_key=SecretStr("k"))
+    )
+    assert isinstance(p, OpenAIImageProvider)
 
 
 def test_make_unknown_provider(channel_file: Path) -> None:

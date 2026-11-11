@@ -57,6 +57,9 @@ class _Piece:
     verse: VerseRef | None = None
 
 
+_APOSTROPHES = "'\u2019"
+
+
 def _ends_clause(ch: str) -> bool:
     return ch in _CUT_PUNCTUATION or ch in "\"'" or unicodedata.category(ch) in _CLOSING_CATEGORIES
 
@@ -71,7 +74,9 @@ def _is_cut(stretch: str, at: int) -> bool:
     before = stretch[at - 1]
     if before.isspace():
         return True
-    if before == "'" and not (at >= 2 and _ends_clause(stretch[at - 2]) and stretch[at - 2] != "'"):
+    if before in _APOSTROPHES and not (
+        at >= 2 and _ends_clause(stretch[at - 2]) and stretch[at - 2] not in _APOSTROPHES
+    ):
         return False
     return _ends_clause(before) and not _ends_clause(stretch[at])
 

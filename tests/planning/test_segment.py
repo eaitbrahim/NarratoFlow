@@ -339,9 +339,10 @@ def test_several_leading_letterless_spans_merge_into_next_scene() -> None:
     assert [s.narration.source_text for s in scenes] == [text]
 
 
-def test_cut_inside_contraction_rejected() -> None:
-    text = "I don't know. It is fine."
-    llm = FakeLLM([_out("I don'", "t know. It is fine.")] * 2)
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019"])
+def test_cut_inside_contraction_rejected(apostrophe: str) -> None:
+    text = f"I don{apostrophe}t know. It is fine."
+    llm = FakeLLM([_out(f"I don{apostrophe}", "t know. It is fine.")] * 2)
     with pytest.raises(SegmentationError, match=f"offset {text.index('t know')}"):
         segment_script(text, [], llm)
 

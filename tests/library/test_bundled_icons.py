@@ -69,6 +69,12 @@ def test_shipped_pack_has_at_least_150_mit_icons() -> None:
     assert "Tabler Icons 3.49.0" in (ROOT / "assets" / "LICENSES.md").read_text(encoding="utf-8")
 
 
+def test_no_orphan_png_ships_beside_the_index() -> None:
+    listed = {icon.file.name for icon in _shipped()}
+    on_disk = {path.name for path in ICONS_DIR.glob("*.png")}
+    assert on_disk == listed
+
+
 def test_every_shipped_icon_obeys_the_drawing_rules() -> None:
     icons = _shipped()
     assert icons

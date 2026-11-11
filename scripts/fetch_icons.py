@@ -16,6 +16,7 @@ import io
 import json
 import math
 import tarfile
+import tomllib
 import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -406,10 +407,20 @@ def build_pack(data: bytes, out_dir: Path) -> str:
     return HEADER + "\n" + "\n".join(entries)
 
 
+def write_pack(data: bytes, out_dir: Path) -> None:
+    """Write the pack and its index, and delete PNGs the new index no longer lists."""
+    text = build_pack(data, out_dir)
+    keep = {entry["file"] for entry in tomllib.loads(text).get("icons", {}).values()}
+    for stale in out_dir.glob("*.png"):
+        if stale.name not in keep:
+            stale.unlink()
+    (out_dir / "index.toml").write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     with urllib.request.urlopen(URL, timeout=120) as resp:
         data = resp.read()
-    (OUT / "index.toml").write_text(build_pack(data, OUT), encoding="utf-8")
+    write_pack(data, OUT)
 
 
 if __name__ == "__main__":

@@ -113,3 +113,26 @@ def test_build_pack_pins_sha_and_refuses_bad_icons(
     icons = BundledIcons.from_index(out / "index.toml")
     assert len(icons) == 1
     assert icons.get(parse_idea_key("ring|generic")) is not None
+
+
+def test_write_pack_removes_pngs_the_new_index_no_longer_lists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetch = _script("fetch_icons")
+    data = _tarball()
+    good = fetch.IconSpec("circle", "ring", "a plain ring, wholeness or a cycle")
+    monkeypatch.setattr(fetch, "URL", FAKE_URL)
+    monkeypatch.setattr(fetch, "SHA256", hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(fetch, "ICONS", (good,))
+    out = tmp_path / "icons"
+    out.mkdir()
+    (out / "dropped.png").write_bytes(b"old")
+    (out / "notes.txt").write_text("keep", encoding="utf-8")
+
+    fetch.write_pack(data, out)
+
+    assert sorted(p.name for p in out.glob("*.png")) == ["ring.png"]
+    assert (out / "notes.txt").exists()
+    assert (
+        "ring|generic" in tomllib.loads((out / "index.toml").read_text(encoding="utf-8"))["icons"]
+    )

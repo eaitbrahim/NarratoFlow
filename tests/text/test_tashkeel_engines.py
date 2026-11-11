@@ -16,9 +16,10 @@ from narratoflow.text.tashkeel.engines import (
     LlmDiacritizer,
     MishkalDiacritizer,
     Vocalized,
+    _transfer_marks,
     vocalize_scene,
 )
-from narratoflow.text.tashkeel.verify import assert_skeleton_preserved
+from narratoflow.text.tashkeel.verify import SkeletonMismatchError, assert_skeleton_preserved
 
 
 def scene(text: str, **kw: Any) -> Scene:
@@ -158,3 +159,22 @@ def test_mishkal_is_free_and_diacritizer_defaults_to_llm() -> None:
 
     assert "mishkal" in FREE_PROVIDERS
     assert ChannelConfig.model_fields["diacritizer"].default == "llm"
+
+
+def test_transfer_accepts_respaced_punctuation_keeps_original_spacing() -> None:
+    out = _transfer_marks("\ufd3fيوم لا\ufd3e", "\ufd3f يَوْمَ لَا \ufd3e")
+    assert out == "\ufd3fيَوْمَ لَا\ufd3e"
+    assert_skeleton_preserved("\ufd3fيوم لا\ufd3e", out)
+
+
+def test_transfer_changed_letter_raises() -> None:
+    with pytest.raises(SkeletonMismatchError):
+        _transfer_marks("علم نور", "عِلْمٌ ضِيَاءٌ")
+
+
+def test_transfer_original_marks_win() -> None:
+    assert _transfer_marks("عِلم", "عَلْمٌ") == "عِلْمٌ"
+
+
+def test_transfer_keeps_newline_and_double_space() -> None:
+    assert _transfer_marks("علم  نور\nأو", "عِلْمٌ نُورٌ أَوْ") == "عِلْمٌ  نُورٌ\nأَوْ"

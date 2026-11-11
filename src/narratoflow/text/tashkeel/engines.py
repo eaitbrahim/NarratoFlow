@@ -12,7 +12,11 @@ from narratoflow.interfaces import Diacritizer
 from narratoflow.llm.base import LLMClient
 from narratoflow.models import Scene, SceneKind
 from narratoflow.planning.prompts import TASHKEEL_SYSTEM
-from narratoflow.text.tashkeel.verify import SkeletonMismatchError, assert_skeleton_preserved
+from narratoflow.text.tashkeel.verify import (
+    SkeletonMismatchError,
+    assert_skeleton_preserved,
+    is_diacritic,
+)
 
 __all__ = ["Diacritizer", "LlmDiacritizer", "MishkalDiacritizer", "Vocalized", "vocalize_scene"]
 
@@ -36,6 +40,39 @@ class LlmDiacritizer:
         return result.value.text
 
 
+def _transfer_marks(original: str, diacritized: str) -> str:
+    """Project the marks of `diacritized` onto `original`, keeping its spacing.
+
+    Base characters (neither diacritic nor whitespace) must match in order,
+    otherwise SkeletonMismatchError. Marks already in `original` win.
+    """
+    marks: list[str] = []
+    bases: list[str] = []
+    for ch in diacritized:
+        if ch.isspace():
+            continue
+        if is_diacritic(ch):
+            if marks:
+                marks[-1] += ch
+        else:
+            bases.append(ch)
+            marks.append("")
+    expected = [ch for ch in original if not ch.isspace() and not is_diacritic(ch)]
+    if bases != expected:
+        raise SkeletonMismatchError("Mishkal output changed the base letters")
+    out: list[str] = []
+    n = 0
+    for i, ch in enumerate(original):
+        out.append(ch)
+        if ch.isspace() or is_diacritic(ch):
+            continue
+        nxt = original[i + 1] if i + 1 < len(original) else ""
+        if not (nxt and is_diacritic(nxt)):
+            out.append(marks[n])
+        n += 1
+    return "".join(out)
+
+
 class MishkalDiacritizer:
     name = "mishkal"
 
@@ -47,10 +84,7 @@ class MishkalDiacritizer:
         self._engine: Any = TashkeelClass()
 
     def diacritize(self, text: str) -> str:
-        out = str(self._engine.tashkeel(text)).strip()
-        lead = text[: len(text) - len(text.lstrip())]
-        trail = text[len(text.rstrip()) :]
-        return lead + out + trail
+        return _transfer_marks(text, str(self._engine.tashkeel(text)))
 
 
 def vocalize_scene(scene: Scene, d: Diacritizer) -> Scene:

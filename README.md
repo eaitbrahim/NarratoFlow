@@ -138,8 +138,8 @@ System requirement: `ffmpeg` on `PATH`.
 - `approve` is idempotent.
 - `sketch generate` keeps attached sketches and pays only for the missing ones.
 - `audio build` reuses each cached scene.
-- `render` re-renders the selected parts deterministically at no cost (pass `--part` for the unfinished ones it lists).
-- `review` asks with an estimate each time.
+- `render` re-renders the selected parts deterministically at no cost (after an error it prints the finished parts; pass `--part` for the others).
+- `review` shows an estimate and asks before spending, unless `--yes` is given.
 - `publish` is free.
 
 ## Where settings live

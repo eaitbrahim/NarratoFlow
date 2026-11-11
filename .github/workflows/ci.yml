@@ -8,7 +8,12 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.31"
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg
+        timeout-minutes: 15
+        run: |
+          APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update
+          sudo apt-get $APT install -y --no-install-recommends ffmpeg
       - run: ffmpeg -hide_banner -filters | grep -qE '^ ... ass '
       - run: uv sync --locked --group dev
       - run: uv run ruff check --no-cache .

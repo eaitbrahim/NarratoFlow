@@ -24,7 +24,12 @@ import httpx
 from pydantic import SecretStr
 
 from narratoflow.audio.words import TimedSpan
-from narratoflow.errors import BilledProviderError, ChannelConfigError, ProviderError
+from narratoflow.errors import (
+    BilledProviderError,
+    ChannelConfigError,
+    ProviderAuthError,
+    ProviderError,
+)
 from narratoflow.tts import Speech, SpeechRequest
 
 BASE_URL = "https://api.elevenlabs.io/v1"
@@ -40,7 +45,19 @@ class ElevenLabsProvider:
     def __init__(self, api_key: SecretStr, model: str, http: httpx.Client | None = None) -> None:
         self._api_key = api_key
         self.model = model
+        self._owns_http = http is None
         self.http = http if http is not None else httpx.Client(timeout=TIMEOUT_S)
+
+    def __enter__(self) -> ElevenLabsProvider:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Close the HTTP client this provider created; an injected one is the caller's."""
+        if self._owns_http:
+            self.http.close()
 
     def _scrub(self, text: str) -> str:
         secret = self._api_key.get_secret_value()
@@ -82,6 +99,10 @@ class ElevenLabsProvider:
         except httpx.HTTPError as e:
             raise ProviderError(f"Cannot reach ElevenLabs: {self._scrub(str(e))}") from e
         if not response.is_success:
+            if response.status_code in (401, 403, 404):
+                # A rejected key or an unknown voice is a configuration error, not an
+                # outage: it must stop the build, never fall back to a free voice.
+                raise ProviderAuthError(self._http_error(response))
             raise ProviderError(self._http_error(response))
         try:
             return self._speech(response)

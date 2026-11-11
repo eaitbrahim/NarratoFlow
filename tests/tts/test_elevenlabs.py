@@ -6,7 +6,12 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from narratoflow.errors import BilledProviderError, ChannelConfigError, ProviderError
+from narratoflow.errors import (
+    BilledProviderError,
+    ChannelConfigError,
+    ProviderAuthError,
+    ProviderError,
+)
 from narratoflow.models import Language
 from narratoflow.tts import SpeechRequest
 from narratoflow.tts.elevenlabs import ELEVENLABS_VOICE_ID_RE, ElevenLabsProvider
@@ -108,12 +113,27 @@ def test_billed_chars_is_none_because_no_documented_header() -> None:
     assert provider(ok()).synthesize(req()).billed_chars is None
 
 
-def test_401_does_not_echo_key() -> None:
-    h: Handler = lambda r: httpx.Response(401, json={"detail": {"status": KEY}})  # noqa: E731
-    with pytest.raises(ProviderError) as ei:
+@pytest.mark.parametrize("status", [401, 403])
+def test_rejected_key_is_a_config_error_without_the_key(status: int) -> None:
+    h: Handler = lambda r: httpx.Response(status, json={"detail": {"status": KEY}})  # noqa: E731
+    with pytest.raises(ProviderAuthError) as ei:
         provider(h).synthesize(req())
-    assert str(ei.value) == "ElevenLabs rejected the API key (HTTP 401)"
+    assert str(ei.value) == f"ElevenLabs rejected the API key (HTTP {status})"
     assert KEY not in str(ei.value)
+    assert isinstance(ei.value, ChannelConfigError)
+    assert not isinstance(ei.value, ProviderError)  # never a voice outage: no fallback
+
+
+def test_unknown_voice_404_is_a_config_error_with_a_scrubbed_message() -> None:
+    h: Handler = lambda r: httpx.Response(  # noqa: E731
+        404, json={"detail": {"status": f"voice_not_found_{KEY}", "message": "secret ab"}}
+    )
+    with pytest.raises(ProviderAuthError) as ei:
+        provider(h).synthesize(req())
+    msg = str(ei.value)
+    assert "HTTP 404" in msg and "voice_not_found_***" in msg
+    assert KEY not in msg and "secret" not in msg
+    assert not isinstance(ei.value, ProviderError)
 
 
 def test_429_message() -> None:
@@ -220,7 +240,7 @@ def test_failures_after_2xx_are_billed(handler: Handler) -> None:
         provider(handler).synthesize(req())
 
 
-@pytest.mark.parametrize("status", [401, 429, 500, 503])
+@pytest.mark.parametrize("status", [429, 500, 503])
 def test_http_errors_are_not_billed(status: int) -> None:
     with pytest.raises(ProviderError) as info:
         provider(lambda r: httpx.Response(status, json={})).synthesize(req())
@@ -234,3 +254,20 @@ def test_transport_errors_are_not_billed() -> None:
     with pytest.raises(ProviderError) as info:
         provider(boom).synthesize(req())
     assert not isinstance(info.value, BilledProviderError)
+
+
+def test_close_closes_only_its_own_client() -> None:
+    own = ElevenLabsProvider(SecretStr(KEY), "eleven_multilingual_v2")
+    own.close()
+    assert own.http.is_closed
+
+    injected = httpx.Client(transport=httpx.MockTransport(ok()))
+    lent = ElevenLabsProvider(SecretStr(KEY), "eleven_multilingual_v2", http=injected)
+    lent.close()
+    assert not injected.is_closed
+
+
+def test_context_manager_closes_own_client() -> None:
+    with ElevenLabsProvider(SecretStr(KEY), "eleven_multilingual_v2") as p:
+        assert not p.http.is_closed
+    assert p.http.is_closed

@@ -71,7 +71,12 @@ The channel's `[voice]` table picks the narrator: `provider` (`elevenlabs`, `edg
 `voice_id`, `model` and, for `piper`, `piper_model` (path to the `.onnx` file). `fallback` (default
 `["edge"]`) re-voices a whole part with the next voice when the first one is down;
 the timeline and the command output record the fallback, so there is one voice per part and it is
-never silent. The `tts-edge` and `tts-local` extras provide `edge-tts` and `piper-tts`.
+never silent. `edge_voice` names the edge voice the fallback uses (an edge short name such as
+`ar-SA-HamedNeural`; unset, the channel language's default voice). The `tts-edge` and `tts-local`
+extras provide `edge-tts` and `piper-tts`; the default edge fallback works only with `tts-edge`
+installed (`uv sync --extra tts-edge`), otherwise an outage ends the build with "no voice could
+narrate part N". A rejected ElevenLabs key (HTTP 401/403) or an unknown voice (HTTP 404) is a
+configuration error: the build stops (finished parts are kept) instead of falling back.
 
 ### Alignment
 
@@ -84,10 +89,12 @@ estimated word timings and each part warns once.
 
 No reciter ships with NarratoFlow: no source's terms allowed use in published videos (quran.com and
 quranicaudio.com are non-commercial, everyayah.com states no terms, alquran.cloud is
-non-commercial). A part that contains a verse is therefore refused before any spend, and verses are
-never voiced by text to speech. To enable them the owner must add a reciter whose licence permits
-this use to `assets/reciters/index.toml` (see the entry format there, and record the licence in
-`assets/LICENSES.md`).
+non-commercial). `audio build` therefore refuses the whole run, before any spend, if any selected
+part contains a verse, and verses are never voiced by text to speech. Build the verse-free parts
+with `--part N`. To enable verses the owner must add a reciter whose licence permits this use to
+`assets/reciters/index.toml` (see the entry format there, and record the licence in
+`assets/LICENSES.md`). A non-editable install (e.g. `pip install` of a wheel) reads the packaged
+copy of that index inside the installed `narratoflow` package, not the repository file.
 
 System requirement: `ffmpeg` on `PATH`.
 

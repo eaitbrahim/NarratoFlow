@@ -166,21 +166,38 @@ def default_reciters() -> ReciterIndex:
     return ReciterIndex([])
 
 
-def select_reciter(channel: ChannelConfig, index: ReciterIndex) -> Reciter:
-    """The channel's reciter, or the first allow-listed one of its riwaya."""
+RECITER_HINT = (
+    "add a licensed reciter to assets/reciters/index.toml (see README) "
+    "or build verse-free parts with --part N"
+)
+
+
+def select_reciter(
+    channel: ChannelConfig, index: ReciterIndex, *, needed_by: str | None = None
+) -> Reciter:
+    """The channel's reciter, or the first allow-listed one of its riwaya.
+
+    A refusal is prefixed with `needed_by` (e.g. "scene s001 (31:33)") and ends
+    with what to do next.
+    """
+    prefix = f"{needed_by}: " if needed_by else ""
+
+    def refuse(reason: str) -> ReciterError:
+        return ReciterError(f"{prefix}{reason}; {RECITER_HINT}")
+
     if channel.reciter is not None:
         chosen = index.get(channel.reciter)
         if chosen is None:
-            raise ReciterError(f"reciter {channel.reciter} is not on the allow-list")
+            raise refuse(f"reciter {channel.reciter} is not on the allow-list")
         if chosen.riwaya != channel.riwaya:
-            raise ReciterError(
+            raise refuse(
                 f"reciter {chosen.id} recites riwaya {chosen.riwaya}, "
                 f"but the channel uses riwaya {channel.riwaya}"
             )
         return chosen
     matches = index.for_riwaya(channel.riwaya)
     if not matches:
-        raise ReciterError(
+        raise refuse(
             f"no allow-listed reciter for riwaya {channel.riwaya}; "
             "unlicensed recitation is not allowed"
         )

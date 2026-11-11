@@ -21,6 +21,13 @@ class ExtraMissingError(ChannelConfigError):
     """An optional extra (e.g. 'tts-edge') is not installed; the message names it."""
 
 
+class ProviderAuthError(ChannelConfigError):
+    """A provider rejected the configured key or names an unknown voice/model.
+
+    A configuration error, not an outage: it never triggers a voice fallback.
+    """
+
+
 class InvalidIdeaKeyError(NarratoFlowError):
     """An idea key is malformed."""
 

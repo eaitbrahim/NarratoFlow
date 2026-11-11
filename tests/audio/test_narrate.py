@@ -7,9 +7,11 @@ import os
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pytest
 from fixtures.audio import speechlike, to_wav_bytes
+from pydantic import SecretStr
 
 from narratoflow.audio.io import SAMPLE_RATE, Samples, trim_silence
 from narratoflow.audio.narrate import (
@@ -32,11 +34,13 @@ from narratoflow.errors import (
     ExtraMissingError,
     MissingApiKeyError,
     PlanningError,
+    ProviderAuthError,
     ProviderError,
 )
 from narratoflow.models import Language, Narration, Part, Scene, SceneKind, VerseRef
 from narratoflow.pipeline.cache import StageCache, cache_key
 from narratoflow.tts import Speech, SpeechRequest, VoiceChoice
+from narratoflow.tts.elevenlabs import ElevenLabsProvider
 from narratoflow.tts.piper import PiperProvider
 
 pytestmark = pytest.mark.usefixtures("ffmpeg_bin")
@@ -272,6 +276,35 @@ def test_other_channel_config_error_propagates_without_fallback(cache: StageCach
         run(three(), [VoiceChoice(a, "a"), VoiceChoice(b, "b")], cache)
     assert info.value is error
     assert b.requests == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_rejected_elevenlabs_key_or_voice_never_falls_back(cache: StageCache, status: int) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(status, json={})
+
+    paid = ElevenLabsProvider(
+        SecretStr("xi-key"),
+        "m1",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    backup = FakeVoice("edge", "edge-tts")
+    prices = PriceTable({"voice": {"elevenlabs/m1": (Decimal("0.30"),)}})
+    with pytest.raises(ProviderAuthError, match=f"HTTP {status}"):
+        narrate_part(
+            three(),
+            [VoiceChoice(paid, "21m00Tcm4TlvDq8ikWAM"), VoiceChoice(backup, "b")],
+            language=Language.ENGLISH,
+            tracker=SpendTracker(limit_usd=None),
+            prices=prices,
+            cache=cache,
+            aligner=None,
+        )
+    assert len(calls) == 1  # stopped at the first scene
+    assert backup.requests == []  # nothing re-voiced with edge
 
 
 def test_aligner_provider_error_estimates_and_keeps_voice(cache: StageCache) -> None:

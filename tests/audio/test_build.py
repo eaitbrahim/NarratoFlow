@@ -292,6 +292,10 @@ def test_builds_flac_and_timeline_per_part(
     first = result.parts[0].timeline
     assert first.scenes[0].draw_start_ms is not None  # a sketch scene is drawn
     assert first.scenes[1].draw_start_ms is None  # a text card is not
+    # which sketch the draw schedule and SFX refer to (Plan 5 checks these)
+    assert (first.scenes[0].sketch_id, first.scenes[0].stroke_count) == (sid, 6)
+    assert (first.scenes[1].sketch_id, first.scenes[1].stroke_count) == (None, None)
+    assert all(h.stroke_index < 6 for h in first.sfx)
     assert first.sfx and {h.scene_id for h in first.sfx} == {"s1"}
     [asset] = first.assets
     assert (asset.kind, asset.asset_id, asset.license) == ("sfx", "pen", "CC0-1.0")
@@ -382,7 +386,10 @@ def test_reciter_unavailable_fails_before_tts_spend(
     voice = FakeVoice()
     seen: list[str] = []
     s = make_series([narr("s1", "alpha beta"), verse("v1")])
-    with pytest.raises(ReciterError, match="no allow-listed reciter"):
+    with pytest.raises(
+        ReciterError,
+        match=r"^scene v1 \(31:33\): no allow-listed reciter .*--part N$",
+    ):
         run(
             s,
             channel,
@@ -617,6 +624,69 @@ def test_only_voice_key_required(
             aligner=None,
         )
     assert "IMAGE" not in str(info.value)
+
+
+class ClosingVoice(FakeVoice):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = 0
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_built_voice_chain_is_closed(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    refused: bool,
+) -> None:
+    voice = ClosingVoice()
+    monkeypatch.setattr(
+        build_module, "build_voice_chain", lambda channel, settings: [VoiceChoice(voice, "v")]
+    )
+    scenes = [narr("s1", "alpha beta"), verse("v1")] if refused else [narr("s1", "alpha beta")]
+    kwargs: dict[str, Any] = {
+        "out_dir": tmp_path / "out",
+        "cache_root": tmp_path / "series" / ".cache",
+        "library": library,
+        "sfx": pack,
+        "prices": PRICES,
+        "reciters": ReciterIndex([]),
+        "corpus": CORPUS,
+        "aligner": None,
+    }
+    if refused:  # a pre-spend refusal after the chain is built still closes it
+        with pytest.raises(ReciterError):
+            build_audio(make_series(scenes), channel, settings, **kwargs)
+    else:
+        build_audio(make_series(scenes), channel, settings, **kwargs)
+        assert len(voice.requests) == 1
+    assert voice.closed == 1
+
+
+def test_injected_voices_are_not_closed(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    voice = ClosingVoice()
+    run(
+        make_series([narr("s1", "alpha beta")]),
+        channel,
+        settings,
+        tmp_path,
+        voices=[voice],
+        library=library,
+        pack=pack,
+    )
+    assert voice.closed == 0  # the caller owns injected providers
 
 
 def test_unpriced_voice_refused_before_spend(
@@ -893,3 +963,22 @@ def test_timeline_records_voice_terms_and_reciter_check_date(
     timeline = PartTimeline.load(result.parts[0].timeline_path)
     assert timeline.voice is not None and timeline.voice.terms == "paid-terms"
     assert timeline.recitations[0].checked == date(2026, 11, 11)
+
+
+def test_ayat_label_for_single_ayah_and_range() -> None:
+    one = VerseRef(surah=31, ayah_start=33, ayah_end=33, certain=True, uthmani_text="x")
+    many = VerseRef(surah=2, ayah_start=255, ayah_end=257, certain=True, uthmani_text="x")
+    assert build_module._ayat(one) == "31:33"
+    assert build_module._ayat(many) == "2:255-257"
+
+
+def test_reciter_refusal_names_the_first_verse_scene(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    s = make_series([narr("s1", "alpha beta")], [verse("v2"), verse("v3")])
+    with pytest.raises(ReciterError, match=r"^scene v2 \(31:33\): "):
+        run(s, channel, settings, tmp_path, voices=[FakeVoice()], library=library, pack=pack)

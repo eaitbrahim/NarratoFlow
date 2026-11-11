@@ -218,3 +218,28 @@ def test_wheel_contains_the_reciter_index(tmp_path: Path) -> None:
     [wheel] = out.glob("*.whl")
     with zipfile.ZipFile(wheel) as archive:
         assert "narratoflow/assets/reciters/index.toml" in archive.namelist()
+
+
+HINT = (
+    "add a licensed reciter to assets/reciters/index.toml (see README) "
+    "or build verse-free parts with --part N"
+)
+
+
+def test_refusal_names_the_scene_and_says_what_to_do(tmp_path: Path) -> None:
+    with pytest.raises(ReciterError) as info:
+        select_reciter(_channel(), ReciterIndex([]), needed_by="scene v1 (31:33)")
+    assert str(info.value) == (
+        "scene v1 (31:33): no allow-listed reciter for riwaya hafs; "
+        f"unlicensed recitation is not allowed; {HINT}"
+    )
+    with pytest.raises(ReciterError) as info:
+        select_reciter(_channel(reciter="ghost"), ReciterIndex([]), needed_by="scene v2 (2:255)")
+    assert str(info.value) == f"scene v2 (2:255): reciter ghost is not on the allow-list; {HINT}"
+
+
+def test_refusal_without_a_scene_still_has_the_hint() -> None:
+    with pytest.raises(ReciterError) as info:
+        select_reciter(_channel(), ReciterIndex([]))
+    assert str(info.value).endswith(HINT)
+    assert not str(info.value).startswith("scene")

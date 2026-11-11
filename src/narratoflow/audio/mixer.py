@@ -114,6 +114,8 @@ class _Slot:
     speech_start_ms: int
     draw_start_ms: int | None = None
     draw_end_ms: int | None = None
+    sketch_id: int | None = None
+    stroke_count: int | None = None
 
 
 def _timeline_words(words: Sequence[WordTiming], delta_ms: int, limit: int) -> list[TimelineWord]:
@@ -207,6 +209,8 @@ def _timing(clip: _Clip, slot: _Slot) -> SceneTiming:
         ayat=ayat,
         draw_start_ms=slot.draw_start_ms,
         draw_end_ms=slot.draw_end_ms,
+        sketch_id=slot.sketch_id,
+        stroke_count=slot.stroke_count,
     )
 
 
@@ -302,6 +306,7 @@ def mix_part(
         start, end = slot.start_ms, slot.end_ms
         draw_end = start + round(scene.draw_fraction * (end - start))
         slot.draw_start_ms, slot.draw_end_ms = start, draw_end
+        slot.sketch_id, slot.stroke_count = scene.sketch_id, len(stroke_set.strokes)
         hits.extend(
             place_sfx(
                 draw_schedule(stroke_set, start, draw_end),

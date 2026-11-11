@@ -6,6 +6,18 @@ Every float is finite, and the file is written with JSON that rejects NaN.
 Word timings may overlap: within a scene or ayah only the word *starts* are
 non-decreasing, and a word may end after the next one starts. Plan 5 must not
 assume disjoint words.
+
+Drawing contract for Plan 5 (Render):
+- The timeline stores only each drawn scene's ``draw_start_ms``/``draw_end_ms``.
+  The renderer must recompute the stroke reveal with
+  ``visuals.schedule.draw_schedule(strokes, draw_start_ms, draw_end_ms)`` from the
+  same sketch the audio build used; ``SfxHit.stroke_index`` indexes that stroke set.
+- ``SceneTiming.sketch_id`` and ``stroke_count`` record that sketch at build time.
+  The renderer should refuse a timeline whose ``sketch_id`` or ``stroke_count`` no
+  longer match the scene's current sketch (e.g. after ``sketch resolve``) and ask
+  for an audio rebuild. Both are None in timelines written before they existed.
+- The renderer must accept zero-length stroke events and zero-length words
+  (``start_ms == end_ms``).
 """
 
 from __future__ import annotations
@@ -109,6 +121,8 @@ class SceneTiming(BaseModel):
     ayat: list[AyahTiming] = Field(default_factory=list)
     draw_start_ms: Ms | None = None  # None: no strokes (verse, text card)
     draw_end_ms: Ms | None = None
+    sketch_id: int | None = None  # library sketch drawn at build time (see the module doc)
+    stroke_count: int | None = Field(default=None, ge=0)  # its strokes at build time
 
     @model_validator(mode="after")
     def _consistent(self) -> SceneTiming:
@@ -127,6 +141,10 @@ class SceneTiming(BaseModel):
             and not (self.start_ms <= self.draw_start_ms <= self.draw_end_ms <= self.end_ms)
         ):
             raise ValueError(f"{where}: draw times lie outside the scene slot")
+        if self.draw_start_ms is None and (
+            self.sketch_id is not None or self.stroke_count is not None
+        ):
+            raise ValueError(f"{where}: sketch_id and stroke_count need draw times")
         if self.timing_source not in _SOURCES_BY_KIND[self.kind]:
             raise ValueError(
                 f"{where}: timing_source {self.timing_source.value} "
@@ -253,10 +271,16 @@ class PartTimeline(BaseModel):
             )
         prev = 0
         verses = [s for s in self.scenes if s.kind is SceneKind.VERSE]
-        known = set(ids)
+        by_id = {s.scene_id: s for s in self.scenes}
         for hit in self.sfx:
-            if hit.scene_id not in known:
+            if hit.scene_id not in by_id:
                 raise ValueError(f"sfx {hit.asset_id} names an unknown scene {hit.scene_id!r}")
+            count = by_id[hit.scene_id].stroke_count
+            if count is not None and hit.stroke_index >= count:
+                raise ValueError(
+                    f"sfx {hit.asset_id} stroke_index {hit.stroke_index} is out of range "
+                    f"for scene {hit.scene_id} ({count} strokes)"
+                )
             if hit.at_ms < prev:
                 raise ValueError("sfx must be sorted by at_ms")
             prev = hit.at_ms

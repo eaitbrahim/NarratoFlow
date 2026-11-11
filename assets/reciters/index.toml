@@ -12,8 +12,8 @@
 # - alquran.cloud terms section IV: recitations are licensed for non-commercial
 #   redistribution; the reciters keep copyright and may ask for removal at their
 #   discretion (https://alquran.cloud/terms-and-conditions).
-# With this list empty, every verse scene FAILs with "no allow-listed reciter for
-# riwaya hafs; unlicensed recitation is not allowed".
+# With this list empty, every run with a verse scene FAILs with "scene <id> (<ayah>):
+# no allow-listed reciter for riwaya hafs; unlicensed recitation is not allowed; ...".
 #
 # Add a reciter only after reading its terms on a primary source page and only
 # when they allow use in published videos. Each entry is one [[reciters]] table:
@@ -32,4 +32,8 @@
 # kind "qurancom" takes recitation_id = <n> and segments_source = "quran.com"
 # instead of audio_url; kind "files" has no segments (whole ayah revealed).
 # Every URL is https://; ids are unique. Also list each reciter in assets/LICENSES.md.
+#
+# Downloads are cached by reciter id only (<data_dir>/reciters/<id>/). When an
+# entry's source changes (audio_url, recitation_id), give it a new id or delete
+# <data_dir>/reciters/<id>/, or the old recordings are reused.
 reciters = []

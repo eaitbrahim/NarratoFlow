@@ -44,7 +44,7 @@ from narratoflow.errors import (
     PlanningError,
 )
 from narratoflow.library.repository import SketchLibrary, default_library
-from narratoflow.models import Part, Scene, SceneKind, Series, VisualSource
+from narratoflow.models import Part, Scene, SceneKind, Series, VerseRef, VisualSource
 from narratoflow.pipeline.cache import StageCache
 from narratoflow.quran.corpus import QuranCorpus, default_corpus
 from narratoflow.quran.reciters import Reciter, ReciterIndex, default_reciters, select_reciter
@@ -156,6 +156,13 @@ def _verses(part: Part) -> list[Scene]:
     return [s for s in part.scenes if s.kind is SceneKind.VERSE]
 
 
+def _ayat(verse: VerseRef) -> str:
+    """ "31:33" or "2:255-257"."""
+    if verse.ayah_end == verse.ayah_start:
+        return f"{verse.surah}:{verse.ayah_start}"
+    return f"{verse.surah}:{verse.ayah_start}-{verse.ayah_end}"
+
+
 def _load_strokes(parts: list[Part], library: SketchLibrary | None) -> dict[str, StrokeSet]:
     out: dict[str, StrokeSet] = {}
     for part in parts:
@@ -185,8 +192,12 @@ def _preflight(
     corpus: QuranCorpus | None,
     library: SketchLibrary | None,
     prices: PriceTable | None,
+    stack: contextlib.ExitStack,
 ) -> _Plan:
-    """Checks 1-11, in order, before any spend or network call; errors raise raw."""
+    """Checks 1-11, in order, before any spend or network call; errors raise raw.
+
+    A voice chain built here (not injected) is closed when `stack` exits.
+    """
     if not series.approved:
         raise PlanningError("approve the series first")
     require_series_channel(series, channel)
@@ -195,7 +206,14 @@ def _preflight(
     require_ffmpeg()
     prices = prices if prices is not None else default_prices(settings)
     prices.voice(channel.voice.provider, channel.voice.model)
-    chain = voices if voices is not None else build_voice_chain(channel, settings)
+    if voices is None:
+        chain = build_voice_chain(channel, settings)
+        for choice in chain:
+            close = getattr(choice.provider, "close", None)
+            if callable(close):
+                stack.callback(close)
+    else:
+        chain = voices
     if not chain:
         raise ChannelConfigError("no voice to narrate with")
     for choice in chain:
@@ -206,10 +224,17 @@ def _preflight(
     reciter: Reciter | None = None
     verse_scenes = [s for p in selected for s in _verses(p)]
     if verse_scenes:
+        first: str | None = None
         for scene in verse_scenes:
             if scene.verse is None:
                 raise PlanningError(f"verse scene {scene.id} has no verse reference")
-        reciter = select_reciter(channel, reciters if reciters is not None else default_reciters())
+            if first is None:
+                first = f"scene {scene.id} ({_ayat(scene.verse)})"
+        reciter = select_reciter(
+            channel,
+            reciters if reciters is not None else default_reciters(),
+            needed_by=first,
+        )
         corpus = corpus if corpus is not None else default_corpus(settings)
     needs_library = any(
         s.sketch_id is not None and _drawn(s) for p in selected for s in _narration(p)
@@ -370,21 +395,6 @@ def build_audio(
     cached in `StageCache(cache_root)` (stage "tts"); recitations under
     `settings.data_dir / "reciters"`. The input series is not mutated.
     """
-    plan = _preflight(
-        series,
-        channel,
-        settings,
-        parts=parts,
-        voices=voices,
-        reciters=reciters,
-        corpus=corpus,
-        library=library,
-        prices=prices,
-    )
-    chosen_aligner, align_missing = _resolve_aligner(aligner)
-    pack = sfx if sfx is not None else default_sfx()
-    out = series.model_copy(deep=True)
-    by_index = {p.index: p for p in out.parts}
     result = AudioBuildResult()
     trackers: list[tuple[SpendTracker, Decimal]] = []
 
@@ -392,6 +402,22 @@ def build_audio(
         return sum((t.spent - seed for t, seed in trackers), Decimal(0))
 
     with contextlib.ExitStack() as stack:
+        plan = _preflight(
+            series,
+            channel,
+            settings,
+            parts=parts,
+            voices=voices,
+            reciters=reciters,
+            corpus=corpus,
+            library=library,
+            prices=prices,
+            stack=stack,
+        )
+        chosen_aligner, align_missing = _resolve_aligner(aligner)
+        pack = sfx if sfx is not None else default_sfx()
+        out = series.model_copy(deep=True)
+        by_index = {p.index: p for p in out.parts}
         source: RecitationSource | None = None
         if plan.reciter is not None:
             source = stack.enter_context(

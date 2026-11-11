@@ -481,3 +481,41 @@ def test_provenance_fields_are_required() -> None:
     del data["recitations"][0]["checked"]
     with pytest.raises(ValidationError):
         make(data)
+
+
+def test_scene_records_sketch_id_and_stroke_count(tmp_path: Path) -> None:
+    data = base()
+    data["scenes"][0].update({"sketch_id": 7, "stroke_count": 12})
+    tl = make(data)
+    assert (tl.scenes[0].sketch_id, tl.scenes[0].stroke_count) == (7, 12)
+    assert (tl.scenes[1].sketch_id, tl.scenes[1].stroke_count) == (None, None)
+    path = tmp_path / "part-01.timeline.json"
+    tl.save(path)
+    assert PartTimeline.load(path) == tl
+
+
+def test_timeline_without_sketch_fields_still_loads(tmp_path: Path) -> None:
+    # Schema v1 files written before the fields existed stay valid.
+    path = tmp_path / "part-01.timeline.json"
+    path.write_text(json.dumps({"schema_version": 1, **base()}), encoding="utf-8")
+    assert PartTimeline.load(path).scenes[0].stroke_count is None
+
+
+def test_sketch_fields_need_draw_times() -> None:
+    data = base()
+    data["scenes"][0].update(
+        {"draw_start_ms": None, "draw_end_ms": None, "sketch_id": 7, "stroke_count": 3}
+    )
+    data["sfx"] = []
+    with pytest.raises(ValueError, match="sketch_id and stroke_count"):
+        make(data)
+
+
+def test_sfx_stroke_index_must_be_below_stroke_count() -> None:
+    data = base()
+    data["scenes"][0].update({"sketch_id": 7, "stroke_count": 1})
+    data["sfx"][0]["stroke_index"] = 1
+    with pytest.raises(ValueError, match="stroke_index 1"):
+        make(data)
+    data["sfx"][0]["stroke_index"] = 0
+    make(data)

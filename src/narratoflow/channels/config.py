@@ -7,7 +7,7 @@ import json
 import tomllib
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -60,6 +60,7 @@ class ChannelConfig(BaseModel):
     part_min_s: int = 60
     part_max_s: int = 90
     riwaya: str = "hafs"
+    diacritizer: Literal["llm", "mishkal"] = "llm"
 
     @model_validator(mode="after")
     def _part_bounds(self) -> ChannelConfig:

@@ -15,7 +15,9 @@ class ProviderKind(StrEnum):
     LLM = "llm"
 
 
-FREE_PROVIDERS: frozenset[str] = frozenset({"ollama", "local-diffusion", "edge", "piper"})
+FREE_PROVIDERS: frozenset[str] = frozenset(
+    {"ollama", "local-diffusion", "edge", "piper", "mishkal"}
+)
 
 
 def required_key_env_vars(channel: ChannelConfig) -> dict[ProviderKind, str]:

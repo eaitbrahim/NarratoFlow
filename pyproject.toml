@@ -68,7 +68,7 @@ files = ["src", "tests"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["cv2.*", "pyarabic.*", "skimage.*"]
+module = ["cv2.*", "pyarabic.*", "mishkal.*", "skimage.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

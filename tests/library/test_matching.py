@@ -123,7 +123,7 @@ def test_generic_without_icon_is_new(library: SketchLibrary, bundled_empty: Bund
 
 
 def test_bundled_index_rejects_non_generic(tmp_path: Path) -> None:
-    with pytest.raises(InvalidIdeaKeyError):
+    with pytest.raises(ChannelConfigError, match=re.escape("scroll|roman")):
         BundledIcons.from_index(_write_index(tmp_path, ["scroll|roman"]))
 
 

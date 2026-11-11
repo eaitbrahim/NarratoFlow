@@ -41,6 +41,7 @@ dev = [
     "mypy>=1.11",
     "coverage>=7.6",
     "httpx2==2.16.0",
+    "hatchling",
 ]
 
 [build-system]
@@ -49,6 +50,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/narratoflow"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"assets/icons" = "narratoflow/assets/icons"
 
 [tool.ruff]
 line-length = 100
@@ -81,3 +85,4 @@ show_missing = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["slow: builds a wheel; kept in the default run and in CI"]

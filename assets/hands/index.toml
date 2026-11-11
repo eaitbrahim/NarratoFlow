@@ -1,0 +1,7 @@
+[hands.right]
+file = "hand-right.png"
+license = "Apache-2.0"
+source = "scripts/make_hand.py"
+tip_x = 24
+tip_y = 24
+sha256 = "fee0462f290eedf2fc35ae4c962fcbcc5ecf4e7428a482e21e100530180b6025"

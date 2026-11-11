@@ -9,9 +9,11 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from narratoflow.errors import RenderError
+from narratoflow.render.assets import FontPack
 from narratoflow.settings import Settings
 
 _ASS_FIX = (
@@ -176,3 +178,34 @@ def render_ass_still(
     if len(out) != w * h * 3:
         raise RenderError(f"ass still has {len(out)} bytes, expected {w * h * 3}")
     return np.frombuffer(out, dtype=np.uint8).reshape(h, w, 3).copy()
+
+
+_SHAPING_ASS = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 600
+PlayResY: 300
+WrapStyle: 2
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Amiri,200,&H00000000,&H00000000,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,-1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,\u0633\u0633\u0633
+"""  # noqa: E501
+
+
+def check_arabic_shaping(tools: RenderTools, fonts: FontPack, work_dir: Path) -> None:
+    """Fail unless libass joins Arabic letters (HarfBuzz shaping): one ink blob for three seens."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    fonts.copy_to(work_dir / "fonts")
+    (work_dir / "shaping.ass").write_text(_SHAPING_ASS, encoding="utf-8")
+    frame = render_ass_still(tools, work_dir, "shaping.ass", (600, 300), 500)
+    ink = (frame.mean(axis=2) < 128).astype(np.uint8)
+    count, _ = cv2.connectedComponents(ink, connectivity=8)
+    if count - 1 != 1:
+        raise RenderError(
+            "ffmpeg's libass did not join Arabic letters (no HarfBuzz shaping); "
+            "install ffmpeg-full (brew install ffmpeg-full) or an ffmpeg built with libass+HarfBuzz"
+        )

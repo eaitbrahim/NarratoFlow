@@ -4,10 +4,10 @@ Quotes are found by normalized 4-gram lookup into the corpus, then extended
 greedily word by word, crossing into the next ayah of the same surah only when
 the ayat are consecutive. A run that pokes fewer than four words into an ayah at
 either edge is trimmed back to the ayah boundary, so the author's own words next
-to a quote are not swallowed; an edge the author marked with an opening or
-closing quote or bracket is kept. The longest non-overlapping runs win, and each
-becomes a `VerseHit` whose `VerseRef` carries the verified Uthmani text of every
-ayah the run touches.
+to a quote are not swallowed. An edge is kept when the author marked it with an
+opening or closing quote or bracket, or when it is a whole ayah of two or more
+words. The longest non-overlapping runs win, and each becomes a `VerseHit` whose
+`VerseRef` carries the verified Uthmani text of every ayah the run touches.
 """
 
 import re
@@ -21,6 +21,7 @@ from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.normalize import is_punctuation, match_normalize
 
 _GRAM = 4
+_MIN_WHOLE = 2  # a whole edge ayah this long survives trimming
 # Arabic, Arabic Supplement, Arabic Extended-A and the presentation-form blocks.
 _ARABIC = re.compile("[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefc]")
 _TOKEN = re.compile(r"\S+")
@@ -152,18 +153,26 @@ def _closes(text: str, end: int) -> bool:
     return ch == '"' or (ch != "" and unicodedata.category(ch) in _CLOSE_CATEGORIES)
 
 
+def _whole(complete: bool, size: int) -> bool:
+    # Single-word ayat (e.g. muqatta'at) are too likely to be coincidences to keep.
+    return complete and size >= _MIN_WHOLE
+
+
 def _trim(text: str, words: list[_Word], slots: tuple[_Slot, ...], run: _Run) -> _Run:
-    """Drop an undelimited edge piece of fewer than `_GRAM` words in another ayah."""
+    """Drop an undelimited edge piece of fewer than `_GRAM` words in another ayah.
+
+    A piece that is a complete ayah of at least `_MIN_WHOLE` words is kept.
+    """
     first, p, k = run.first, run.slot, run.length
     head = slots[p]
     if head.ayah != slots[p + k - 1].ayah and not _opens(text, words[first].start):
         piece = head.size - head.pos
-        if piece < _GRAM:
+        if piece < _GRAM and not _whole(head.pos == 0, head.size):
             first, p, k = first + piece, p + piece, k - piece
     tail = slots[p + k - 1]
     if tail.ayah != slots[p].ayah and not _closes(text, words[first + k - 1].end):
         piece = tail.pos + 1
-        if piece < _GRAM:
+        if piece < _GRAM and not _whole(tail.pos == tail.size - 1, tail.size):
             k -= piece
     return _Run(first, k, run.seg, p)
 

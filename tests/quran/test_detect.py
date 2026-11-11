@@ -239,12 +239,33 @@ def test_extension_across_ayat_is_full_range(tmp_path: Path) -> None:
     assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (1, 2, True)
 
 
-def test_short_ayat_need_explicit_delimiters(tmp_path: Path) -> None:
+def test_whole_short_edge_ayat_are_kept(tmp_path: Path) -> None:
     c = _corpus(tmp_path, ["4|1|بب تت", "4|2|ثث جج"])
-    assert detect_verses("بب تت ثث جج", c) == []
-    text = "\ufd3fبب تت ثث جج\ufd3e"
-    [hit] = detect_verses(text, c)
+    [hit] = detect_verses("بب تت ثث جج", c)
     assert (hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (1, 2, True)
+
+
+def test_single_word_edge_ayah_is_trimmed(tmp_path: Path) -> None:
+    c = _corpus(tmp_path, ["4|1|بب", "4|2|تت ثث جج خخ", "4|3|دد"])
+    text = "بب تت ثث جج خخ دد"
+    [hit] = detect_verses(text, c)
+    assert (hit.ref.ayah_start, hit.ref.ayah_end) == (2, 2)
+    assert text[hit.start : hit.end] == "تت ثث جج خخ"
+    # an author-placed bracket still keeps them
+    [hit] = detect_verses(f"\ufd3f{text}\ufd3e", c)
+    assert (hit.ref.ayah_start, hit.ref.ayah_end) == (1, 3)
+
+
+def test_fatiha_with_ayah_numbers_keeps_whole_short_ayat() -> None:
+    q = FIXTURES / "quran"
+    c = QuranCorpus.from_files(q / "fatiha-simple-clean.txt", q / "fatiha-uthmani.txt")
+    text = (
+        "الحمد لله رب العالمين \u06dd\u0662 الرحمن الرحيم \u06dd\u0663 مالك يوم الدين \u06dd\u0664"
+    )
+    [hit] = detect_verses(text, c)
+    assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (1, 2, 4, True)
+    assert text[hit.start : hit.end].endswith("الدين")
+    assert hit.ref.uthmani_text == c.text_range(1, 2, 4)
 
 
 def test_non_contiguous_ayat_do_not_join(tmp_path: Path) -> None:

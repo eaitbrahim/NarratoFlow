@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from narratoflow.audio.timeline import PartTimeline, TimingSource
 from narratoflow.errors import AudioError
+from narratoflow.models import SceneKind
 
 
 def base() -> dict[str, Any]:
@@ -299,3 +300,156 @@ def test_load_unreadable_or_invalid_raises_audio_error(tmp_path: Path) -> None:
 def test_save_failure_raises_audio_error(tmp_path: Path) -> None:
     with pytest.raises(AudioError):
         make(base()).save(tmp_path / "no-such-dir" / "t.json")
+
+
+def test_timeline_rejects_unknown_sfx_scene() -> None:
+    data = base()
+    data["sfx"][0]["scene_id"] = "nope"
+    with pytest.raises(ValueError, match="unknown scene"):
+        make(data)
+
+
+def test_timeline_rejects_sfx_past_duration() -> None:
+    data = base()
+    data["scenes"][1]["kind"] = "narration"
+    data["scenes"][1]["timing_source"] = "estimated"
+    data["scenes"][1]["ayat"] = []
+    data["sfx"][0]["at_ms"] = 8900
+    with pytest.raises(ValueError, match="duration_ms"):
+        make(data)
+
+
+def test_timeline_rejects_duplicate_or_empty_scene_ids() -> None:
+    data = base()
+    data["scenes"][1]["scene_id"] = "s1"
+    with pytest.raises(ValueError, match="unique"):
+        make(data)
+    data = base()
+    data["scenes"][0]["scene_id"] = ""
+    data["sfx"] = []
+    with pytest.raises(ValidationError):
+        make(data)
+
+
+def test_timeline_words_forbid_extra_keys() -> None:
+    data = base()
+    data["scenes"][0]["words"][0]["confidence"] = 0.9
+    with pytest.raises(ValidationError):
+        make(data)
+    data = base()
+    data["scenes"][1]["ayat"][0]["words"][0]["confidence"] = 0.9
+    with pytest.raises(ValidationError):
+        make(data)
+
+
+def test_scene_accepts_plain_word_timings() -> None:
+    from narratoflow.audio.timeline import SceneTiming, TimelineWord
+    from narratoflow.models import WordTiming
+
+    scene = SceneTiming.model_validate(
+        {
+            "scene_id": "s",
+            "kind": SceneKind.NARRATION,
+            "start_ms": 0,
+            "end_ms": 100,
+            "speech_start_ms": 0,
+            "speech_end_ms": 100,
+            "words": [WordTiming(text="a", start_ms=0, end_ms=100)],
+            "timing_source": TimingSource.PROVIDER,
+        }
+    )
+    assert isinstance(scene.words[0], TimelineWord)
+    assert scene.words[0].text == "a"
+    assert TimelineWord.model_validate(scene.words[0]) == scene.words[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "source"),
+    [
+        ("narration", "segments"),
+        ("narration", "ayah"),
+        ("verse", "provider"),
+        ("verse", "estimated"),
+    ],
+)
+def test_timeline_ties_timing_source_to_kind(kind: str, source: str) -> None:
+    data = base()
+    idx = 0 if kind == "narration" else 1
+    data["scenes"][idx]["timing_source"] = source
+    with pytest.raises(ValueError, match="timing_source"):
+        make(data)
+
+
+def test_timeline_ayah_source_has_no_ayah_words() -> None:
+    data = base()
+    data["scenes"][1]["timing_source"] = "ayah"
+    with pytest.raises(ValueError, match="ayah-timed"):
+        make(data)
+    data["scenes"][1]["ayat"][0]["words"] = []
+    assert make(data).scenes[1].timing_source is TimingSource.AYAH
+
+
+def test_timeline_verse_needs_an_ayah() -> None:
+    data = base()
+    data["scenes"][1]["ayat"] = []
+    with pytest.raises(ValueError, match="at least one ayah"):
+        make(data)
+
+
+def test_timeline_rejects_unsorted_or_overlapping_ayat() -> None:
+    first = {"surah": 31, "ayah": 33, "start_ms": 4400, "end_ms": 6000, "words": []}
+    second = {"surah": 31, "ayah": 34, "start_ms": 6000, "end_ms": 8600, "words": []}
+    data = base()
+    data["scenes"][1]["timing_source"] = "ayah"
+    data["scenes"][1]["ayat"] = [first, second]
+    assert len(make(data).scenes[1].ayat) == 2
+    data["scenes"][1]["ayat"] = [second, first]
+    with pytest.raises(ValueError, match="overlap"):
+        make(data)
+    data["scenes"][1]["ayat"] = [first, dict(second, start_ms=5900)]
+    with pytest.raises(ValueError, match="overlap"):
+        make(data)
+
+
+def test_timeline_rejects_part_index_above_count() -> None:
+    data = base()
+    data["part_index"] = 3
+    with pytest.raises(ValueError, match="part_index"):
+        make(data)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("duration_ms", "9000"), ("duration_ms", 9000.0), ("cost_estimated", 1), ("part_index", True)],
+)
+def test_load_is_strict(tmp_path: Path, key: str, value: object) -> None:
+    data = base()
+    data["schema_version"] = 1
+    data[key] = value
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(AudioError, match="invalid"):
+        PartTimeline.load(path)
+
+
+def test_load_is_strict_on_nested_ints(tmp_path: Path) -> None:
+    data = base()
+    data["schema_version"] = 1
+    data["scenes"][0]["words"][0]["start_ms"] = "50"
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(AudioError, match="invalid"):
+        PartTimeline.load(path)
+
+
+def test_load_deeply_nested_raises_audio_error(tmp_path: Path) -> None:
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+    with pytest.raises(AudioError):
+        PartTimeline.load(path)
+
+
+def test_saved_file_is_world_readable(tmp_path: Path) -> None:
+    path = tmp_path / "t.json"
+    make(base()).save(path)
+    assert path.stat().st_mode & 0o777 == 0o644

@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from narratoflow.models import WordTiming
-from narratoflow.text.tashkeel.verify import strip_diacritics
+from narratoflow.text.tashkeel.verify import is_diacritic
 
 
 @dataclass(frozen=True)
@@ -32,12 +32,21 @@ def tokens(text: str) -> list[str]:
 
 
 def _dropped(ch: str) -> bool:
-    return ch.isspace() or unicodedata.category(ch)[0] in "PS"
+    if ch.isspace() or is_diacritic(ch):
+        return True
+    cat = unicodedata.category(ch)
+    return cat[0] in "PSM" or cat == "Cf"
 
 
 def norm_for_timing(s: str) -> str:
-    """NFC, strip diacritics, casefold, then drop whitespace and P*/S* characters."""
-    folded = strip_diacritics(unicodedata.normalize("NFC", s)).casefold()
+    """The comparison key for timing: never shown, never spoken.
+
+    NFD then casefold (and NFD again, since casefolding can compose), then drop
+    the Arabic diacritics and tatweel of `strip_diacritics`, every combining
+    mark (M*), format character (Cf: ZWNJ, ZWJ, BOM), punctuation (P*), symbol
+    (S*) and whitespace. Decomposed and precomposed text thus compare equal.
+    """
+    folded = unicodedata.normalize("NFD", unicodedata.normalize("NFD", s).casefold())
     return "".join(ch for ch in folded if not _dropped(ch))
 
 
@@ -93,6 +102,13 @@ def split_ms(weights: Sequence[float], start_ms: int, end_ms: int) -> list[tuple
         raise ValueError("weights must be finite and >= 0")
     if not weights:
         return []
+    try:
+        return _split(weights, start_ms, end_ms)
+    except OverflowError as exc:
+        raise ValueError("weights are too large to split") from exc
+
+
+def _split(weights: Sequence[float], start_ms: int, end_ms: int) -> list[tuple[int, int]]:
     total = math.fsum(weights)
     if total == 0:
         weights = [1.0] * len(weights)

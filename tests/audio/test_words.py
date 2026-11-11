@@ -155,3 +155,67 @@ def test_shift_clamps() -> None:
     assert spans_of(shift(words, 50, limit_ms=1000)) == [("a", 50, 150), ("b", 950, 1000)]
     assert spans_of(shift(words, -50, limit_ms=1000)) == [("a", 0, 50), ("b", 850, 1000)]
     assert spans_of(shift(words, 5000, limit_ms=1000)) == [("a", 1000, 1000), ("b", 1000, 1000)]
+
+
+def test_tatweel_in_author_text_maps() -> None:
+    author = ["\u0642\u0640\u0640\u0627\u0644", "\u0644\u0647"]
+    spans = [TimedSpan("\u0642\u0627\u0644", 0, 300), TimedSpan("\u0644\u0647", 300, 500)]
+    out = timings_from_spans(author, spans)
+    assert out is not None
+    assert spans_of(out) == [(author[0], 0, 300), (author[1], 300, 500)]
+
+
+def test_diacritized_author_vs_bare_provider_maps() -> None:
+    author = tokens(ARABIC)
+    spans = [
+        TimedSpan("\u0642\u0627\u0644", 0, 300),
+        TimedSpan("\u0627\u0644\u0631\u062c\u0644", 350, 900),
+    ]
+    out = timings_from_spans(author, spans)
+    assert out is not None
+    assert spans_of(out) == [(author[0], 0, 300), (author[1], 350, 900)]
+
+
+def test_curly_apostrophe_contraction_maps() -> None:
+    author = ["don\u2019t", "go"]
+    spans = [TimedSpan("don't", 0, 300), TimedSpan("go", 300, 500)]
+    out = timings_from_spans(author, spans)
+    assert out is not None
+    assert spans_of(out) == [("don\u2019t", 0, 300), ("go", 300, 500)]
+
+
+def test_provider_dropping_or_adding_a_repeated_word_is_none() -> None:
+    author = ["very", "very", "good"]
+    dropped = [TimedSpan("very", 0, 300), TimedSpan("good", 300, 600)]
+    added = [
+        TimedSpan("very", 0, 300),
+        TimedSpan("very", 300, 600),
+        TimedSpan("very", 600, 900),
+        TimedSpan("good", 900, 1200),
+    ]
+    assert timings_from_spans(author, dropped) is None
+    assert timings_from_spans(author, added) is None
+
+
+def test_decomposed_hamza_and_accent_map() -> None:
+    # Author: precomposed alef-with-hamza-above and e-acute; provider: decomposed.
+    author = ["\u0623\u062d\u0645\u062f", "caf\u00e9"]
+    spans = [TimedSpan("\u0627\u0654\u062d\u0645\u062f", 0, 400), TimedSpan("cafe\u0301", 400, 800)]
+    out = timings_from_spans(author, spans)
+    assert out is not None
+    assert spans_of(out) == [(author[0], 0, 400), ("caf\u00e9", 400, 800)]
+    assert norm_for_timing("\u0623") == norm_for_timing("\u0627\u0654")
+
+
+def test_zero_width_joiners_are_dropped_on_both_sides() -> None:
+    author = ["\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"]
+    spans = [TimedSpan("\u0645\u06cc\u062e\u0648\u0627\u0647\u0645\u200d", 0, 500)]
+    out = timings_from_spans(author, spans)
+    assert out is not None
+    assert spans_of(out) == [(author[0], 0, 500)]
+    assert norm_for_timing("a\u200cb\ufeff") == "ab"
+
+
+def test_split_ms_overflow_is_value_error() -> None:
+    with pytest.raises(ValueError):
+        split_ms([1e308, 1e308], 0, 10)

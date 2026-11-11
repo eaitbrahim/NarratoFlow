@@ -2,6 +2,10 @@
 
 Every ms field is an int >= 0 on the part clock (0 = the part's first sample).
 Every float is finite, and the file is written with JSON that rejects NaN.
+
+Word timings may overlap: within a scene or ayah only the word *starts* are
+non-decreasing, and a word may end after the next one starts. Plan 5 must not
+assume disjoint words.
 """
 
 from __future__ import annotations
@@ -9,10 +13,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Sequence
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -20,6 +25,7 @@ from narratoflow.errors import AudioError
 from narratoflow.models import SceneKind, WordTiming
 
 TIMELINE_SCHEMA_VERSION: Literal[1] = 1
+_MODE = 0o644
 
 Ms = Annotated[int, Field(ge=0)]
 
@@ -34,7 +40,28 @@ class TimingSource(StrEnum):
     AYAH = "ayah"  # no segments: reveal each whole ayah at its start
 
 
-def _check_words(words: list[WordTiming], lo: int, hi: int, where: str) -> None:
+_SOURCES_BY_KIND = {
+    SceneKind.NARRATION: frozenset(
+        {TimingSource.PROVIDER, TimingSource.ALIGNED, TimingSource.ESTIMATED}
+    ),
+    SceneKind.VERSE: frozenset({TimingSource.SEGMENTS, TimingSource.AYAH}),
+}
+
+
+class TimelineWord(WordTiming):
+    """A `WordTiming` that rejects unknown keys; plain `WordTiming`s are accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_plain(cls, data: Any) -> Any:
+        if isinstance(data, WordTiming) and not isinstance(data, TimelineWord):
+            return data.model_dump()
+        return data
+
+
+def _check_words(words: Sequence[WordTiming], lo: int, hi: int, where: str) -> None:
     prev = lo
     for w in words:
         if w.start_ms < lo or w.end_ms > hi:
@@ -51,7 +78,7 @@ class AyahTiming(BaseModel):
     ayah: int = Field(ge=1)
     start_ms: Ms
     end_ms: Ms
-    words: list[WordTiming] = Field(default_factory=list)  # Uthmani display words; [] when AYAH
+    words: list[TimelineWord] = Field(default_factory=list)  # Uthmani display words; [] when AYAH
 
     @model_validator(mode="after")
     def _inside(self) -> AyahTiming:
@@ -63,15 +90,20 @@ class AyahTiming(BaseModel):
 
 
 class SceneTiming(BaseModel):
+    """One scene slot on the part clock.
+
+    `words` starts are non-decreasing but words may overlap (see the module doc).
+    """
+
     model_config = _STRICT
 
-    scene_id: str
+    scene_id: str = Field(min_length=1)
     kind: SceneKind
     start_ms: Ms
     end_ms: Ms
     speech_start_ms: Ms
     speech_end_ms: Ms
-    words: list[WordTiming]  # NARRATION: caption tokens; VERSE: []
+    words: list[TimelineWord]  # NARRATION: caption tokens; VERSE: []
     timing_source: TimingSource
     ayat: list[AyahTiming] = Field(default_factory=list)
     draw_start_ms: Ms | None = None  # None: no strokes (verse, text card)
@@ -94,15 +126,32 @@ class SceneTiming(BaseModel):
             and not (self.start_ms <= self.draw_start_ms <= self.draw_end_ms <= self.end_ms)
         ):
             raise ValueError(f"{where}: draw times lie outside the scene slot")
+        if self.timing_source not in _SOURCES_BY_KIND[self.kind]:
+            raise ValueError(
+                f"{where}: timing_source {self.timing_source.value} "
+                f"is not valid for a {self.kind.value} scene"
+            )
         if self.kind is SceneKind.VERSE:
-            if self.words:
-                raise ValueError(f"{where}: a verse scene carries words only in its ayat")
+            self._check_verse(where)
         elif self.ayat:
             raise ValueError(f"{where}: ayat are allowed only on verse scenes")
-        for a in self.ayat:
-            if a.start_ms < self.start_ms or a.end_ms > self.end_ms:
-                raise ValueError(f"{where}: ayah {a.surah}:{a.ayah} lies outside the scene")
         return self
+
+    def _check_verse(self, where: str) -> None:
+        if self.words:
+            raise ValueError(f"{where}: a verse scene carries words only in its ayat")
+        if not self.ayat:
+            raise ValueError(f"{where}: a verse scene needs at least one ayah")
+        prev_end = self.start_ms
+        for a in self.ayat:
+            label = f"{where}: ayah {a.surah}:{a.ayah}"
+            if a.start_ms < self.start_ms or a.end_ms > self.end_ms:
+                raise ValueError(f"{label} lies outside the scene")
+            if a.start_ms < prev_end:
+                raise ValueError(f"{label} is out of order or overlaps the previous ayah")
+            prev_end = a.end_ms
+            if self.timing_source is TimingSource.AYAH and a.words:
+                raise ValueError(f"{label} carries words but the scene is ayah-timed")
 
 
 class SfxHit(BaseModel):
@@ -150,6 +199,11 @@ class AssetUse(BaseModel):
 
 
 class PartTimeline(BaseModel):
+    """One part's audio timeline; `load` validates strictly (no int/bool coercion).
+
+    Word timings may overlap: only starts are non-decreasing (see the module doc).
+    """
+
     model_config = _STRICT
 
     schema_version: Literal[1] = TIMELINE_SCHEMA_VERSION
@@ -176,6 +230,11 @@ class PartTimeline(BaseModel):
         name = self.audio_file
         if not name or name in (".", "..") or "/" in name or "\\" in name or "\0" in name:
             raise ValueError(f"audio_file must be a bare file name, got {name!r}")
+        if self.part_index > self.part_count:
+            raise ValueError(f"part_index {self.part_index} exceeds part_count {self.part_count}")
+        ids = [s.scene_id for s in self.scenes]
+        if len(set(ids)) != len(ids):
+            raise ValueError("scene ids must be unique")
         if self.scenes[0].start_ms != 0:
             raise ValueError("the first scene must start at 0")
         for a, b in zip(self.scenes, self.scenes[1:], strict=False):
@@ -191,11 +250,18 @@ class PartTimeline(BaseModel):
             )
         prev = 0
         verses = [s for s in self.scenes if s.kind is SceneKind.VERSE]
+        known = set(ids)
         for hit in self.sfx:
+            if hit.scene_id not in known:
+                raise ValueError(f"sfx {hit.asset_id} names an unknown scene {hit.scene_id!r}")
             if hit.at_ms < prev:
                 raise ValueError("sfx must be sorted by at_ms")
             prev = hit.at_ms
             hit_end = hit.at_ms + hit.duration_ms
+            if hit_end > self.duration_ms:
+                raise ValueError(
+                    f"sfx {hit.asset_id} at {hit.at_ms} ends after duration_ms {self.duration_ms}"
+                )
             for v in verses:
                 if hit.at_ms < v.end_ms and hit_end > v.start_ms:
                     raise ValueError(
@@ -219,6 +285,9 @@ class PartTimeline(BaseModel):
             ) as tmp:
                 tmp_name = tmp.name
                 tmp.write(text)
+                tmp.flush()
+                os.fchmod(tmp.fileno(), _MODE)
+                os.fsync(tmp.fileno())
             os.replace(tmp_name, path)
         except OSError as exc:
             if tmp_name is not None:
@@ -235,12 +304,14 @@ class PartTimeline(BaseModel):
             raw = json.loads(text)
         except json.JSONDecodeError as exc:
             raise AudioError(f"timeline {path} is not valid JSON: {exc}") from exc
+        except RecursionError as exc:
+            raise AudioError(f"timeline {path} is nested too deeply") from exc
         found = raw.get("schema_version") if isinstance(raw, dict) else None
         if type(found) is not int or found != TIMELINE_SCHEMA_VERSION:
             raise AudioError(
                 f"unsupported timeline schema_version {found!r}; expected {TIMELINE_SCHEMA_VERSION}"
             )
         try:
-            return cls.model_validate(raw)
+            return cls.model_validate_json(text, strict=True)
         except ValidationError as exc:
             raise AudioError(f"timeline {path} is invalid:\n{exc}") from exc

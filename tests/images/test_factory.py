@@ -24,7 +24,6 @@ from narratoflow.images import GeneratedImage, ImageProvider, ImageRequest
 from narratoflow.images.factory import TrackedImageProvider, make_image_provider
 from narratoflow.images.local_diffusion import LocalDiffusionProvider
 from narratoflow.images.openai_images import OpenAIImageProvider
-from narratoflow.images.prompt import NEGATIVE_TERMS
 from narratoflow.settings import Settings
 
 
@@ -116,8 +115,9 @@ def test_make_unknown_provider(channel_file: Path) -> None:
 
 
 class FakePipe:
-    def __init__(self, cls: str) -> None:
+    def __init__(self, cls: str, fail: bool = False) -> None:
         self.cls = cls
+        self.fail = fail
         self.moved_to: str | None = None
         self.kwargs: dict[str, Any] = {}
 
@@ -127,6 +127,8 @@ class FakePipe:
 
     def __call__(self, **kwargs: Any) -> Any:
         self.kwargs = kwargs
+        if self.fail:
+            raise RuntimeError("CUDA out of memory")
         return types.SimpleNamespace(images=[Image.new("RGB", (8, 8), "white")])
 
 
@@ -141,7 +143,11 @@ class FakeGenerator:
 
 
 def install_fakes(
-    monkeypatch: pytest.MonkeyPatch, cuda: bool = False, mps: bool = False
+    monkeypatch: pytest.MonkeyPatch,
+    cuda: bool = False,
+    mps: bool = False,
+    call_fail: bool = False,
+    load_fail: bool = False,
 ) -> dict[str, list[FakePipe]]:
     made: dict[str, list[FakePipe]] = {"t2i": [], "i2i": []}
 
@@ -149,7 +155,18 @@ def install_fakes(
         class Pipeline:
             @staticmethod
             def from_pretrained(model: str, **_: Any) -> FakePipe:
-                pipe = FakePipe(f"{tag}:{model}")
+                if load_fail:
+                    raise OSError("no such model")
+                pipe = FakePipe(f"{tag}:{model}", fail=call_fail)
+                made[tag].append(pipe)
+                return pipe
+
+            @staticmethod
+            def from_pipe(base: FakePipe) -> FakePipe:
+                if load_fail:
+                    raise OSError("no pipe")
+                pipe = FakePipe(f"{tag}:from_pipe", fail=call_fail)
+                pipe.base = base  # type: ignore[attr-defined]
                 made[tag].append(pipe)
                 return pipe
 
@@ -186,8 +203,10 @@ def test_local_text_to_image(monkeypatch: pytest.MonkeyPatch) -> None:
     pipe = made["t2i"][0]
     assert pipe.moved_to == "cpu"
     assert pipe.kwargs["prompt"] == "a balance"
-    expected = ", ".join(NEGATIVE_TERMS) + ", people, faces, human figures, text, letters, logos"
-    assert pipe.kwargs["negative_prompt"] == expected
+    assert pipe.kwargs["negative_prompt"] == (
+        "shading, fills, grayscale, textures, double lines, gradients, hatching, 3d, "
+        "people, faces, human figures, text, letters, logos"
+    )
     gen = pipe.kwargs["generator"]
     assert gen.seed == 7
     assert "image" not in pipe.kwargs
@@ -204,12 +223,46 @@ def test_local_image_to_image(monkeypatch: pytest.MonkeyPatch) -> None:
     p = LocalDiffusionProvider("m")
     p.generate(ImageRequest("x", png_bytes(), seed=1))
     assert len(made["i2i"]) == 1
+    assert made["i2i"][0].base is made["t2i"][0]  # type: ignore[attr-defined]
     kwargs = made["i2i"][0].kwargs
     assert kwargs["strength"] == 0.6
     assert isinstance(kwargs["image"], Image.Image)
     assert kwargs["generator"].seed == 1
     p.generate(ImageRequest("y", png_bytes()))
     assert len(made["i2i"]) == 1
+
+
+def test_local_call_failure_is_provider_error_and_uncharged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fakes(monkeypatch, call_fail=True)
+    tracker = SpendTracker(None)
+    prices: Any = FakePrices()
+    t = TrackedImageProvider(LocalDiffusionProvider("m"), tracker, prices, "local-diffusion", "m")
+    with pytest.raises(ProviderError, match=r"local diffusion failed \(RuntimeError\)") as ei:
+        t.generate(ImageRequest("secret prompt", None))
+    assert "secret" not in str(ei.value)
+    assert tracker.spent == 0
+
+
+def test_local_load_failure_is_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_fakes(monkeypatch, load_fail=True)
+    with pytest.raises(ChannelConfigError, match=r"cannot load diffusion model 'm' \(OSError\)"):
+        LocalDiffusionProvider("m")
+
+
+def test_local_i2i_load_failure_is_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_fakes(monkeypatch)
+    import diffusers  # the fake module
+
+    p = LocalDiffusionProvider("m")
+
+    def boom(_: object) -> None:
+        raise OSError("x")
+
+    monkeypatch.setattr(diffusers.AutoPipelineForImage2Image, "from_pipe", boom)
+    with pytest.raises(ChannelConfigError, match="cannot load diffusion model"):
+        p.generate(ImageRequest("x", png_bytes()))
 
 
 def test_local_bad_reference_is_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:

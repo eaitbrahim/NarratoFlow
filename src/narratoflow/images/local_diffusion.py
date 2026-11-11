@@ -29,8 +29,18 @@ class LocalDiffusionProvider:
         self._torch: Any = torch
         self._diffusers: Any = diffusers
         self._device = self._pick_device(device)
-        self._t2i: Any = diffusers.AutoPipelineForText2Image.from_pretrained(model).to(self._device)
+        try:
+            self._t2i: Any = diffusers.AutoPipelineForText2Image.from_pretrained(model).to(
+                self._device
+            )
+        except Exception as err:
+            raise self._load_error(err) from err
         self._i2i: Any = None
+
+    def _load_error(self, err: Exception) -> ChannelConfigError:
+        return ChannelConfigError(
+            f"cannot load diffusion model {self.model!r} ({type(err).__name__})"
+        )
 
     def _pick_device(self, device: str) -> str:
         if device != "auto":
@@ -56,13 +66,17 @@ class LocalDiffusionProvider:
             except (UnidentifiedImageError, OSError) as err:
                 raise ProviderError("reference image is not a valid image") from err
             if self._i2i is None:
-                self._i2i = self._diffusers.AutoPipelineForImage2Image.from_pretrained(
-                    self.model
-                ).to(self._device)
+                try:
+                    self._i2i = self._diffusers.AutoPipelineForImage2Image.from_pipe(self._t2i)
+                except Exception as err:
+                    raise self._load_error(err) from err
             pipe = self._i2i
             kwargs["image"] = ref
             kwargs["strength"] = IMG2IMG_STRENGTH
-        image = pipe(**kwargs).images[0]
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
+        try:
+            image = pipe(**kwargs).images[0]
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+        except Exception as err:
+            raise ProviderError(f"local diffusion failed ({type(err).__name__})") from err
         return GeneratedImage(buf.getvalue(), self.name, self.model, None)

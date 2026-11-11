@@ -30,6 +30,8 @@ class TrackedImageProvider:
     ) -> None:
         self.inner = inner
         self.name = inner.name
+        # `model` is what the inner provider reports (the protocol attribute);
+        # `model_key` is the configured model used for price lookup and labels.
         self.model = inner.model
         self.tracker = tracker
         self.prices = prices

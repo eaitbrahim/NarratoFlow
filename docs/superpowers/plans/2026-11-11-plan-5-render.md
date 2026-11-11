@@ -42,7 +42,7 @@
   - A channel whose `outputs` contains `16:9` renders 9:16 only and gets the report warning `"16:9 is not rendered in v1"`.
   - `Scene.layouts` is ignored in v1.
 - **Pinned safe zones at 1080x1920** (`render/layout.py`; a `Rect` is x, y, w, h in px):
-  - Unsafe areas: `PLATFORM_TOP = Rect(0, 0, 1080, 160)`, `RIGHT_RAIL = Rect(888, 768, 192, 1152)`, `PLATFORM_BOTTOM = Rect(0, 1440, 1080, 480)`, plus a 60 px left margin.
+  - Unsafe areas: `PLATFORM_TOP = Rect(0, 0, 1080, 160)`, `RIGHT_RAIL = Rect(888, 768, 192, 1152)`, `PLATFORM_BOTTOM = Rect(0, 1440, 1080, 480)`, plus `LEFT_MARGIN = Rect(0, 0, 60, 1920)`, the seventh rect. No content zone intersects it.
   - Content zones: `TOP_BAR = Rect(60, 170, 960, 200)`, `STAGE = Rect(60, 390, 828, 850)`, `CAPTIONS = Rect(60, 1260, 828, 180)`.
   - How these were derived: TikTok (≈130 px top, 150 px right rail, 480 px bottom) and YouTube Shorts (192 px right rail; its 288 px top and 672 px bottom figures are ad-placement guidance). Where the two platforms disagree, the larger figure wins, except at the top and bottom, where the owner's §8 bands (top bar below ≈8 %, captions at 65–78 %) govern.
   - **No sketch pixel, hand pixel or text ink may land outside its zone.**
@@ -55,20 +55,20 @@
 - **Fonts and the hand are bundled assets with provenance [spec §6.2].**
   - Every file is listed in its `index.toml` with `license`, `source` and `sha256` (fonts also need `license_file`), and in `assets/LICENSES.md`.
   - Allowed licences: fonts `OFL-1.1`; the hand `Apache-2.0`/`CC0-1.0`/`MIT`/`ISC`/`CC-BY-4.0` (with attribution).
-  - libass loads fonts **only** through `fontsdir=` from a copy of the bundled fonts. A caption glyph the font lacks adds the report warning `"<scene>: caption glyphs missing from <font>: U+XXXX..."`.
+  - Fonts are supplied to libass only through `fontsdir=` from a copy of the bundled fonts. libass in ffmpeg may still enable a system fallback provider, so glyph coverage is enforced by `missing_glyphs`, not by fontconfig. A caption glyph the font lacks adds the report warning `"<scene>: caption glyphs missing from <font>: U+XXXX..."`.
 - **ffmpeg for render must have libass.**
   - `find_render_tools(settings)` uses `Settings.ffmpeg` (`NARRATOFLOW_FFMPEG`), else `shutil.which("ffmpeg")`, and `ffprobe` beside it, else on PATH.
   - It requires the `ass` filter and the `libx264`, `ffv1` and `aac` encoders. When the `ass` filter is missing, the message names the macOS fix (`brew install ffmpeg-full` and set `NARRATOFLOW_FFMPEG=$(brew --prefix ffmpeg-full)/bin/ffmpeg`). Homebrew's default `ffmpeg` 8.x has no libass, as checked on the owner's machine.
   - Audio keeps `audio.io.require_ffmpeg` unchanged.
 - **Determinism [spec §4.5].**
-  - `video_id = f"{series.channel_slug}/{series.title}"` (the same string audio and sketching use); `wobble_seed = marker_seed(video_id, scene.id)`.
+  - `video_id(series) = f"{series.channel_slug}/{series.title}"` is ONE function in `visuals/marker.py` beside `marker_seed`. `audio/build.py` and `sketching/generate.py` call it (Task 4 moves it), and render imports it. `wobble_seed = marker_seed(video_id(series), scene.id)`.
   - Variation draws come from `np.random.default_rng([wobble_seed, 1])` in a fixed order.
   - Re-rendering gives identical decoded frames (checked with ffmpeg `framemd5`). The worker count never changes the output.
 - `subprocess` is called with an argument list, an absolute tool path and a timeout, never `shell=True`. A non-zero exit raises `RenderError` with the last 5 stderr lines. Filtergraph paths are never interpolated: the final pass runs with `cwd=<work dir>` and uses the relative names `captions.ass` and `fonts`.
 - New errors (Task 1): `RenderError(NarratoFlowError)` and `StaleTimelineError(RenderError)`.
 - **Tests never touch the network.**
   - Pipeline tests render at `Canvas(scale=Fraction(1, 6))` (180x320) with timelines of ≤ 4 s. libass checks render single 1080x1920 stills.
-  - Tests needing libass use the `render_tools` fixture. It skips locally when ffmpeg lacks libass and **fails** when `CI` is set.
+  - Tests needing libass use the `render_tools` fixture. It skips locally when ffmpeg lacks libass and **fails** when `CI` is set. The autouse `_isolate_env` in `tests/conftest.py` deletes every `NARRATOFLOW_*` variable, so the fixture reads `NARRATOFLOW_FFMPEG` at module import time of `tests/render/conftest.py` (before any fixture runs) and passes it explicitly. The owner can then run libass tests locally with `ffmpeg-full`.
   - Verse tests use the `tests/fixtures/quran/` corpus (31:33 is in it).
 - Same tooling gate as Plans 1–4 (ruff check, ruff format --check, mypy strict on src and tests, pytest under branch coverage). Sources are pure ASCII with `\u` escapes, so Arabic test strings are written as escapes, e.g. `"سسس"`.
 
@@ -99,23 +99,27 @@ src/narratoflow/
   errors.py                 # MODIFY: RenderError, StaleTimelineError
   settings.py               # MODIFY: ffmpeg: Path | None (NARRATOFLOW_FFMPEG)
   interfaces.py             # MODIFY: drop the legacy Project-based Renderer protocol (nothing implements it)
+  audio/build.py            # MODIFY: call visuals.marker.video_id (was an inline f-string)
+  audio/sfx.py              # MODIFY: _LICENSES -> public ASSET_LICENSES
+  sketching/generate.py     # MODIFY: call visuals.marker.video_id (was an inline f-string)
+  sketching/resolve.py      # MODIFY: use_text_card(..., card_text)
   models.py                 # MODIFY: Scene.card_text
   render/layout.py          # REPLACE stub: FPS, Rect, zones, Canvas, frame_of / frame_range
   render/ffmpeg.py          # NEW: RenderTools, find_render_tools, run_tool, render_ass_still, check_arabic_shaping, probe
   render/assets.py          # NEW: FontPack, HandSprite (validated indexes), missing_glyphs
   render/reveal.py          # REPLACE stub: stroke_progress, pen_at, RevealCanvas
-  render/variation.py       # NEW: video_id, Variation, choose_variation, sketch_to_art, card_frame_strokes
+  render/variation.py       # NEW: Variation, choose_variation, sketch_to_art, card_frame_strokes (re-exports video_id)
   render/camera.py          # REPLACE stub: View, CameraTrack
   render/compose.py         # NEW: SceneJob, scene_frames, render_segment
   render/encoder.py         # REPLACE stub: FrameSink, write_concat_list, encode_part, verify_mp4
   render/report.py          # NEW: RenderReport (+ save/load)
   render/build.py           # NEW: build_render, check_timeline
-  visuals/marker.py         # MODIFY: PreparedStroke, prepare_marker, draw_stroke, stroke_point; render_marker unchanged in output
+  visuals/marker.py         # MODIFY: fix render_marker upto>=1; PreparedStroke, prepare_marker, draw_stroke, stroke_point, video_id; render_marker output unchanged after the fix
   captions/ass.py           # REPLACE stub: AssStyle, AssEvent, AssDocument, karaoke, caption_pages, caption_events, build_styles
   captions/verse.py         # NEW: verse_pages, check_verse_text, verse_events, shown_text
   captions/overlays.py      # NEW: part_label, overlay_events, card_text, card_events
   captions/part.py          # NEW: build_part_ass
-  cli.py                    # MODIFY: `render`; `sketch resolve --text-card --card-text`
+  cli.py                    # MODIFY: `render`; `sketch resolve SERIES_JSON SCENE --text-card --card-text`
 assets/fonts/               # NEW: 5 OFL fonts, OFL texts, index.toml (README kept)
 assets/hands/               # NEW: hand-right.png, index.toml
 assets/LICENSES.md          # MODIFY: font rows (replace the file-less Amiri row), hand row
@@ -123,7 +127,7 @@ scripts/fetch_fonts.py      # NEW: pinned-URL + sha256 font download (manual run
 scripts/make_hand.py        # NEW: deterministic hand sprite (manual run; output committed)
 pyproject.toml              # MODIFY: fonttools dep; mypy override fontTools.*; force-include assets/fonts, assets/hands
 .github/workflows/ci.yml    # MODIFY: assert ffmpeg has the ass filter
-tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtures
+tests/render/conftest.py    # NEW: render_tools fixture (captures NARRATOFLOW_FFMPEG at import), tiny_canvas, part fixtures
 ```
 
 ---
@@ -132,14 +136,14 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 
 **Files:**
 - Replace `render/layout.py`. Create `render/ffmpeg.py`.
-- Modify `errors.py`, `settings.py`, `interfaces.py` (remove `Renderer` and its `__all__` entry) and `.github/workflows/ci.yml`: after the apt step, add `ffmpeg -hide_banner -filters | grep -qE '^ ... ass '`.
+- Modify `errors.py`, `settings.py`, `interfaces.py` (remove `Renderer`, its `__all__` entry and the then-unused `AspectRatio, Project` imports) and `.github/workflows/ci.yml`: after the apt step, add `ffmpeg -hide_banner -filters | grep -qE '^ ... ass '`.
 - Tests: `tests/render/__init__.py`, `tests/render/conftest.py`, `tests/render/test_layout.py`, `tests/render/test_ffmpeg.py`.
 
 **Interfaces — Produces:**
 - `RenderError(NarratoFlowError)`, `StaleTimelineError(RenderError)`.
 - `Settings.ffmpeg: Path | None = None`, expanded with `expanduser`.
 - `layout.py`:
-  - `FPS = 30`, `FRAME_W = 1080`, `FRAME_H = 1920`, `STAGE_PADDING_PX = 24`, and the seven `Rect` constants of Global Constraints.
+  - `FPS = 30`, `FRAME_W = 1080`, `FRAME_H = 1920`, `STAGE_PADDING_PX = 24`, and the seven `Rect` constants of Global Constraints (three unsafe, `LEFT_MARGIN = Rect(0, 0, 60, 1920)`, three content zones).
   - `@dataclass(frozen=True) class Rect: x: int; y: int; w: int; h: int`, with `right`, `bottom`, `contains(other) -> bool`, `intersects(other) -> bool` and `scaled(f: Fraction) -> Rect`. Edges are scaled with `round()`, so adjacent rects stay adjacent.
   - `@dataclass(frozen=True) class Canvas: scale: Fraction = Fraction(1)`, with `width`, `height`, `stage`, `captions` and `top_bar` (scaled rects). Allowed scales are `{1, 1/2, 1/3, 1/6}`, else `ValueError`, so the dimensions are even integers.
   - `frame_of(ms: int) -> int` is `(ms * FPS * 2 + 1000) // 2000`, i.e. round half up of `ms * 30 / 1000`.
@@ -156,18 +160,19 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
     - returns an HxWx3 uint8 array.
   - `check_arabic_shaping(tools: RenderTools, fonts: FontPack, work_dir: Path) -> None`. This is defined in Task 2, once `FontPack` exists; Task 1 creates only the module.
 - Fixtures in `tests/render/conftest.py`:
-  - `render_tools`: `find_render_tools(Settings())`. On `RenderError` it skips, or fails when `CI` is set.
+  - `render_tools`: `find_render_tools(Settings(ffmpeg=_OWNER_FFMPEG))`, where `_OWNER_FFMPEG = Path(v) if (v := os.environ.get("NARRATOFLOW_FFMPEG")) else None` is evaluated at import of `tests/render/conftest.py`, before the autouse `_isolate_env` deletes the variable. On `RenderError` it skips, or fails when `CI` is set.
   - `tiny_canvas`: `Canvas(Fraction(1, 6))`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_zones_pinned_values`: asserts the seven rects exactly as in Global Constraints;
-  - `test_content_zones_disjoint_and_clear_of_unsafe`: no content zone intersects another or any unsafe rect, and all lie inside `x >= 60`;
+  - `test_zones_pinned_values`: asserts the seven rects exactly as in Global Constraints, `LEFT_MARGIN` included;
+  - `test_content_zones_disjoint_and_clear_of_unsafe`: no content zone intersects another or any unsafe rect (`LEFT_MARGIN` included), and all lie inside `x >= 60`;
   - `test_canvas_scales_even_and_adjacent`: at 1/6 the frame is 180x320, `stage.bottom <= captions.y`, and every dimension is an integer;
   - `test_bad_scale_rejected`;
   - `test_frame_of_round_half_up`: `frame_of(0) == 0`, `frame_of(16) == 0`, `frame_of(17) == 1`, `frame_of(1000) == 30`, `frame_of(90_000) == 2700`;
   - `test_frame_ranges_contiguous_sum` (Review Focus 5): 200 random contiguous ms boundaries → the ranges tile `[0, frame_of(total))` with no gap or overlap;
   - `test_missing_ass_filter_message_names_ffmpeg_full` (monkeypatched `run_tool` output);
   - `test_settings_ffmpeg_override_used` (a fake executable script on `tmp_path`);
+  - `test_render_tools_fixture_reads_owner_ffmpeg_at_import` (a monkeypatched module global is passed to `Settings`);
   - `test_run_tool_nonzero_raises_with_stderr_tail`;
   - `test_probe_reads_streams` (`render_tools`: a 1 s `lavfi` testsrc + sine encoded in-test → `frames == 30`, `audio_ms` within 30 ms of 1000).
 - [ ] **Step 2: Run** `uv run pytest tests/render -v`. Expected: FAIL (modules missing).
@@ -199,7 +204,11 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `notosans-regular` → `NotoSans-Regular.ttf`, "Noto Sans";
   - `notosans-bold` → `NotoSans-Bold.ttf`, "Noto Sans".
 
-  `scripts/fetch_fonts.py` downloads them from the upstream GitHub releases (aliftype/amiri; notofonts static TTFs). Before writing the script, verify each release URL and version on GitHub. Pin the URL and sha256 in the script, and write them to `index.toml`. The files and `OFL-Amiri.txt` / `OFL-NotoSans.txt` are committed.
+  `scripts/fetch_fonts.py` downloads **one zip per upstream release** (neither release ships per-file assets):
+  - Amiri 1.003: `https://github.com/aliftype/amiri/releases/download/1.003/Amiri-1.003.zip`;
+  - Noto Sans v2.015: `https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip` (use the `hinted/ttf` statics).
+
+  The zip member paths are **unverified**: before writing the script, download each zip into a fresh directory and list its contents, then name the members (`Amiri-Regular.ttf`, `Amiri-Bold.ttf`, `AmiriQuran.ttf`, `NotoSans-Regular.ttf`, `NotoSans-Bold.ttf` and both OFL texts) in the script. The script pins the zip URL and the **zip's sha256**, verifies it, and extracts only the named members. Each extracted file's own sha256 is written to `index.toml`, with `source` = zip URL + member path (spec §6.2 provenance per file). Both licences are OFL-1.1 with no Reserved Font Name. The files and `OFL-Amiri.txt` / `OFL-NotoSans.txt` are committed.
 - Font index entry: `[fonts.<id>] file, family, license = "OFL-1.1", license_file, source, sha256`. These fields are exactly the required set.
 - `@dataclass(frozen=True) class FontAsset: id: str; file: Path; family: str; license: str; license_file: Path; source: str; sha256: str`
 - `FontPack.from_index(path: Path) -> FontPack` validates in the manner of `SfxPack.from_index`:
@@ -212,8 +221,8 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 - `default_fonts() -> FontPack`, the hand counterpart `default_hand() -> HandSprite`: the packaged location first, then the dev checkout. Unlike icons, a missing index raises `ChannelConfigError("bundled fonts not found ...")`, because render cannot run without them.
 - `@dataclass(frozen=True) class HandSprite: id: str; file: Path; license: str; source: str; attribution: str; tip: tuple[int, int]; sha256: str`.
   - `HandSprite.from_index(path)` reads `[hands.right]` with the fields `file` (`.png`), `license`, `source`, `tip_x`, `tip_y`, `sha256` and an optional `attribution`. The licence allow-list is `audio.sfx.ASSET_LICENSES`, and `CC-BY-4.0` needs an attribution.
-  - The PNG must be RGBA and its tip pixel must lie inside the image with alpha > 0.
-  - `HandSprite.image(scale: Fraction) -> tuple[np.ndarray, tuple[int, int]]` returns the RGBA array resized with `cv2.INTER_AREA` and the scaled tip, cached per scale.
+  - The file's sha256 must match the index entry (verified like fonts, spec §6.2). The PNG must be RGBA and its tip pixel must lie inside the image with alpha > 0.
+  - `HandSprite.image(scale: Fraction) -> tuple[np.ndarray, tuple[int, int]]` returns the RGBA array resized with `cv2.INTER_AREA` and the scaled tip. The cache is a module-level `functools.lru_cache` over a helper keyed on `(file, sha256, scale)`, so `HandSprite` stays plain picklable frozen data with no cache field (it travels inside every `SceneJob`).
 - `scripts/make_hand.py`:
   - draws, with PIL, a right hand from the wrist down gripping a marker, using fixed polygons: ink `#111111` outline, white fill, a grey marker body;
   - the marker tip is at the top-left; the image is 320x440 RGBA;
@@ -221,7 +230,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - it has no randomness;
   - its output is NarratoFlow's own work, under `Apache-2.0`, with source `scripts/make_hand.py`.
 - `check_arabic_shaping(tools, fonts, work_dir) -> None`:
-  - copies the fonts to `work_dir/fonts` and writes a one-event ASS showing `"سسس"` in "Amiri" at size 200 on a 600x300 still;
+  - copies the fonts to `work_dir/fonts` and writes its own raw ASS (not `AssDocument`, which does not exist yet and pins a 1080x1920 PlayRes) with `PlayResX: 600`, `PlayResY: 300` and `Encoding -1`, one event showing `"سسس"` in "Amiri" at size 200 on a 600x300 still, so the 200 px glyph that the one-component count was designed for is kept;
   - takes `render_ass_still` and counts the 8-connected ink components (`< 128` gray) with `cv2.connectedComponents`;
   - when the count is not exactly 1, raises `RenderError("ffmpeg's libass did not join Arabic letters (no HarfBuzz shaping); install ffmpeg-full ...")`.
 - `assets/LICENSES.md`: one row per font (pack, path, upstream URL with version, OFL-1.1) and one row for the hand sprite (`scripts/make_hand.py`, Apache-2.0). The old Amiri row without a file is replaced.
@@ -231,13 +240,15 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `test_committed_fonts_load_with_families`;
   - `test_amiri_quran_covers_fixture_corpus`: `missing_glyphs("amiri-quran", text) == []` for every ayah in `tests/fixtures/quran/quran-uthmani.txt` (Review Focus 2);
   - `test_missing_glyphs_reports_codepoints` (a Latin font and an Arabic letter → `["U+0633"]`);
-  - `test_hand_index_validation_and_tip_alpha`;
+  - `test_hand_index_validation_and_tip_alpha` (a sha256 mismatch included);
+  - `test_hand_image_cache_is_module_level_and_sprite_pickles` (`pickle.dumps(sprite)` stays small and round-trips);
   - `test_hand_image_scaled_tip`;
+  - `test_fetch_fonts_pins_zip_sha_and_members` (a fake zip in `tmp_path`: a bad zip sha256 or a missing member raises);
   - `test_check_arabic_shaping_passes_with_bundled_amiri` (`render_tools`);
   - `test_check_arabic_shaping_rejects_unjoined`: `render_ass_still` is monkeypatched to return 3 blobs;
   - `test_wheel_contains_fonts_and_hand` (`slow`, as the Plan 4 SFX wheel test).
 - [ ] **Step 2: Run** `uv run pytest tests/render/test_assets.py -v`. Expected: FAIL.
-- [ ] **Step 3: Implement**, then run `uv run python scripts/fetch_fonts.py` and `uv run python scripts/make_hand.py`, and fill both indexes with the printed sha256 and tip.
+- [ ] **Step 3: Implement**, then run `uv run python scripts/fetch_fonts.py` and `uv run python scripts/make_hand.py`, and fill both indexes with the printed sha256 values and tip.
 - [ ] **Step 4: Run the full gate.** Expected: green.
 - [ ] **Step 5: Commit** `feat: bundled OFL fonts, generated hand sprite and libass shaping self-test`.
 
@@ -245,17 +256,21 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 
 **Files:** Modify `visuals/marker.py`. Replace `render/reveal.py`. Tests: `tests/visuals/test_marker.py` (extend), `tests/render/test_reveal.py`.
 
+**Order of work (two commits).** First fix a latent Plan 3 bug in `render_marker`, then refactor byte-identically to the **fixed** code. The bug: `render_marker`'s float budget (`total = sum(...)`, then `budget -= seg`) is often an ulp short at the last stroke, so a final **dot** is skipped entirely (the existing `_set()` fixture loses it at seeds 1, 2, 3, 8, 11, 14, 18, 19; seed 1 is the test seed), and a text-card frame would lose its last side. `test_final_reveal_equals_render_marker` cannot pass against the unfixed code. `render_marker` has no callers in `src`, only tests.
+
 **Interfaces — Consumes:** `StrokeEvent` and `draw_schedule` (`visuals/schedule.py`), and `StrokeSet`.
 
 **Interfaces — Produces:**
-- `@dataclass(frozen=True) class PreparedStroke: points: tuple[tuple[float, float], ...]; weight: float; dot: bool; length: float`. The points are in target pixels. A dot keeps only its first point, its weight is the disc diameter, and its length equals the diameter (today's rules).
-- `prepare_marker(strokes: StrokeSet, size: tuple[int, int], *, line_weight_px: float, seed: int, to_pixels: Callable[[float, float], tuple[float, float]] | None = None, reverse: Sequence[bool] | None = None) -> list[PreparedStroke]`:
-  - The rng draws are exactly today's, in today's order: per stroke, `normal(size=(n, 2))` then one `uniform`. They are added after `to_pixels`.
+- `@dataclass(frozen=True) class PreparedStroke: points: tuple[tuple[float, float], ...]; weight: float; dot: bool; length: float`. The points are in target pixels. A dot keeps only its first point, its weight is the disc diameter, and its length equals the diameter (today's rules). `length` is computed exactly as today, `sum(math.dist(...))`, not `math.fsum`.
+- `prepare_marker(strokes: StrokeSet, size: tuple[int, int], *, line_weight_px: float, seed: int, to_pixels: Callable[[float, float], tuple[float, float]] | None = None, reverse: Sequence[bool] | None = None, dot_px_per_unit: float | None = None) -> list[PreparedStroke]`:
+  - The rng draws are exactly today's, in today's order: per stroke, `normal(0, WOBBLE_SIGMA_PX, (n, 2))` (keep `loc=0, scale=WOBBLE_SIGMA_PX`) then one `uniform`. They are added after `to_pixels`.
+  - A dot's diameter is `max(stroke.width * dot_px_per_unit, weight)`. `dot_px_per_unit` defaults to `w` (the target width), which keeps today's bytes. The compositor passes `fit_scale * variation.scale * strokes.width` so dots scale with the sketch.
   - `to_pixels` defaults to `(x * (w - 1), y * (h - 1))`.
   - `reverse[i]` reverses stroke i's points *after* the noise is added, so the draws do not depend on it.
-- `draw_stroke(draw: ImageDraw.ImageDraw, stroke: PreparedStroke, fraction: float, rgb: tuple[int, int, int]) -> None` draws the first `fraction` of the stroke's own length, using today's quad-and-disc rasterization. A dot is drawn only when `fraction >= 1`.
+- `_draw_prefix(draw: ImageDraw.ImageDraw, stroke: PreparedStroke, length: float, rgb: tuple[int, int, int]) -> None` (internal, shared by `render_marker` and `draw_stroke`) draws the first `length` px of the stroke using today's quad-and-disc rasterization. A stroke with `seg == 0` (zero-length polyline) counts as complete: never divide by `seg`. A dot is drawn only when `length >= stroke.length`.
+- `draw_stroke(draw, stroke, fraction: float, rgb) -> None` draws the first `fraction` of the stroke's own length by calling `_draw_prefix(..., fraction * stroke.length, ...)`. The budget loop in `render_marker` also passes a **length budget** to `_draw_prefix`, never `fraction = budget / seg` (`(budget / seg) * seg != budget` by an ulp), so the `upto=0.5` digest holds by construction.
 - `stroke_point(stroke: PreparedStroke, fraction: float) -> tuple[float, float]` is the pen position at that fraction.
-- `render_marker(...)` keeps its signature and output byte for byte. It becomes `prepare_marker` plus the existing budget loop over `draw_stroke`.
+- `render_marker(...)` keeps its signature. **Fix (first commit):** when `upto >= 1.0` every stroke is drawn complete in its own commit, with the budget check skipped; `upto < 1.0` behaviour is unchanged. After the fix its output is the byte-for-byte reference. The refactor (second commit) makes it `prepare_marker` plus the existing budget loop over `_draw_prefix`.
 - `reveal.py`:
   - `stroke_progress(events: Sequence[StrokeEvent], t_ms: float) -> tuple[int, float]` returns `(strokes fully drawn, fraction of the next)`. An event with `t >= end_ms` is complete, including a zero-length event with `t >= start_ms`. The fraction is `(t - start) / (end - start)` for the one event in progress, else 0.
   - `pen_at(prepared: Sequence[PreparedStroke], events: Sequence[StrokeEvent], t_ms: float) -> tuple[float, float] | None`. It is None before the first start and at or after the last end; otherwise it is `stroke_point` of the stroke in progress.
@@ -264,31 +279,35 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
     - `at(self, t_ms: float) -> Image.Image`. It commits newly finished strokes to an internal "done" image in order. With a stroke in progress, it returns a copy of "done" with that stroke drawn partially; otherwise "done" itself (the caller must not mutate it).
     - Times must be non-decreasing, else `ValueError`.
 
-- [ ] **Step 1: Write the failing tests:**
-  - `test_render_marker_digest_pinned`: the sha256 of `_render().tobytes()` and of `_render(upto=0.5)`, computed **on the unmodified code first** and pasted in;
+- [ ] **Step 1: Write the regression test (fix commit):** `test_render_marker_upto_one_draws_every_stroke` in `tests/visuals/test_marker.py`: for seeds 1-20, the existing `_set()` fixture at `upto=1.0` has the final dot's pixels inked (compare with a render of the same strokes that has only that dot). Run it: FAIL on seeds 1, 2, 3, 8, 11, 14, 18, 19.
+- [ ] **Step 2: Fix** `render_marker` (`upto >= 1.0` skips the budget check). Run the gate. **Commit** `fix: render_marker draws every stroke at upto=1.0`.
+- [ ] **Step 3: Write the failing tests (refactor commit):**
+  - `test_render_marker_digest_pinned`: the sha256 of `_render().tobytes()` and of `_render(upto=0.5)`, computed **on the fixed code, before refactoring**, and pasted in;
+  - `test_prepare_marker_length_is_plain_sum_and_zero_length_polyline_complete` (`length == sum(math.dist(...))` exactly; a polyline with `seg == 0` draws without dividing by zero);
+  - `test_dot_px_per_unit_scales_dot_diameter` (default equals `w`-based bytes; a larger value gives a larger disc);
   - `test_prepare_reverse_does_not_change_rng_draws`;
   - `test_to_pixels_identity_matches_default`;
   - `test_progress_zero_length_events_complete_at_start`: events `[(0, 0, 0), (1, 0, 500), (2, 500, 500)]` → at t=0, `(1, 0.0)`; at t=500, `(3, 0.0)`;
   - `test_progress_mid_stroke_fraction`;
-  - `test_final_reveal_equals_render_marker`: `RevealCanvas(prepare_marker(...), draw_schedule(...)).at(end)` gives `tobytes()` equal to `render_marker(upto=1.0)` with the same seed;
+  - `test_final_reveal_equals_render_marker`: `RevealCanvas(prepare_marker(...), draw_schedule(...)).at(end)` gives `tobytes()` equal to `render_marker(upto=1.0)` (fixed) with the same seed;
   - `test_reveal_monotonic_ink` (ink count non-decreasing over 30 frame times);
   - `test_reveal_rejects_time_going_back`;
   - `test_pen_at_none_outside_window_and_on_stroke_inside`.
-- [ ] **Step 2: Run** `uv run pytest tests/visuals/test_marker.py tests/render/test_reveal.py -v`. Expected: the new tests FAIL. Capture the digest before touching the code.
-- [ ] **Step 3: Implement** as specified.
-- [ ] **Step 4: Run the full gate.** Expected: green, with the existing marker tests unchanged.
-- [ ] **Step 5: Commit** `feat: per-stroke marker reveal on the audio draw schedule`.
+- [ ] **Step 4: Run** `uv run pytest tests/visuals/test_marker.py tests/render/test_reveal.py -v`. Expected: the new tests FAIL (digest tests pass until the refactor and must stay green).
+- [ ] **Step 5: Implement** the refactor as specified.
+- [ ] **Step 6: Run the full gate.** Expected: green, with the existing marker tests unchanged and both digests still equal.
+- [ ] **Step 7: Commit** `feat: per-stroke marker reveal on the audio draw schedule`.
 
 ### Task 4: Free variations and the stage fit
 
-**Files:** Create `render/variation.py`. Test: `tests/render/test_variation.py`.
+**Files:** Create `render/variation.py`. Modify `visuals/marker.py` (add `video_id`), `audio/build.py` and `sketching/generate.py` (call it). Tests: `tests/render/test_variation.py`, `tests/audio/test_build.py` and `tests/sketching/test_generate.py` (one spy test each).
 
 **Interfaces — Consumes:** `marker_seed` (`visuals/marker.py`); `Canvas` and `STAGE_PADDING_PX` (Task 1).
 
 **Interfaces — Produces:**
-- `video_id(series: Series) -> str` is `f"{series.channel_slug}/{series.title}"`.
+- `video_id(series: Series) -> str` is `f"{series.channel_slug}/{series.title}"`. It is **defined in `visuals/marker.py`** beside `marker_seed`. `audio/build.py` (line ~340) and `sketching/generate.py` (line ~570) replace their inline f-strings with calls to it, and `render/variation.py` re-exports it. One definition makes drift impossible.
 - Constants: `ROTATION_DEG = 3.0`, `SCALE_RANGE = (0.90, 1.00)`, `OFFSET_FRAC = 0.03`, `WEIGHT_RANGE = (0.90, 1.10)`, `MIRROR_P = 0.5`, `REVERSE_P = 0.5`, `ZOOM_MAX = 1.30`.
-- `class Variation(BaseModel)` (extra forbid), the report's record of what was applied: `mirrored: bool; rotation_deg: float; scale: float; dx: float; dy: float; line_weight_factor: float; reversed_strokes: list[int]; wobble_seed: int`.
+- `class Variation(BaseModel)` (extra forbid), the report's record of what was applied: `mirrored: bool; rotation_deg: float; scale: float; dx: float; dy: float; line_weight_factor: float; reversed_strokes: list[int]; wobble_seed: int`. `reversed_strokes` is where the report records the spec deviation below.
 - `choose_variation(video_id: str, scene_id: str, *, mirror_safe: bool, stroke_count: int) -> Variation`. It uses `rng = default_rng([marker_seed(video_id, scene_id), 1])`, drawn in this fixed order:
   1. a mirror uniform (drawn even when the sketch is not mirror-safe);
   2. rotation;
@@ -299,9 +318,9 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   7. one uniform per stroke for reversal.
 
   It sets `mirrored = mirror_safe and u < MIRROR_P`.
-- **Stroke order is preserved.** §4.5's "different stroke order" is realized as per-stroke **direction reversal**, never as reordering. Reordering would break the audio's `draw_schedule` and the `SfxHit.stroke_index` contract.
+- **Stroke order is preserved.** §4.5's "different stroke order" is realized as per-stroke **direction reversal**, never as reordering. Reordering would break the audio's `draw_schedule` and the `SfxHit.stroke_index` contract (audio would have to recompute the schedule). This spec deviation is accepted and is recorded in the report through `Variation.reversed_strokes`.
 - `art_size(canvas: Canvas) -> tuple[int, int]` is `round(stage.w * ZOOM_MAX), round(stage.h * ZOOM_MAX)`. The art canvas is where the sketch is drawn. The camera views it at zoom 1 as the whole stage.
-- `sketch_to_art(strokes: StrokeSet, variation: Variation, art: tuple[int, int], pad_px: float) -> Callable[[float, float], tuple[float, float]]`. It composes these steps:
+- `sketch_to_art(strokes: StrokeSet, variation: Variation, art: tuple[int, int], pad_px: float) -> tuple[Callable[[float, float], tuple[float, float]], float]`. The second item is the combined scale `fit_scale * variation.scale` (sketch px -> art px); the compositor passes `scale * strokes.width` as `prepare_marker(dot_px_per_unit=...)`. The callable composes these steps:
   1. normalized → sketch pixels;
   2. mirror about the vertical axis;
   3. fit: the largest scale at which the sketch's bounding box, **rotated by ±`ROTATION_DEG`**, fits in `art` minus `pad_px * ZOOM_MAX` on every side;
@@ -316,19 +335,21 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `test_mirror_unsafe_never_mirrored`: 500 scene ids with `mirror_safe=False` → `mirrored` is always False (spec §7.6);
   - `test_mirror_safe_mirrors_about_half` (500 ids, 0.4–0.6);
   - `test_ranges_respected`;
-  - `test_reversal_never_reorders`: the reversed `draw_schedule` events equal the unreversed ones;
+  - `test_reversal_never_reorders`: for each i, `prepare_marker(reverse=r)[i].points == prepare_marker()[i].points[::-1]` when `r[i]` is set, else equal, and the lengths are equal (the actual order-preservation claim; comparing `draw_schedule` events would be vacuous because they come from the unreversed `StrokeSet`);
+  - `test_sketch_to_art_returns_combined_scale` (equals fit scale times `variation.scale`);
   - `test_transformed_points_inside_padded_art` (Review Focus 4): 200 seeds × aspect ratios 1:4, 1:1 and 4:1 → every transformed corner lies inside the padded art area;
-  - `test_video_id_matches_audio_and_sketching`: equals the f-string in `audio/build.py` and `sketching/generate.py`, by building both from one fixture series.
+  - `test_video_id_is_single_definition`: `render.variation.video_id is visuals.marker.video_id`, and equals the f-string for a fixture series;
+  - `test_audio_and_sketching_call_marker_video_id` (one test in `tests/audio/test_build.py`, one in `tests/sketching/test_generate.py`): monkeypatch `narratoflow.audio.build.video_id` / `narratoflow.sketching.generate.video_id` with a recording wrapper and assert it is called with the series during a build.
 - [ ] **Steps 2–5:** Red, implement, run the gate, then commit `feat: deterministic free variations with mirror safety and stage fit`.
 
 ### Task 5: Virtual camera
 
 **Files:** Replace `render/camera.py`. Test: `tests/render/test_camera.py`.
 
-**Interfaces — Consumes:** `pen_at` and `PreparedStroke` (Task 3); `StrokeEvent`.
+**Interfaces — Consumes:** `pen_at` and `PreparedStroke` (Task 3); `StrokeEvent`; `ZOOM_MAX` (Task 4, `render/variation.py`).
 
 **Interfaces — Produces:**
-- Constants: `ZOOM_DRAW = 1.30` (equal to `ZOOM_MAX`), `ZOOM_IN_MS = 500`, `ZOOM_OUT_MS = 700`, `CAMERA_SMOOTH_MS = 1200`, `CAMERA_SAMPLE_MS = 40`, `CAMERA_MIN_DRAW_MS = 2500`.
+- Constants: `ZOOM_DRAW = variation.ZOOM_MAX` (an import, not a literal: one source of truth for the art margin, else paper borders show), `ZOOM_IN_MS = 500`, `ZOOM_OUT_MS = 700`, `CAMERA_SMOOTH_MS = 1200`, `CAMERA_SAMPLE_MS = 40`, `CAMERA_MIN_DRAW_MS = 2500`.
 - `@dataclass(frozen=True) class View: cx: float; cy: float; zoom: float`. The centre is in art pixels. A zoom of 1 shows the whole art canvas.
 - `class CameraTrack`:
   - `__init__(self, prepared: Sequence[PreparedStroke], events: Sequence[StrokeEvent], art: tuple[int, int], draw: tuple[int, int] | None)`.
@@ -336,12 +357,14 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
     - The overview is `View(art_w / 2, art_h / 2, 1.0)`. It applies when `draw` is None, the window is shorter than `CAMERA_MIN_DRAW_MS`, `events` is empty, or `t` is outside `[draw_start, draw_end + ZOOM_OUT_MS]`.
     - Inside the draw window, `e = smoothstep(min(1, (t - draw_start) / ZOOM_IN_MS))`, `zoom = 1 + (ZOOM_DRAW - 1) * e`, and the centre is `lerp(overview_centre, smoothed_pen(t), e)`.
     - After `draw_end`, `e` eases back down over `ZOOM_OUT_MS` toward the overview.
-    - `smoothed_pen(t)` is the mean of `pen_at` over `t + k * CAMERA_SAMPLE_MS` for `k` in `-15..15`, with each sample time clamped into `[draw_start, draw_end)` (None samples skipped; all None gives the overview centre).
+    - `smoothed_pen(t)` is the mean of `pen_at` over `t + k * CAMERA_SAMPLE_MS` for `k` in `-15..15`, with each sample time clamped into `[draw_start, draw_end - 1e-6]` (`pen_at` is None at or after the last end, so the clamp keeps the last samples on the pen; None samples are skipped; all None gives the overview centre).
     - The centre is clamped so the view window (`art / zoom`) stays inside the art canvas.
     - `smoothstep(x) = 3x^2 - 2x^3`.
   - `affine(self, view: View, stage_size: tuple[int, int]) -> np.ndarray` is the 2x3 matrix mapping art pixels to stage pixels. The view window fills the stage exactly.
 
 - [ ] **Step 1: Write the failing tests:**
+  - `test_zoom_draw_is_zoom_max`;
+  - `test_smoothed_pen_clamps_last_samples_onto_pen` (at `t` near `draw_end` the centre does not snap back to the overview);
   - `test_overview_outside_window_and_for_short_draws`;
   - `test_zoom_eases_in_and_out_continuously`: sampled at frame times, the maximum change in zoom per frame is ≤ 0.05;
   - `test_view_window_never_leaves_art` (random strokes reaching the corners);
@@ -355,10 +378,10 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 **Files:** Create `render/compose.py`. Replace `render/encoder.py` with `FrameSink` only (Task 9 adds the rest). Tests: `tests/render/test_compose.py`, `tests/render/test_encoder.py`.
 
 **Interfaces — Consumes:**
-- `prepare_marker`, `render_marker` (Task 3), `RevealCanvas`, `pen_at` (Task 3);
-- `Variation`, `sketch_to_art`, `art_size`, `card_frame_strokes` (Task 4);
-- `CameraTrack` (Task 5);
-- `HandSprite.image` (Task 2);
+- `prepare_marker` (with `dot_px_per_unit`), `render_marker` (fixed so `upto=1.0` draws every stroke), `RevealCanvas`, `pen_at` (Task 3);
+- `Variation`, `sketch_to_art` (returns the callable and the combined scale), `art_size`, `card_frame_strokes`, `ZOOM_MAX` (Task 4);
+- `CameraTrack`, `ZOOM_OUT_MS` (Task 5);
+- `HandSprite.image` (Task 2; its cache is module-level, the sprite is plain picklable data);
 - `Canvas`, `frame_time_ms` (Task 1).
 
 **Interfaces — Produces:**
@@ -368,20 +391,20 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - frames: `frames: range` (on the part clock), `slot: tuple[int, int]` (ms), `draw: tuple[int, int] | None`;
   - the sketch: `strokes: StrokeSet | None`, `variation: Variation | None`, `wobble_seed: int`;
   - style: `line_weight_px: float`, `ink: str`;
-  - assets and output: `canvas: Canvas`, `hand: HandSprite` (frozen and picklable; the worker calls `hand.image(canvas.scale)`), `segment: Path`, `ffmpeg: Path`.
+  - assets and output: `canvas: Canvas`, `hand: HandSprite` (plain frozen picklable data; the worker calls `hand.image(canvas.scale)`), `segment: Path`, `ffmpeg: Path`.
 
   `paper` covers verse scenes, whose text is ASS only.
 - `scene_frames(job: SceneJob) -> Iterator[np.ndarray]` yields `len(job.frames)` HxWx3 uint8 frames in order, each for `t = clamp(frame_time_ms(k), slot)`.
-  - **sketch:** an art-canvas `RevealCanvas` built from `prepare_marker(strokes, art, line_weight_px = style weight × variation.line_weight_factor × ZOOM_MAX × canvas.scale, seed=wobble_seed, to_pixels=sketch_to_art(...), reverse=…)` and `draw_schedule(strokes, *draw)`. It is warped through `CameraTrack.affine` into the stage with `cv2.warpAffine(..., borderValue=PAPER)`.
+  - **sketch:** an art-canvas `RevealCanvas` built from `prepare_marker(strokes, art, line_weight_px = style weight × variation.line_weight_factor × ZOOM_MAX × canvas.scale, seed=wobble_seed, to_pixels=<callable from sketch_to_art(...)>, reverse=…, dot_px_per_unit=<combined scale from sketch_to_art> * strokes.width)` and `draw_schedule(strokes, *draw)`. It is warped through `CameraTrack.affine` into the stage with `cv2.warpAffine(..., borderValue=PAPER)`.
     - A scene without draw times is a precondition error.
     - With 0 strokes, the frames are paper.
-  - **text_card:** `render_marker(card_frame_strokes(), stage size, ..., upto=1.0)`, static (the timeline has no draw window for it).
+  - **text_card:** `render_marker(card_frame_strokes(), stage size, ..., upto=1.0)`, static (the timeline has no draw window for it); it relies on the Task 3 fix, so all four sides are drawn. No fade: the card text fades via ASS `\fad` and the frame must stay in sync with it.
   - **paper:** plain paper.
   - **Hand:** while `pen_at` is not None, the RGBA sprite is alpha-composited with its tip on the pen mapped through the same affine, **clipped to the stage rect** (`np` slicing). The whole frame outside the stage stays `PAPER`.
-  - **Fade:** over the last `STAGE_FADE_MS` of the slot, but never before `draw_end`, the stage blends linearly to paper.
+  - **Fade (sketch scenes only):** the stage blends linearly to paper from `max(slot_end - STAGE_FADE_MS, draw_end)`, reaching exactly 1 at the time of the slot's last frame, `frame_time_ms(frames[-1])`. That makes "the last frame is paper" exact on any frame grid (a fade ending at `slot_end` would leave the last frame, 17-33 ms earlier, at about 0.85-0.92). Text-card and paper scenes never fade.
 - `render_segment(job: SceneJob) -> int` is top-level, so the spawn pool can pickle it. It writes `scene_frames` into `FrameSink(job.ffmpeg, job.segment, (W, H))` and returns the frames written.
 - `class FrameSink` is a context manager: `__init__(self, ffmpeg: Path, path: Path, size: tuple[int, int])`.
-  - It spawns `ffmpeg -hide_banner -nostdin -v error -f rawvideo -pix_fmt rgb24 -s WxH -framerate 30 -i pipe:0 -an -c:v ffv1 -level 3 -pix_fmt bgr0 <path>.mkv`, with stderr going to a temp file (no pipe deadlock).
+  - It spawns `ffmpeg -hide_banner -nostdin -v error -f rawvideo -pix_fmt rgb24 -s WxH -framerate 30 -i pipe:0 -an -c:v ffv1 -level 3 -pix_fmt bgr0 <path>` (it writes exactly `path`, which is already `seg-NNN.mkv`; a doubled suffix would break `write_concat_list`), with stderr going to a temp file (no pipe deadlock).
   - `write(frame)` checks the shape (H, W, 3) and the dtype (uint8), else `ValueError`.
   - `frames` is the count written.
   - On exit it closes stdin and waits with `SEGMENT_TIMEOUT_S = 600`. A non-zero exit raises `RenderError` with the last 5 stderr lines, and a body exception kills the process.
@@ -390,12 +413,16 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `test_frame_count_equals_range`;
   - `test_nothing_outside_stage_ever` (Review Focus 4): a sketch whose strokes hug the right and bottom edges, so the hand reaches past the stage → for every frame, every pixel outside `canvas.stage` equals `PAPER`;
   - `test_hand_visible_only_while_drawing`;
-  - `test_hold_shows_complete_sketch_then_fades`: the frame at `draw_end` has the same ink count as the overview of the full render ±2 %, and the last frame is paper;
+  - `test_hold_shows_complete_sketch_then_fades`: the frame at `draw_end + ZOOM_OUT_MS` (the camera is back to the overview; at `draw_end` it is still at zoom 1.3, so the ink count would differ by up to about 1.69x) has the same ink count as the overview of the full render ±2 %, and the last frame (`frame_time_ms(frames[-1])`) is exactly paper. The test slot must keep `draw_end + ZOOM_OUT_MS <= slot_end - STAGE_FADE_MS`;
+  - `test_text_card_and_paper_scenes_never_fade`;
+  - `test_text_card_frame_has_all_four_sides` (the fixed `render_marker`);
+  - `test_dots_scale_with_sketch` (`dot_px_per_unit` is passed from the combined scale);
   - `test_zero_length_strokes_and_zero_draw_window_render`;
   - `test_text_card_static_frame`;
   - `test_paper_scene_blank`;
   - `test_scene_frames_deterministic`;
   - `test_frame_sink_roundtrip_lossless` (`render_tools`: write 5 random frames, decode with ffmpeg → byte-equal);
+  - `test_frame_sink_writes_exact_path` (a `seg-000.mkv` path yields exactly that file, no `.mkv.mkv`);
   - `test_frame_sink_bad_shape_raises`;
   - `test_frame_sink_ffmpeg_failure_raises_render_error`.
 - [ ] **Steps 2–5:** Red, implement, run the gate, then commit `feat: scene compositor with clipped hand, camera and lossless segment sink`.
@@ -412,12 +439,12 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 - `escape_text(s: str) -> str`:
   - replaces `\` with U+29F5, `{` with U+FF5B and `}` with U+FF5D, and any newline with a space;
   - is applied to every author or overlay string, never to the tags NarratoFlow emits.
-- `karaoke(words: Sequence[tuple[str, int]], event_start_ms: int) -> str`. Each input is `(text, reveal_ms)`. The output is `{\k<d_i>}<escaped text_i> ` for each word, computed as follows:
+- `karaoke(words: Sequence[tuple[str, int]], event_start_ms: int) -> str`. Each input is `(text, reveal_ms)`. The output is `{\k<d_i>}<escaped text_i>` for each word, joined with single spaces and **no trailing space**, preceded by a leading empty `{\k<c_0>}` when `c_0 > 0` (otherwise word 0 would light at the event start and every word would be early by `c_0` whenever `reveal_0 > event_start`). Computed as follows:
   - `c_i = round_half_up((reveal_i - event_start) / 10)`, clamped at ≥ 0;
   - `d_i = c_{i+1} - c_i`;
   - the last word's `d` is 0.
 
-  The cumulative rounding keeps a word's reveal within 5 ms of its time, however long the page is. Starts are non-decreasing, so every `d >= 0`, even with overlapping or zero-length words.
+  `escape_text` is applied to each word. The cumulative rounding keeps a word's reveal within 5 ms of its time, however long the page is. Starts are non-decreasing, so every `d >= 0`, even with overlapping or zero-length words.
   - `\k` is used, never `\kf`: libass sweeps `\kf` left to right even over RTL text.
 - `@dataclass(frozen=True) class AssStyle`:
   - `name: str; family: str; size: int; bold: bool`;
@@ -425,7 +452,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `alignment: int; margin_l: int; margin_r: int; margin_v: int; encoding: int`.
 - `@dataclass(frozen=True) class AssEvent: start_ms: int; end_ms: int; style: str; text: str; layer: int = 0`
 - `@dataclass class AssDocument: styles: list[AssStyle]; events: list[AssEvent]`. `to_text()` emits:
-  - `[Script Info]` with `ScriptType: v4.00+`, `PlayResX: 1080`, `PlayResY: 1920` (always: libass scales to the canvas), `WrapStyle: 0`, `ScaledBorderAndShadow: yes` and `YCbCr Matrix: None`;
+  - `[Script Info]` with `ScriptType: v4.00+`, `PlayResX: 1080`, `PlayResY: 1920` (always: libass scales to the canvas; Task 2's shaping self-test does not use this document and writes its own raw 600x300 ASS), `WrapStyle: 0`, `ScaledBorderAndShadow: yes` and `YCbCr Matrix: None`;
   - `[V4+ Styles]` and `[Events]`, sorted by `(start_ms, layer)`.
 
   `write(path)` writes UTF-8 without a BOM, atomically.
@@ -445,7 +472,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   | Card | Amiri / Noto Sans | 88 | yes | 5 (set by `\pos`) | 84 / 216 / 0 | text-card text |
 
 - The sizes are the starting values. When a zone test of Task 7 or Task 8 fails, **lower the size; never move or grow a zone**, and record the final value in this table's code constant.
-- Caption constants: `CAPTION_MAX_WORDS = 6`, `CAPTION_MAX_CHARS = 28`, `CAPTION_GAP_MS = 700`, `CAPTION_HOLD_MS = 400`, `SENTENCE_END = (".", "!", "?", "؟", "…")`.
+- Caption constants: `CAPTION_MAX_WORDS = 6`, `CAPTION_MAX_CHARS = 28` (counts characters including the joining spaces), `CAPTION_GAP_MS = 700`, `CAPTION_HOLD_MS = 400`, `SENTENCE_END = (".", "!", "?", "؟", "…")`.
 - `caption_pages(words: Sequence[WordTiming]) -> list[list[WordTiming]]`. It is greedy and in order. A new page starts when adding the word would exceed either maximum, when the previous word ends with `SENTENCE_END`, or when `start_i - start_{i-1} > CAPTION_GAP_MS`. A single word longer than the character maximum gets a page of its own.
 - `caption_events(scene: SceneTiming) -> list[AssEvent]`. There is one `Caption` event per page:
   - `start` is the first word's `start_ms`;
@@ -460,7 +487,9 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
     - `test_escape_braces_and_backslash`;
     - `test_karaoke_cumulative_rounding_no_drift`: 200 words 333 ms apart → the reveal of every word, rebuilt from the `\k` sums, is within 5 ms;
     - `test_karaoke_overlapping_and_zero_length_words` (Plan 4 contract: d ≥ 0, no exception);
-    - `test_pages_respect_limits_sentence_and_gap`;
+    - `test_karaoke_leading_offset_when_first_word_after_event_start`: words revealed at 250 and 600 ms with `event_start_ms = 0` → the text starts with `{\k25}`, and the rebuilt reveals are 250 and 600; with the first word at the event start there is no leading tag;
+    - `test_karaoke_no_trailing_space_single_space_joins`;
+    - `test_pages_respect_limits_sentence_and_gap` (the character limit counts joining spaces);
     - `test_last_page_held_but_not_past_scene`;
     - `test_arabic_styles_auto_direction_english_ltr`;
     - `test_never_kf`;
@@ -469,7 +498,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
     - `test_arabic_letters_join` (Review Focus 1): `"سسس"` in the Caption style → exactly 1 ink component;
     - `test_arabic_trailing_punctuation_on_left` (Review Focus 1): `"سسس."` → the period's component lies left of the seen component;
     - `test_karaoke_reveals_rtl_first_word_rightmost` (Review Focus 1): two Arabic words, the second revealed at 1000 ms, against a Caption style whose `secondary_alpha` is set to 0xFF for the test → at 500 ms the ink lies in the right half of the line's final ink bbox; at 1500 ms both halves have ink;
-    - `test_english_caption_two_lines_inside_caption_band` (Review Focus 4): the longest page 28 chars of `"W"` → the ink bbox lies inside `CAPTIONS`;
+    - `test_english_caption_two_lines_inside_caption_band` (Review Focus 4): a six-word page, `"WWWW"`×5 + `"WWW"` (28 chars with spaces, so it really wraps to two lines; a single 28-W word cannot wrap and is about 1150 px wide) → two lines, and the ink bbox lies inside `CAPTIONS`;
     - `test_arabic_caption_inside_caption_band`.
 - [ ] **Steps 2–5:** Red, implement, run the gate, then commit `feat: ASS writer and word-timed captions shaped by libass`.
 
@@ -493,12 +522,12 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `missing_glyphs("amiri-quran", uthmani)` is non-empty.
 - `verse_pages(timing: SceneTiming, corpus: QuranCorpus, verse: VerseRef) -> list[VersePage]`, where `@dataclass(frozen=True) class VersePage: surah: int; ayah: int; words: list[tuple[str, int]]; start_ms: int; end_ms: int`. Each word is `(text, reveal_ms)`; the texts always come from the corpus `display_words`.
   - Each ayah's words are cut into consecutive pages of ≤ `VERSE_PAGE_MAX_WORDS`.
-  - With `SEGMENTS`, each word's reveal time is its own `start_ms`.
+  - With `SEGMENTS`, each word's reveal time is its own `start_ms`. `VersePage.start_ms` is the **ayah's `start_ms` for the ayah's first page** and the **first word's `start_ms` for later pages**, so the verse appears as the recitation reaches it. `verse_events` passes `page.start_ms` as `karaoke`'s `event_start_ms`, whose leading `{\k<c_0>}` keeps every word on its own time.
   - With `AYAH` timing (no segments), all words of a page reveal at the page start. The page starts come from `split_ms` over the ayah span, weighted by page character count. A one-page ayah therefore appears whole at the ayah start (spec §2.2e fallback).
   - A page ends at the next page's start; the last page of the scene ends at `timing.end_ms`.
 - `verse_events(scene: Scene, timing: SceneTiming, corpus: QuranCorpus, language: Language) -> list[AssEvent]`:
   - one `Verse` event per page: `{\an5\pos(474,815)\fad(150,0)}` followed by the `karaoke` of the page's words;
-  - one `VerseRef` event spanning the scene: `"<surah>:<ayah>"`, or `"<s>:<a>-<b>"`, with Arabic-Indic digits (U+0660–U+0669) for an Arabic channel.
+  - one `VerseRef` event spanning the scene: `"<surah>:<ayah>"`, or `"<s>:<a>-<b>"`, with Arabic-Indic digits (U+0660–U+0669) for an Arabic channel. The `VerseRef` style keeps `Encoding -1`; for a range such as `"٣١:٣٣-٣٥"` the hyphen resolves to R between numbers, so `٣٥` sits visually left of `٣١:٣٣` (correct RTL reading; libass auto base direction falls back to LTR when there is no strong character, and the result is the same).
 - `shown_text(events: Sequence[AssEvent]) -> str`. It strips `{...}` blocks from the `Verse` events, joins them with single spaces and collapses whitespace. Tests use it, and `render/build.py` records its sha256 in the report.
 
 **Interfaces — Produces (overlays):**
@@ -510,11 +539,11 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 - `part_label(index: int, count: int, language: Language) -> str | None`. It is None when `count == 1`.
 - `overlay_events(series: Series, part: Part, timeline: PartTimeline) -> list[AssEvent]`, with `D = timeline.duration_ms`:
   - `TopLeft`: the part label over `[0, D)`.
-  - `TopRight`: each scene's non-empty `title` over its slot.
+  - `TopRight`: each scene's non-empty `title` over its slot, truncated to 24 chars (`truncate(title, 24)`; it is a topic badge, and at 60 chars it would overlap `TopLeft` on the same y).
   - `Headline` row, with these windows:
     - the hook over `[0, h)`, where `h = min(HOOK_MS, D)`, **at 0 s** (spec §2.2d);
-    - the teaser over `[max(h, D - TEASER_MS), D)` when `teaser_text`;
-    - the recap over `[h, min(h + RECAP_MS, teaser_start))` when `recap_text` and the window is ≥ `MIN_OVERLAY_MS`;
+    - the teaser over `[max(h, D - TEASER_MS), D)` only when `part.index < part.count` and `teaser_text` is non-empty;
+    - the recap over `[h, min(h + RECAP_MS, teaser_start))` only when `part.index > 1` and `recap_text` is non-empty (enforces spec §2.2b even on a hand-edited series) and the window is ≥ `MIN_OVERLAY_MS`. `teaser_start` is the teaser's start, or `D` when there is no teaser;
     - `series.title` fills every remaining gap of ≥ `MIN_OVERLAY_MS`.
   - Every text is `escape_text(truncate(...))`, with the recap and teaser prefixes added.
 - `card_text(scene: Scene) -> str` is `card_text or title`, else the first 6 caption tokens followed by `…`.
@@ -535,7 +564,12 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `test_pages_cover_all_words_in_order`;
   - `test_verse_page_ink_inside_stage` (Review Focus 4, `render_tools`: the 10-word first page of 31:33 fully revealed → the ink bbox lies inside `STAGE`; the `VerseRef` line too);
   - `test_hook_at_zero_and_teaser_at_end`;
-  - `test_recap_only_from_part_two_and_dropped_when_no_room`;
+  - `test_recap_only_from_part_two_and_dropped_when_no_room` (a recap window with no teaser ends at `D`);
+  - `test_recap_text_ignored_on_part_one_and_teaser_ignored_on_last_part`;
+  - `test_topright_title_truncated_to_24_chars`;
+  - `test_segments_first_page_starts_at_ayah_start_later_pages_at_first_word`;
+  - `test_verse_words_never_revealed_early` (karaoke sums rebuilt from the page events reproduce every word's `start_ms` within 5 ms, including a first word later than the ayah start);
+  - `test_verse_range_label_bidi_order` (`render_tools`, Arabic channel: a libass still of the `VerseRef` `"٣١:٣٣-٣٥"` → the ink of `٣٥` lies left of the ink of `٣١:٣٣`);
   - `test_single_part_has_no_part_label`;
   - `test_arabic_part_label_digits`;
   - `test_headline_60_chars_inside_top_bar` (Review Focus 4, `render_tools`);
@@ -554,6 +588,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `X264_ARGS = ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p", "-g", "60", "-bf", "2", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]`;
   - `AAC_ARGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]`;
   - `AV_TOLERANCE_MS = 50`, `FINAL_TIMEOUT_S = 1800`.
+- Segments are FFV1 in MKV. If `test_long_part_no_av_drift` ever shows a dup or drop (MKV stores 1 ms timestamps, about ±0.5 ms per segment), switch the segments to `.nut` (exact 1/30 time base); `-fps_mode cfr` and `-frames:v` already bound the risk.
 - `write_concat_list(segments: Sequence[Path], path: Path) -> None`. Each line is `file '<name>'` with bare file names only; a name containing `'` or `/` raises `ValueError`.
 - `encode_part(tools: RenderTools, work_dir: Path, *, frames: int, audio: Path, out: Path) -> None`:
   - With `cwd=work_dir`, it runs `-f concat -safe 0 -i segments.txt -i <audio abs> -map 0:v:0 -map 1:a:0 -vf "ass=filename=captions.ass:fontsdir=fonts:shaping=complex,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p" -r 30 -fps_mode cfr -frames:v <frames>`, then `X264_ARGS`, `AAC_ARGS` and `-movflags +faststart`.
@@ -621,18 +656,19 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
      - `check_timeline`;
      - per drawn scene: `library.get_sketch(sketch_id)`. A record that is missing or `FAILED` raises `RenderError("scene <id>: sketch <n> is quarantined; resolve it")`. Missing strokes raise `LibraryError` as audio's does. A `len(strokes.strokes) != timing.stroke_count` raises `StaleTimelineError`;
      - per verse scene: `check_verse_text(scene, timing, corpus, fonts)`, with `corpus` loaded only when a verse exists;
-     - `build_part_ass` (its errors are raised here);
+     - `build_part_ass` (its errors are raised here; it calls `check_verse_text` again, and both calls stay: the explicit one fixes the error order the tests rely on and is cheap);
   7. `check_arabic_shaping` once, when `series.language is ARABIC` or any selected part has a verse.
 - **Per part:**
   1. Make `work = out_dir / f".render-part-{n:02d}"` (a fresh, empty directory), copy the fonts to `work/fonts`, and write `work/captions.ass`.
   2. Build one `SceneJob` per scene with `len(frame_range(slot)) > 0`:
      - the kind is `sketch` for a drawn scene, `text_card` for a card and `paper` for a verse;
-     - the variation is `choose_variation(video_id(series), scene.id, mirror_safe=record.mirror_safe, stroke_count=...)`;
+     - the variation is `choose_variation(video_id(series), scene.id, mirror_safe=record.mirror_safe, stroke_count=...)` (`video_id` imported from `visuals.marker`);
      - `wobble_seed = marker_seed(video_id(series), scene.id)`;
      - the segment is `work / f"seg-{i:03d}.mkv"`.
   3. Run the jobs:
-     - with `workers == 1`, `render_segment` runs inline;
-     - otherwise it runs in `ProcessPoolExecutor(max_workers=workers or min(os.cpu_count() or 1, len(jobs)), mp_context=multiprocessing.get_context("spawn"))`;
+     - `build.py` does `from narratoflow.render import compose` and calls `compose.render_segment` through the module attribute, so a monkeypatch of `compose.render_segment` takes effect (a `from compose import render_segment` would dodge the patch and make `test_stale_sketch_id_refused_before_any_frame` pass vacuously);
+     - with `workers == 1`, `compose.render_segment` runs inline;
+     - otherwise it runs in `ProcessPoolExecutor(max_workers=workers or min(os.cpu_count() or 1, len(jobs)), mp_context=multiprocessing.get_context("spawn"), initializer=_init_worker)`, where `_init_worker` calls `cv2.setNumThreads(1)` (avoids N x cores oversubscription; output unchanged);
      - results are collected in job order;
      - a worker exception becomes `RenderError("scene <id>: <cause>")` raised `from` it, and pending jobs are cancelled.
   4. `write_concat_list`, then `encode_part` to `out_dir / f"part-{n:02d}.mp4"`, then `verify_mp4`.
@@ -643,7 +679,9 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 - [ ] **Step 1: Write the failing tests:**
   - Setup: the `library` fixture with stored strokes; timelines made by the real `build_audio` with fake voices (as `tests/audio/test_build.py` does) or written directly from `SceneTiming`s; `tiny_canvas`; `render_tools`; `workers=1` unless noted.
   - `test_renders_mp4_and_report_per_part`: the report loads, `frames == frame_of(duration_ms)`, `verify_mp4` passes, and a scene's variation is recorded;
-  - `test_stale_sketch_id_refused_before_any_frame` (Review Focus 3: `render_segment` monkeypatched to fail if called);
+  - `test_stale_sketch_id_refused_before_any_frame` (Review Focus 3: `compose.render_segment` monkeypatched, as a module attribute, to fail if called);
+  - `test_reference_series_31_33_end_to_end` (the Done-when verse run: timelines from the real `build_audio` with an injected fake reciter (`build_audio(reciters=...)` plus a fake HTTP client), since the CLI cannot synthesize a verse: assets/LICENSES.md ships no reciter, so verse scenes FAIL in `audio build`; then `build_render` → MP4 and report, `verses[0].shown_sha256` equals the corpus text hash, `verify_mp4` passes);
+  - `test_pool_initializer_sets_cv2_single_thread` (monkeypatched `cv2.setNumThreads`);
   - `test_stroke_count_mismatch_refused`;
   - `test_text_card_swap_after_audio_refused`;
   - `test_scene_list_changed_refused`;
@@ -662,7 +700,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 
 ### Task 11: CLI `render` and docs
 
-**Files:** Modify `cli.py`, `README.md` and `.env.example` (`NARRATOFLOW_FFMPEG` with a comment). Test: `tests/test_cli.py`.
+**Files:** Modify `cli.py`, `README.md`, `.env.example` (`NARRATOFLOW_FFMPEG` with a comment) and `src/narratoflow/sketching/resolve.py` (`use_text_card` gains `card_text`). Tests: `tests/test_cli.py`, `tests/sketching/test_resolve.py`.
 
 **Interfaces — Produces:**
 - `narratoflow render SERIES_JSON --channel PATH [--part N]... [--audio DIR] [--out DIR] [--workers N]`:
@@ -671,7 +709,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `--workers` defaults to None (the CPU count);
   - it runs `build_render`; errors exit 1 through `main()`.
 - Output, one line per part: `part N/M: <s> s, <frames> frames, 1080x1920 @ 30 fps -> <mp4>`, then `  report: <json>`, then one `[yellow]warning:[/yellow] part N: ...` line per report warning.
-- `sketch resolve SCENE --text-card [--card-text TEXT]` sets `Scene.card_text`, with `use_text_card(series, scene_id, card_text: str = "")` in `sketching/resolve.py`. `--card-text` without `--text-card` exits 2.
+- `sketch resolve SERIES_JSON SCENE --channel PATH --text-card [--card-text TEXT]` (the existing command shape) sets `Scene.card_text`, with `use_text_card(series, scene_id, card_text: str = "")` in `sketching/resolve.py` (today `use_text_card(series, scene_id)`, line ~160). `--card-text` without `--text-card` raises `typer.BadParameter` and exits 2, matching the existing pattern.
 - README Quick start gains `render` after `audio build`, with:
   - the libass requirement and the macOS `ffmpeg-full` + `NARRATOFLOW_FFMPEG` note;
   - the output files;
@@ -682,7 +720,8 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
   - `test_render_default_audio_and_out_dirs_and_part_filter`;
   - `test_render_stale_timeline_exits_1_with_message` (the real `build_render`, with `find_render_tools` monkeypatched);
   - `test_resolve_text_card_with_card_text`;
-  - `test_card_text_requires_text_card`.
+  - `test_card_text_requires_text_card`;
+  - `test_use_text_card_sets_card_text_and_default_empty` (`tests/sketching/test_resolve.py`: `use_text_card(series, id, "Hello")` sets `Scene.card_text`; the default leaves it empty).
 - [ ] **Steps 2–5:** Red, implement, run the gate, update the README, then commit `feat: render command`.
 
 ---
@@ -690,7 +729,7 @@ tests/render/conftest.py    # NEW: render_tools fixture, tiny_canvas, part fixtu
 ## Done when
 
 - The gate is green in CI. CI has ffmpeg with libass and no network.
-- On the Plan 2 reference series (31:33 plus narration), with fakes for audio, `audio build` then `render` writes per part an MP4 and a report. ffprobe shows:
+- On the Plan 2 reference series (31:33 plus narration), with fakes for audio, `audio build` then `render` writes per part an MP4 and a report. The verse run is exercised by `test_reference_series_31_33_end_to_end` (injected fake reciter; no reciter ships), and only the narration part goes through the CLI. ffprobe shows:
   - 1080x1920 at 30/1 fps, H.264 High yuv420p and AAC 48 kHz;
   - `nb_frames == frame_of(duration_ms)`;
   - A/V within 50 ms.

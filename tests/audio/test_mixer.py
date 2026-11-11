@@ -564,3 +564,37 @@ def test_silent_clips_raise(pack: SfxPack) -> None:
             pack,
             video_id=VIDEO,
         )
+
+
+@pytest.mark.parametrize(("breath_db", "speech_db"), [(-44, -12), (-43, -12), (-42, -8), (-40, -6)])
+@pytest.mark.parametrize("kind", [SceneKind.NARRATION, SceneKind.VERSE])
+def test_soft_lead_in_before_loud_first_clip_is_trimmed(
+    pack: SfxPack, breath_db: float, speech_db: float, kind: SceneKind
+) -> None:
+    rng = np.random.default_rng(1)
+    breath = (rng.standard_normal(aio.ms_to_samples(200)) * 10 ** (breath_db / 20)).astype(
+        np.float32
+    )
+    samples = np.concatenate([breath, speechlike(10, dbfs=speech_db)]).astype(np.float32)
+    if kind is SceneKind.NARRATION:
+        res = mix_part(
+            _part(_scene("n1")), _narr({"n1": _clip(samples)}), {}, {}, pack, video_id=VIDEO
+        )
+    else:
+        res = mix_part(
+            _part(_scene("v1", SceneKind.VERSE)),
+            _narr({}),
+            {"v1": _verse(samples, 200)},
+            {},
+            pack,
+            video_id=VIDEO,
+        )
+    assert _onset_ms(res.samples) <= FIRST_ONSET_MAX_MS
+    _timeline(res)
+
+
+def test_first_trim_threshold_has_master_headroom() -> None:
+    assert mixer.FIRST_TRIM_DBFS == -46.0
+    assert mixer.FIRST_TRIM_DBFS > mixer.ONSET_THRESHOLD_DBFS - (
+        mixer.MASTER_TARGET_LUFS - MATCH_TARGET_LUFS
+    )

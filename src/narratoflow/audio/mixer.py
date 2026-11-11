@@ -17,8 +17,8 @@ included). Every float the mix reports is finite.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
@@ -27,7 +27,7 @@ from narratoflow.audio.io import Loudness, Samples, master
 from narratoflow.audio.narrate import NarrationResult
 from narratoflow.audio.recitation import AYAH_GAP_MS, VerseClip
 from narratoflow.audio.sfx import SFX_FADE_MS, SfxPack, place_sfx
-from narratoflow.audio.timeline import SceneTiming, SfxHit, TimelineWord, TimingSource
+from narratoflow.audio.timeline import AyahTiming, SceneTiming, SfxHit, TimelineWord, TimingSource
 from narratoflow.audio.words import shift
 from narratoflow.errors import AudioError
 from narratoflow.models import Part, Scene, SceneKind, WordTiming
@@ -47,6 +47,13 @@ MASTER_TARGET_LUFS = -14.0
 MASTER_TRUE_PEAK_DBTP = -1.0
 ONSET_THRESHOLD_DBFS = -45.0
 TRIM_KEEP_MS = 20
+FIRST_TRIM_MARGIN_DB = 3.0
+# The first clip is head-trimmed after its match gain at this level: the master
+# lifts the matched mix by about MASTER_TARGET_LUFS - MATCH_TARGET_LUFS, so a lead
+# quieter than this would still sit under ONSET_THRESHOLD_DBFS after mastering.
+FIRST_TRIM_DBFS = (
+    ONSET_THRESHOLD_DBFS - (MASTER_TARGET_LUFS - MATCH_TARGET_LUFS) + FIRST_TRIM_MARGIN_DB
+)
 
 
 @dataclass
@@ -64,68 +71,80 @@ class _Clip:
 
     scene: Scene
     samples: Samples
-    length_ms: int
     timing_source: TimingSource
-    words: list[WordTiming]  # narration only, on the trimmed clip's clock
-    ayat: list[dict[str, Any]]  # verse only, AyahTiming fields
+    words: list[WordTiming]  # narration only
+    ayat: list[AyahTiming]  # verse only
+
+    @property
+    def length_ms(self) -> int:
+        return math.ceil(len(self.samples) * 1000 / aio.SAMPLE_RATE)
+
+    def trim_head(self, threshold_dbfs: float) -> None:
+        """Cut the lead below `threshold_dbfs` to 0 ms; the tail is never touched."""
+        loud, lead = aio.trim_silence(
+            self.samples, threshold_dbfs=threshold_dbfs, keep_ms=0, keep_lead_ms=0
+        )
+        if loud.size == 0 or lead == 0:
+            return  # nothing loud enough to trim to: the onset guard decides
+        self.samples = self.samples[aio.ms_to_samples(lead) :]
+        self.shift(-lead)
+
+    def shift(self, delta_ms: int) -> None:
+        """Move every time by `delta_ms`, clamped to [0, length_ms]."""
+        limit = self.length_ms
+        self.words = shift(self.words, delta_ms, limit_ms=limit)
+        self.ayat = [
+            a.model_copy(
+                update={
+                    "start_ms": _clamp(a.start_ms, delta_ms, limit),
+                    "end_ms": _clamp(a.end_ms, delta_ms, limit),
+                    "words": _timeline_words(a.words, delta_ms, limit),
+                }
+            )
+            for a in self.ayat
+        ]
 
 
-def _length_ms(samples: Samples) -> int:
-    return math.ceil(len(samples) * 1000 / aio.SAMPLE_RATE)
+@dataclass
+class _Slot:
+    """One scene's slot on the part clock."""
+
+    start_ms: int
+    end_ms: int
+    speech_start_ms: int
+    draw_start_ms: int | None = None
+    draw_end_ms: int | None = None
+
+
+def _timeline_words(words: Sequence[WordTiming], delta_ms: int, limit: int) -> list[TimelineWord]:
+    return [TimelineWord.model_validate(w) for w in shift(list(words), delta_ms, limit_ms=limit)]
 
 
 def _clamp(ms: int, delta: int, limit: int) -> int:
     return min(max(ms + delta, 0), limit)
 
 
-def _narration_clip(scene: Scene, narration: NarrationResult, first: bool) -> _Clip:
+def _narration_clip(scene: Scene, narration: NarrationResult) -> _Clip:
     clip = narration.clips.get(scene.id)
     if clip is None:
         raise AudioError(f"scene {scene.id}: no narration clip")
-    trimmed, lead = aio.trim_silence(
-        clip.samples, keep_ms=TRIM_KEEP_MS, keep_lead_ms=0 if first else TRIM_KEEP_MS
-    )
+    trimmed, lead = aio.trim_silence(clip.samples, keep_ms=TRIM_KEEP_MS)
     if trimmed.size == 0:
         raise AudioError(f"scene {scene.id}: narration clip is all silence")
-    length = _length_ms(trimmed)
-    words = shift(clip.words, -lead, limit_ms=length)
-    return _Clip(scene, trimmed, length, clip.timing_source, words, [])
+    out = _Clip(scene, trimmed, clip.timing_source, list(clip.words), [])
+    out.shift(-lead)
+    return out
 
 
-def _verse_clip(scene: Scene, verses: dict[str, VerseClip], first: bool) -> _Clip:
+def _verse_clip(scene: Scene, verses: dict[str, VerseClip]) -> _Clip:
     clip = verses.get(scene.id)
     if clip is None:
         raise AudioError(f"scene {scene.id}: no verse clip")
-    samples = clip.samples
-    lead = 0
-    if first:
-        # Only the head is re-trimmed: the tail (and every ayah end) stays as Task 6 cut it.
-        trimmed, lead = aio.trim_silence(samples, keep_ms=TRIM_KEEP_MS, keep_lead_ms=0)
-        if trimmed.size == 0:
-            raise AudioError(f"scene {scene.id}: verse clip is all silence")
-        samples = samples[aio.ms_to_samples(lead) :]
-    length = _length_ms(samples)
+    if not np.any(np.abs(clip.samples) > 0):
+        raise AudioError(f"scene {scene.id}: verse clip is all silence")
     ayah_timed = clip.timing_source is TimingSource.AYAH
-    ayat: list[dict[str, Any]] = []
-    for a in clip.ayat:
-        words = [] if ayah_timed else a.words
-        ayat.append(
-            {
-                "surah": a.surah,
-                "ayah": a.ayah,
-                "start_ms": _clamp(a.start_ms, -lead, length),
-                "end_ms": _clamp(a.end_ms, -lead, length),
-                "words": [
-                    {
-                        "text": w.text,
-                        "start_ms": _clamp(w.start_ms, -lead, length),
-                        "end_ms": _clamp(w.end_ms, -lead, length),
-                    }
-                    for w in words
-                ],
-            }
-        )
-    return _Clip(scene, samples, length, clip.timing_source, [], ayat)
+    ayat = [a.model_copy(update={"words": []}) if ayah_timed else a for a in clip.ayat]
+    return _Clip(scene, clip.samples, clip.timing_source, [], ayat)
 
 
 def _match_gain(samples: Samples, label: str, warnings: list[str]) -> float:
@@ -136,28 +155,14 @@ def _match_gain(samples: Samples, label: str, warnings: list[str]) -> float:
     return max(-MAX_MATCH_GAIN_DB, min(MAX_MATCH_GAIN_DB, MATCH_TARGET_LUFS - measured))
 
 
-def _offset_ayat(ayat: list[dict[str, Any]], at: int) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for a in ayat:
-        words = [
-            {"text": w["text"], "start_ms": w["start_ms"] + at, "end_ms": w["end_ms"] + at}
-            for w in a["words"]
-        ]
-        out.append(
-            {**a, "start_ms": a["start_ms"] + at, "end_ms": a["end_ms"] + at, "words": words}
-        )
-    return out
-
-
-def _layout(clips: list[_Clip]) -> list[dict[str, Any]]:
-    """Scene slots on the part clock (SceneTiming fields, draw times unset)."""
-    slots: list[dict[str, Any]] = []
+def _layout(clips: list[_Clip]) -> list[_Slot]:
+    """Scene slots on the part clock, draw times unset."""
+    slots: list[_Slot] = []
     t = 0
     for i, clip in enumerate(clips):
         prev = clips[i - 1].scene.kind if i > 0 else None
         nxt = clips[i + 1].scene.kind if i + 1 < len(clips) else None
-        scene = clip.scene
-        if scene.kind is SceneKind.VERSE:
+        if clip.scene.kind is SceneKind.VERSE:
             leading = VERSE_BUFFER_MS if prev is SceneKind.NARRATION else 0
             if nxt is SceneKind.NARRATION:
                 trailing = VERSE_BUFFER_MS
@@ -166,32 +171,43 @@ def _layout(clips: list[_Clip]) -> list[dict[str, Any]]:
             else:
                 trailing = 0
             speech_start = t + leading
-            speech_end = speech_start + clip.length_ms
-            end = speech_end + trailing
-            words: list[Any] = []
-            ayat = _offset_ayat(clip.ayat, speech_start)
+            end = speech_start + clip.length_ms + trailing
         else:
             speech_start = t
-            speech_end = t + clip.length_ms
             gap = 0 if nxt is SceneKind.VERSE else INTER_SCENE_GAP_MS
-            end = max(speech_end + gap, t + scene.min_duration_ms)
-            words = shift(clip.words, t, limit_ms=speech_end)
-            ayat = []
-        slots.append(
-            {
-                "scene_id": scene.id,
-                "kind": scene.kind,
-                "start_ms": t,
-                "end_ms": end,
-                "speech_start_ms": speech_start,
-                "speech_end_ms": speech_end,
-                "words": [TimelineWord.model_validate(w) for w in words],
-                "timing_source": clip.timing_source,
-                "ayat": ayat,
-            }
-        )
+            end = max(t + clip.length_ms + gap, t + clip.scene.min_duration_ms)
+        slots.append(_Slot(start_ms=t, end_ms=end, speech_start_ms=speech_start))
         t = end
     return slots
+
+
+def _timing(clip: _Clip, slot: _Slot) -> SceneTiming:
+    at = slot.speech_start_ms
+    speech_end = at + clip.length_ms
+    words = _timeline_words(clip.words, at, speech_end)
+    ayat = [
+        a.model_copy(
+            update={
+                "start_ms": a.start_ms + at,
+                "end_ms": a.end_ms + at,
+                "words": _timeline_words(a.words, at, speech_end),
+            }
+        )
+        for a in clip.ayat
+    ]
+    return SceneTiming(
+        scene_id=clip.scene.id,
+        kind=clip.scene.kind,
+        start_ms=slot.start_ms,
+        end_ms=slot.end_ms,
+        speech_start_ms=at,
+        speech_end_ms=speech_end,
+        words=words,
+        timing_source=clip.timing_source,
+        ayat=ayat,
+        draw_start_ms=slot.draw_start_ms,
+        draw_end_ms=slot.draw_end_ms,
+    )
 
 
 def _add(bus: Samples, samples: Samples, at_ms: int) -> None:
@@ -249,14 +265,12 @@ def mix_part(
     if not part.scenes:
         raise AudioError(f"part {part.index} has no scenes")
     clips = [
-        _verse_clip(s, verses, i == 0)
-        if s.kind is SceneKind.VERSE
-        else _narration_clip(s, narration, i == 0)
-        for i, s in enumerate(part.scenes)
+        _verse_clip(s, verses) if s.kind is SceneKind.VERSE else _narration_clip(s, narration)
+        for s in part.scenes
     ]
     warnings: list[str] = []
 
-    # Loudness match: one gain for all narration, one per verse scene; fade every edge.
+    # Loudness match: one gain for all narration, one per verse scene.
     narr = [c for c in clips if c.scene.kind is SceneKind.NARRATION]
     narr_gain = 0.0
     if narr:
@@ -266,20 +280,28 @@ def mix_part(
             gain = _match_gain(c.samples, c.scene.id, warnings)
         else:
             gain = narr_gain
-        c.samples = aio.fade(aio.apply_gain(c.samples, gain), FADE_MS)
+        c.samples = aio.apply_gain(c.samples, gain)
+    # The first clip's lead goes to 0 ms after its gain, so a soft lead-in that the
+    # master would leave under the onset threshold is trimmed too.
+    clips[0].trim_head(FIRST_TRIM_DBFS)
+    for c in clips:
+        c.samples = aio.fade(c.samples, FADE_MS)
 
     slots = _layout(clips)
-    blocked = [(s["start_ms"], s["end_ms"]) for s in slots if s["kind"] is SceneKind.VERSE]
+    blocked = [
+        (slot.start_ms, slot.end_ms)
+        for clip, slot in zip(clips, slots, strict=True)
+        if clip.scene.kind is SceneKind.VERSE
+    ]
     hits: list[SfxHit] = []
     for clip, slot in zip(clips, slots, strict=True):
         scene = clip.scene
         stroke_set = strokes.get(scene.id)
         if scene.kind is not SceneKind.NARRATION or stroke_set is None:
-            slot["draw_start_ms"] = slot["draw_end_ms"] = None
             continue
-        start, end = slot["start_ms"], slot["end_ms"]
+        start, end = slot.start_ms, slot.end_ms
         draw_end = start + round(scene.draw_fraction * (end - start))
-        slot["draw_start_ms"], slot["draw_end_ms"] = start, draw_end
+        slot.draw_start_ms, slot.draw_end_ms = start, draw_end
         hits.extend(
             place_sfx(
                 draw_schedule(stroke_set, start, draw_end),
@@ -290,11 +312,11 @@ def mix_part(
             )
         )
 
-    duration_ms = slots[-1]["end_ms"]
+    duration_ms = slots[-1].end_ms
     total = aio.ms_to_samples(duration_ms)
     voice_bus = np.zeros(total, dtype=np.float32)
     for clip, slot in zip(clips, slots, strict=True):
-        _add(voice_bus, clip.samples, slot["speech_start_ms"])
+        _add(voice_bus, clip.samples, slot.speech_start_ms)
     mixed = (voice_bus + _sfx_bus(hits, pack, total)).astype(np.float32)
 
     mastered, loudness = master(
@@ -309,7 +331,7 @@ def mix_part(
 
     return MixResult(
         samples=mastered,
-        scenes=[SceneTiming.model_validate(s) for s in slots],
+        scenes=[_timing(c, s) for c, s in zip(clips, slots, strict=True)],
         sfx=hits,
         loudness=loudness,
         warnings=[*narration.warnings, *warnings, *_master_warnings(loudness)],

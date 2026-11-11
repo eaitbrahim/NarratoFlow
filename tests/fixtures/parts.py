@@ -40,6 +40,7 @@ from narratoflow.models import (
     Visual,
     VisualSource,
 )
+from narratoflow.publish.verse import expected_verse_text
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.reciters import Reciter
 from narratoflow.render.assets import default_fonts, default_hand
@@ -285,7 +286,7 @@ class FakeVoice:
 
 
 def _verse_sha256(timing: SceneTiming) -> str:
-    text = " ".join(" ".join(CORPUS.ayah(a.surah, a.ayah).uthmani.split()) for a in timing.ayat)
+    text = expected_verse_text(CORPUS, [(a.surah, a.ayah) for a in timing.ayat])
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

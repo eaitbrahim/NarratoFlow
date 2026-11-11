@@ -29,6 +29,17 @@ def render_tools() -> RenderTools:
         pytest.skip(str(exc))
 
 
+@pytest.fixture
+def probe_tools() -> RenderTools:
+    """Plain ffmpeg/ffprobe (no libass needed): enough for every check before a frame."""
+    ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        if os.environ.get("CI"):
+            pytest.fail("ffmpeg is required in CI")
+        pytest.skip("ffmpeg not installed")
+    return RenderTools(Path(ffmpeg), Path(ffprobe), "ffmpeg version test")
+
+
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     for key in list(os.environ):

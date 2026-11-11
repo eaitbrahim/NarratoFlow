@@ -202,6 +202,17 @@ def test_use_text_card_refuses_unknown_or_unflagged_scenes() -> None:
             use_text_card(s, sid)
 
 
+def test_use_text_card_updates_the_text_of_an_existing_card() -> None:
+    s = series([scene(1, flags=[QUARANTINED_FLAG]), scene(2)])
+    card = use_text_card(s, "s001", "First")
+    [sc, _] = scenes_of(use_text_card(card, "s001", "Second"))
+    assert sc.card_text == "Second" and sc.visual.source is VisualSource.TEXT_CARD
+    with pytest.raises(PlanningError, match="not quarantined"):
+        use_text_card(card, "s001")  # nothing to change without a text
+    with pytest.raises(PlanningError, match="not quarantined"):
+        use_text_card(card, "s002", "x")  # an unflagged sketch scene is still refused
+
+
 def test_sources_are_ascii() -> None:
     root = Path(__file__).parents[2] / "src" / "narratoflow" / "sketching"
     (root / "resolve.py").read_bytes().decode("ascii")

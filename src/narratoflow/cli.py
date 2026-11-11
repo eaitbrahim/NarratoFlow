@@ -24,7 +24,7 @@ from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.pipeline import plan_series
-from narratoflow.render.build import RenderResult, build_render
+from narratoflow.render.build import PartVideo, RenderResult, build_render
 from narratoflow.settings import get_settings
 from narratoflow.sketching.generate import (
     GenerationInterruptedError,
@@ -270,7 +270,7 @@ def sketch_resolve(
         )
         return
     if text_card:
-        use_text_card(series, scene_id, card_text or "").save(series_json)
+        use_text_card(series, scene_id, card_text).save(series_json)
         _out.print(f"{escape(scene_id)}: now uses a text card", highlight=False)
         return
     # everything that can refuse without spend is checked before asking for money
@@ -397,6 +397,15 @@ def _print_render(result: RenderResult) -> None:
             )
 
 
+def _print_finished(done: list[PartVideo]) -> None:
+    if not done:
+        _err.print("no part finished", highlight=False)
+        return
+    _err.print(f"finished parts: {', '.join(str(p.index) for p in done)}", highlight=False)
+    for built in done:
+        _err.print(f"  {escape(str(built.video_path))}", highlight=False, soft_wrap=True)
+
+
 @app.command()
 def render(
     series_json: Path,
@@ -422,6 +431,7 @@ def render(
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
     audio_dir = audio if audio is not None else series_json.parent / "audio"
+    done: list[PartVideo] = []
     try:
         result = build_render(
             series,
@@ -431,10 +441,15 @@ def render(
             out_dir=out if out is not None else audio_dir,
             parts=part or None,
             workers=workers,
+            on_part=done.append,
         )
     except KeyboardInterrupt:
         _err.print("[red]interrupted: render stopped; finished parts are kept[/red]")
+        _print_finished(done)
         raise typer.Exit(130) from None
+    except Exception:
+        _print_finished(done)  # the error itself is reported by main()
+        raise
     _print_render(result)
 
 

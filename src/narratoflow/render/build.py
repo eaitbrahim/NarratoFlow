@@ -20,8 +20,9 @@ import multiprocessing
 import os
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -32,7 +33,7 @@ import cv2
 from narratoflow.audio.timeline import PartTimeline, SceneTiming
 from narratoflow.captions.ass import AssDocument, style_font_id
 from narratoflow.captions.part import build_part_ass
-from narratoflow.captions.verse import VERSE_FONT, check_verse_text, shown_text, verse_events
+from narratoflow.captions.verse import VERSE_FONT, check_verse_text, shown_text
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.errors import LibraryError, PlanningError, RenderError, StaleTimelineError
 from narratoflow.library.repository import SketchLibrary, default_library
@@ -205,11 +206,11 @@ def _sketch(scene: Scene, timing: SceneTiming, sources: _Sources) -> tuple[Sketc
     return record, strokes
 
 
-def _verse(
-    series: Series, scene: Scene, timing: SceneTiming, corpus: QuranCorpus, fonts: FontPack
-) -> VerseRender:
-    check_verse_text(scene, timing, corpus, fonts)
-    shown = shown_text(verse_events(scene, timing, corpus, series.language))
+def _verse(scene: Scene, timing: SceneTiming, doc: AssDocument) -> VerseRender:
+    """The verse's report entry; `shown_sha256` certifies the Verse events in the burned
+    document that fall in the scene's slot."""
+    burned = [e for e in doc.events if timing.start_ms <= e.start_ms < timing.end_ms]
+    shown = shown_text(burned)
     return VerseRender(
         scene_id=scene.id,
         ayat=[f"{a.surah}:{a.ayah}" for a in timing.ayat],
@@ -238,17 +239,19 @@ def _plan_part(
     if frame_of(timeline.duration_ms) <= 0:
         raise _stale(f"part {n}: the timeline is empty ({timeline.duration_ms} ms)")
     sketches: dict[str, tuple[SketchRecord, StrokeSet]] = {}
-    verses: list[VerseRender] = []
+    verse_slots: list[tuple[Scene, SceneTiming]] = []
     corpus: QuranCorpus | None = None
     for scene, timing in zip(part.scenes, timeline.scenes, strict=True):
         if _drawn(scene):
             sketches[scene.id] = _sketch(scene, timing, sources)
         elif scene.kind is SceneKind.VERSE:
             corpus = sources.get_corpus()
-            verses.append(_verse(series, scene, timing, corpus, fonts))
+            check_verse_text(scene, timing, corpus, fonts)
+            verse_slots.append((scene, timing))
     doc, warnings = build_part_ass(
         series, part, timeline, corpus=corpus, fonts=fonts, ink=channel.style.ink
     )
+    verses = [_verse(scene, timing, doc) for scene, timing in verse_slots]
     return _PartPlan(part, timeline, doc, warnings, sketches, verses)
 
 
@@ -264,8 +267,12 @@ def _checked(job: SceneJob, written: int) -> None:
         )
 
 
-def _run_jobs(jobs: list[SceneJob], workers: int | None) -> None:
-    """Render every segment; a scene's failure is `RenderError("scene <id>: ...")`."""
+def _run_jobs(jobs: list[SceneJob], workers: int | None, part: int) -> None:
+    """Render every segment; a scene's failure is `RenderError("scene <id>: ...")`.
+
+    A dead worker process breaks the whole pool: every unfinished future then raises
+    `BrokenProcessPool`, so which scene killed it is unknown and none is blamed.
+    """
     if workers == 1:
         for job in jobs:
             try:
@@ -284,6 +291,16 @@ def _run_jobs(jobs: list[SceneJob], workers: int | None) -> None:
             for job, future in zip(jobs, futures, strict=True):
                 try:
                     written = future.result()
+                except BrokenProcessPool as exc:
+                    unfinished = [
+                        j.scene_id
+                        for j, f in zip(jobs, futures, strict=True)
+                        if not f.done() or f.exception() is not None
+                    ]
+                    raise RenderError(
+                        f"part {part}: a render worker died (scene unknown; "
+                        f"unfinished scenes: {', '.join(unfinished)})"
+                    ) from exc
                 except Exception as exc:
                     raise RenderError(f"scene {job.scene_id}: {exc}") from exc
                 _checked(job, written)
@@ -408,7 +425,9 @@ class _Run:
         work = self.out_dir / f".render-{stem}"
         try:
             try:
-                report_path.unlink(missing_ok=True)  # a failed re-render leaves no stale report
+                # A failed re-render leaves nothing made from the old audio without its report.
+                for old in (report_path, video, captions):
+                    old.unlink(missing_ok=True)
                 if work.exists():
                     shutil.rmtree(work)
                 work.mkdir()
@@ -417,7 +436,7 @@ class _Run:
                 raise RenderError(f"cannot prepare the work directory {work}: {exc}") from exc
             plan.doc.write(work / "captions.ass")
             jobs, scenes = self.jobs(plan, work)
-            _run_jobs(jobs, self.workers)
+            _run_jobs(jobs, self.workers, n)
             write_concat_list([j.segment for j in jobs], work / "segments.txt")
             encode_part(
                 self.tools,
@@ -461,6 +480,7 @@ class _Run:
                 report.save(report_path)
             except BaseException:
                 video.unlink(missing_ok=True)  # never leave an unverified MP4 behind
+                captions.unlink(missing_ok=True)  # nor captions without their report
                 raise
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -485,8 +505,12 @@ def build_render(
     corpus: QuranCorpus | None = None,
     fonts: FontPack | None = None,
     hand: HandSprite | None = None,
+    on_part: Callable[[PartVideo], None] | None = None,
 ) -> RenderResult:
     """Render every selected part (`parts`: part indexes; None = all) to `out_dir`.
+
+    `on_part` is called with each part as soon as it is finished (so a caller still
+    knows which parts were kept when a later part fails or is interrupted).
 
     `workers`: 1 renders inline; None uses one process per core (at most one per
     scene). `canvas` scales the frame (tests use 1/6); the output is 9:16 only.
@@ -531,4 +555,6 @@ def build_render(
         built = run.part(plan)
         result.parts.append(built)
         logger.info("render part %d: %d frames", built.index, built.report.frames)
+        if on_part is not None:
+            on_part(built)
     return result

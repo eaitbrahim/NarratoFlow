@@ -9,6 +9,8 @@ import shutil
 import subprocess
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from fractions import Fraction
@@ -32,6 +34,8 @@ from narratoflow.audio.timeline import (
     TimelineWord,
     TimingSource,
 )
+from narratoflow.captions.part import build_part_ass
+from narratoflow.captions.verse import shown_text
 from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import LibraryError, PlanningError, RenderError, StaleTimelineError
@@ -55,6 +59,7 @@ from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.reciters import Reciter, ReciterIndex
 from narratoflow.render import build as build_module
 from narratoflow.render import compose
+from narratoflow.render.assets import default_fonts
 from narratoflow.render.build import RenderResult, build_render, check_timeline
 from narratoflow.render.encoder import verify_mp4
 from narratoflow.render.ffmpeg import RenderTools
@@ -1009,3 +1014,144 @@ def test_interrupt_is_not_wrapped_and_cleans_up(
     with pytest.raises(KeyboardInterrupt):
         render(series, channel, settings, tmp_path, probe_tools)
     assert list((tmp_path / "video").iterdir()) == []
+
+
+# -- final-review fixes -------------------------------------------------------
+
+
+def test_failed_rerender_removes_the_old_part_files(
+    channel: ChannelConfig,
+    settings: Settings,
+    tmp_path: Path,
+    probe_tools: RenderTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series = make_series([narr("s1", "alpha")], language=Language.ENGLISH)
+    write_timelines(series, tmp_path / "audio")
+    out = tmp_path / "video"
+    out.mkdir()
+    for name in ("part-01.mp4", "part-01.ass", "part-01.render.json"):
+        (out / name).write_bytes(b"from the old audio")
+
+    def stop(job: compose.SceneJob) -> int:
+        raise _Stop("stop")
+
+    monkeypatch.setattr(compose, "render_segment", stop)
+    with pytest.raises(RenderError, match=r"^scene s1: stop$"):
+        render(series, channel, settings, tmp_path, probe_tools)
+    assert list(out.iterdir()) == []
+
+
+def test_failed_report_save_removes_mp4_and_captions(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    render_tools: RenderTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series = make_series([narr("s1", "alpha")], language=Language.ENGLISH)
+    write_timelines(series, tmp_path / "audio", library)
+
+    def disk_full(self: RenderReport, path: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RenderReport, "save", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        render(series, channel, settings, tmp_path, render_tools, library=library)
+    assert list((tmp_path / "video").iterdir()) == []
+
+
+def test_verse_shown_sha256_comes_from_the_burned_document(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    probe_tools: RenderTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series = make_series([verse("v1"), narr("s1", "alpha")])
+    write_timelines(series, tmp_path / "audio", library)
+    real = build_part_ass
+
+    def marked(*a: Any, **kw: Any) -> Any:
+        doc, warnings = real(*a, **kw)
+        for i, e in enumerate(doc.events):
+            if e.style == "Verse":
+                doc.events[i] = replace(e, text=e.text + " MARK")
+        return doc, warnings
+
+    monkeypatch.setattr(build_module, "build_part_ass", marked)
+    plan = build_module._plan_part(
+        series,
+        channel,
+        series.parts[0],
+        audio_dir=tmp_path / "audio",
+        tools=probe_tools,
+        fonts=default_fonts(),
+        sources=build_module._Sources(settings, library, CORPUS),
+    )
+    [v] = plan.verses
+    burned = shown_text([e for e in plan.doc.events if e.style == "Verse"])
+    assert burned.endswith("MARK")
+    assert v.shown_sha256 == hashlib.sha256(burned.encode("utf-8")).hexdigest()
+
+
+def test_dead_worker_does_not_blame_a_scene(
+    channel: ChannelConfig,
+    settings: Settings,
+    tmp_path: Path,
+    probe_tools: RenderTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(build_module, "ProcessPoolExecutor", _InlinePool)
+    _InlinePool.made.clear()
+
+    def die_after_first(job: compose.SceneJob) -> int:
+        if job.scene_id == "s1":
+            return len(job.frames)
+        raise BrokenProcessPool("A process in the process pool was terminated abruptly")
+
+    monkeypatch.setattr(compose, "render_segment", die_after_first)
+    series = make_series(
+        [narr("s1", "a"), narr("s2", "b"), narr("s3", "c")], language=Language.ENGLISH
+    )
+    write_timelines(series, tmp_path / "audio")
+    with pytest.raises(RenderError) as info:
+        render(series, channel, settings, tmp_path, probe_tools, workers=2)
+    assert str(info.value) == (
+        "part 1: a render worker died (scene unknown; unfinished scenes: s2, s3)"
+    )
+    assert isinstance(info.value.__cause__, BrokenProcessPool)
+
+
+def test_on_part_reports_each_finished_part(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    render_tools: RenderTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series = make_series([narr("s1", "alpha")], [narr("s2", "beta")], language=Language.ENGLISH)
+    write_timelines(series, tmp_path / "audio", library)
+    real = compose.render_segment
+
+    def fail_part_two(job: compose.SceneJob) -> int:
+        if job.scene_id == "s2":
+            raise _Stop("stop")
+        return real(job)
+
+    monkeypatch.setattr(compose, "render_segment", fail_part_two)
+    done: list[int] = []
+    with pytest.raises(RenderError, match="scene s2"):
+        render(
+            series,
+            channel,
+            settings,
+            tmp_path,
+            render_tools,
+            library=library,
+            on_part=lambda p: done.append(p.index),
+        )
+    assert done == [1]

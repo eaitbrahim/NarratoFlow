@@ -73,7 +73,8 @@ frames are identical. It needs an ffmpeg built with libass; on macOS the Homebre
 so run `brew install ffmpeg-full` and set `NARRATOFLOW_FFMPEG=$(brew --prefix ffmpeg-full)/bin/ffmpeg`.
 `render` refuses a stale timeline (swapped sketch, text-card swap, edited verse): after
 `sketch resolve` run `audio build` again before `render`. A text card says what `--card-text`
-gave it (`sketch resolve ... --text-card --card-text TEXT`).
+gave it (`sketch resolve ... --text-card --card-text TEXT`); run the same command again to change
+the text of a scene that is already a text card.
 
 ### Voices
 

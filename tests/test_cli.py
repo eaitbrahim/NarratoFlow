@@ -1144,6 +1144,17 @@ def test_resolve_text_card_with_card_text(channel_file: Path, tmp_path: Path) ->
     assert Series.load(path).parts[0].scenes[0].card_text == "Patience"
 
 
+def test_resolve_card_text_again_updates_an_existing_card(
+    channel_file: Path, tmp_path: Path
+) -> None:
+    path = _approved_series(tmp_path, quarantined=True)
+    assert _resolve(channel_file, path, "--text-card", "--card-text", "One").exit_code == 0
+    out = _resolve(channel_file, path, "--text-card", "--card-text", "Two")
+    assert out.exit_code == 0, out.output
+    scene = Series.load(path).parts[0].scenes[0]
+    assert scene.card_text == "Two" and scene.visual.source is VisualSource.TEXT_CARD
+
+
 def test_card_text_requires_text_card(channel_file: Path, tmp_path: Path) -> None:
     path = _approved_series(tmp_path, quarantined=True)
     out = _resolve(channel_file, path, "--regenerate", "--card-text", "x")
@@ -1271,3 +1282,57 @@ def test_render_interrupt_exits_nonzero_without_traceback(
     err = capsys.readouterr().err
     assert code != 0
     assert "interrupted" in err and "Traceback" not in err
+
+
+def _patch_render_failing_after_part_one(
+    monkeypatch: pytest.MonkeyPatch, raises: BaseException
+) -> None:
+    def fake(series: Series, channel: ChannelConfig, settings: Settings, **kw: Any) -> Any:
+        kw["on_part"](_render_part(1, 3, []))
+        raise raises
+
+    monkeypatch.setattr(cli, "build_render", fake)
+
+
+def test_render_interrupt_lists_finished_parts(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    _patch_render_failing_after_part_one(monkeypatch, KeyboardInterrupt())
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    err = " ".join(capsys.readouterr().err.split())
+    assert code == 130
+    assert "finished parts: 1" in err and "/o/part-01.mp4" in err
+
+
+def test_render_failure_lists_finished_parts(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from narratoflow.errors import RenderError
+
+    path = _approved_series(tmp_path)
+    _patch_render_failing_after_part_one(monkeypatch, RenderError("scene s9: boom"))
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    err = " ".join(capsys.readouterr().err.split())
+    assert code == 1
+    assert "finished parts: 1" in err and "/o/part-01.mp4" in err
+    assert "scene s9: boom" in err and "Traceback" not in err
+
+
+def test_render_interrupt_before_any_part(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    _patch_render(monkeypatch, raises=KeyboardInterrupt())
+    code = run_main(monkeypatch, *_render_args(path, channel_file))
+    assert code == 130
+    assert "no part finished" in capsys.readouterr().err

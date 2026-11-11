@@ -27,6 +27,10 @@ _MIN_WHOLE = 2  # a whole edge ayah this long survives trimming
 _ARABIC = re.compile("[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefc]")
 _TOKEN = re.compile(r"\S+")
 _OPEN_CATEGORIES = ("Ps", "Pi")
+# The author's Qur'an brackets as they open and close in Arabic text.
+_ORNATE_OPEN = "\ufd3f"
+_ORNATE_CLOSE = "\ufd3e"
+_MAX_BRACKET_EXTRA = 2  # author words inside the brackets a hit may absorb
 _CLOSE_CATEGORIES = ("Pe", "Pf")
 
 
@@ -259,4 +263,35 @@ def detect_verses(
             uthmani_text=corpus.text_range(surah, head.ayah, tail.ayah),
         )
         hits.append(VerseHit(words[run.first].start, words[covered[-1]].end, ref))
-    return sorted(hits, key=lambda h: h.start)
+    return _extend_to_brackets(text, sorted(hits, key=lambda h: h.start))
+
+
+def _extend_to_brackets(text: str, hits: list[VerseHit]) -> list[VerseHit]:
+    """Grow a hit to the interior of the author's ornate brackets around it.
+
+    The nearest opening bracket before the hit and closing bracket after it must
+    form a pair with no other bracket between them, the interior (first to last
+    token) may hold at most `_MAX_BRACKET_EXTRA` words outside the hit, and no
+    other hit may touch the interior. The author's spelling then differs from the
+    corpus, so an extended hit is uncertain; its reference is kept.
+    """
+    out: list[VerseHit] = []
+    for hit in hits:
+        opening = text.rfind(_ORNATE_OPEN, 0, hit.start)
+        closing = text.find(_ORNATE_CLOSE, hit.end)
+        if opening < 0 or closing < 0:
+            out.append(hit)
+            continue
+        inside = text[opening + 1 : closing]
+        tokens = list(_TOKEN.finditer(inside))
+        start = opening + 1 + tokens[0].start()
+        end = opening + 1 + tokens[-1].end()
+        extra = len(_tokenize(text[start : hit.start])) + len(_tokenize(text[hit.end : end]))
+        lone_pair = _ORNATE_OPEN not in inside and _ORNATE_CLOSE not in inside
+        alone = all(o is hit or o.end <= start or o.start >= end for o in hits)
+        if lone_pair and alone and 0 < extra <= _MAX_BRACKET_EXTRA:
+            ref = hit.ref.model_copy(update={"certain": False})
+            out.append(VerseHit(start, end, ref))
+        else:
+            out.append(hit)
+    return out

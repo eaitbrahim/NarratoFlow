@@ -219,12 +219,19 @@ def test_join_invariant_on_real_fixture() -> None:
     assert joined == text
     assert not llm.responses
     assert [s.id for s in scenes] == [f"s{n:03d}" for n in range(1, len(scenes) + 1)]
-    verses = [s for s in scenes if s.kind is SceneKind.VERSE]
-    assert [v.narration.source_text for v in verses] == [text[h.start : h.end] for h in hits]
-    assert len(scenes) > len(hits) + 3
-    # the fixture's opening bracket sits before words the detector did not match
-    assert scenes[0].flags == ["unmatched_verse_brackets"]
-    assert all(not s.flags for s in scenes[1:])
+    [verse] = [s for s in scenes if s.kind is SceneKind.VERSE]
+    [hit] = hits
+    # the leading bracket has no letters, so it joins the verse scene
+    assert scenes[0] is verse
+    assert verse.narration.source_text == text[: hit.end]
+    assert verse.narration.source_text == OPEN + text[hit.start : hit.end]
+    first_narration = scenes[1]
+    assert first_narration.kind is SceneKind.NARRATION
+    assert not set(text[hit.start : hit.end].split()) & set(
+        first_narration.narration.source_text.split()
+    )
+    assert len(scenes) > 4
+    assert all(not s.flags for s in scenes)
 
 
 def test_collapse_ws() -> None:

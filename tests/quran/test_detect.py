@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from conftest import FIXTURES
 
+from narratoflow.models import VerseRef
 from narratoflow.quran import detect as detect_module
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.detect import VerseHit, VerseIndex, detect_verses
@@ -395,3 +396,59 @@ def test_cut_piece_below_min_words_is_dropped(corpus: QuranCorpus) -> None:
     a4_head = " ".join(corpus.ayah(19, 4).simple.split()[:5])
     hits = detect_verses(f"«{a3}» {a4_head}", corpus, min_words=6)
     assert [_ref(h) for h in hits] == []
+
+
+def _clean_ar_opening() -> tuple[str, str]:
+    """The fixture text and its opening bracketed quote (brackets excluded)."""
+    text = (FIXTURES / "input" / "clean_ar.txt").read_text(encoding="utf-8")
+    return text, text[text.index(OPEN) + 1 : text.index(CLOSE)]
+
+
+def test_hit_extended_to_author_brackets(corpus: QuranCorpus) -> None:
+    text, interior = _clean_ar_opening()
+    [hit] = detect_verses(text, corpus)
+    assert text[hit.start : hit.end] == interior
+    assert interior.split()[0] == "يوم" and interior.endswith("شيئاً")
+    ref = hit.ref
+    assert (ref.surah, ref.ayah_start, ref.ayah_end, ref.certain) == (31, 33, 33, False)
+    assert ref.uthmani_text == corpus.ayah(31, 33).uthmani
+
+
+def test_three_extra_words_in_brackets_not_extended(corpus: QuranCorpus) -> None:
+    text, interior = _clean_ar_opening()
+    [raw] = detect_verses(interior, corpus)  # no brackets: the unextended hit
+    assert raw.start > 0
+    words = text.split()
+    at = words.index("ولكن")
+    extra = " ".join(words[at : at + 2])  # two narrator words from the fixture
+    quote = f"{OPEN}{extra} {interior}{CLOSE}"
+    [hit] = detect_verses(quote, corpus)
+    offset = quote.index(interior)
+    assert (hit.start, hit.end) == (offset + raw.start, offset + raw.end)
+    assert hit.ref == raw.ref
+
+
+def test_non_ornate_quotes_not_extended(corpus: QuranCorpus) -> None:
+    _, interior = _clean_ar_opening()
+    for left, right in (('"', '"'), ("«", "»")):
+        quote = f"{left}{interior}{right}"
+        [hit] = detect_verses(quote, corpus)
+        assert hit.start > 1
+
+
+def test_bracket_extension_guards() -> None:
+    ref = VerseRef(surah=1, ayah_start=1, ayah_end=1, certain=True, uthmani_text="x")
+    text = f"{OPEN}a b c d{CLOSE}"
+    # two hits in one bracket pair: neither absorbs the other
+    two = [VerseHit(1, 4, ref), VerseHit(5, 8, ref)]
+    assert detect_module._extend_to_brackets(text, two) == two
+    # a stray bracket inside the pair
+    stray = f"{OPEN}a {CLOSE}b c d{CLOSE}"
+    hit = VerseHit(stray.index("b"), len(stray) - 1, ref)
+    assert detect_module._extend_to_brackets(stray, [hit]) == [hit]
+    # the hit already fills the interior
+    full = VerseHit(1, len(text) - 1, ref)
+    assert detect_module._extend_to_brackets(text, [full]) == [full]
+    # no brackets at all
+    bare = VerseHit(0, 3, ref)
+    assert detect_module._extend_to_brackets("a b c", [bare]) == [bare]

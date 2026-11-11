@@ -1,6 +1,8 @@
 """Repository for storing and reusing sketches per channel and style version."""
 
+import threading
 from collections.abc import Sequence
+from pathlib import Path
 
 import numpy as np
 from sqlalchemy import Engine, select
@@ -15,9 +17,11 @@ from narratoflow.library.keys import IdeaKey, parse_idea_key
 from narratoflow.library.orm import Channel, IdeaEmbedding, Sketch, StyleVersion, utc_now
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
 from narratoflow.settings import Settings
+from narratoflow.visuals.strokes import StrokeSet
 
 _REUSABLE = (SketchStatus.PASSED, SketchStatus.UNCHECKED)
 _VECTOR_DTYPE = "<f4"
+STROKES_SUFFIX = ".strokes.json"
 
 
 def _canonical_key(idea_key: str | IdeaKey) -> str:
@@ -216,6 +220,40 @@ class SketchLibrary:
             s.execute(statement, values)
             s.commit()
 
+    def sketch_bytes(self, record: SketchRecord) -> bytes:
+        """The stored image bytes of a sketch."""
+        path = self._blobs.path(record.blob_hash, record.suffix)
+        try:
+            return path.read_bytes()
+        except OSError as e:
+            raise LibraryError(f"cannot read sketch blob {record.blob_hash}: {e}") from e
+
+    def put_strokes(self, sketch_id: int, strokes: StrokeSet) -> None:
+        """Store a sketch's stroke set as a content-addressed `.strokes.json` blob."""
+        blob_hash = self._blobs.put(strokes.to_json(), STROKES_SUFFIX)
+        with Session(self._engine) as s:
+            row = s.get(Sketch, sketch_id)
+            if row is None:
+                raise LibraryError(f"unknown sketch id: {sketch_id}")
+            row.strokes_hash = blob_hash
+            s.commit()
+
+    def get_strokes(self, sketch_id: int) -> StrokeSet | None:
+        """The stored stroke set, or None when none has been extracted yet."""
+        with Session(self._engine) as s:
+            row = s.get(Sketch, sketch_id)
+            if row is None:
+                raise LibraryError(f"unknown sketch id: {sketch_id}")
+            blob_hash = row.strokes_hash
+        if blob_hash is None:
+            return None
+        path = self._blobs.path(blob_hash, STROKES_SUFFIX)
+        try:
+            raw = path.read_bytes()
+        except OSError as e:
+            raise LibraryError(f"cannot read strokes blob {blob_hash}: {e}") from e
+        return StrokeSet.from_json(raw)
+
     def quarantine(self, sketch_id: int, reason: str) -> None:
         with Session(self._engine) as s:
             row = s.get(Sketch, sketch_id)
@@ -268,6 +306,26 @@ class SketchLibrary:
             return _record(new)
 
 
+_ENGINES: dict[Path, Engine] = {}
+_ENGINES_LOCK = threading.Lock()
+
+
 def default_library(settings: Settings) -> SketchLibrary:
-    engine = open_library(settings.data_dir / "library.db")
-    return SketchLibrary(engine, BlobStore(settings.data_dir / "blobs"))
+    """The library under `settings.data_dir`; the engine is opened (and migrated) once
+    per resolved data directory and then reused."""
+    data_dir = settings.data_dir.resolve()
+    with _ENGINES_LOCK:
+        engine = _ENGINES.get(data_dir)
+        if engine is None:
+            engine = open_library(data_dir / "library.db")
+            _ENGINES[data_dir] = engine
+    return SketchLibrary(engine, BlobStore(data_dir / "blobs"))
+
+
+def clear_library_cache() -> None:
+    """Dispose and forget every cached engine (tests, or after moving a data dir)."""
+    with _ENGINES_LOCK:
+        engines = list(_ENGINES.values())
+        _ENGINES.clear()
+    for engine in engines:
+        engine.dispose()

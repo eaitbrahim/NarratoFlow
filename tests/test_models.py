@@ -110,6 +110,9 @@ def test_scene_v2_defaults() -> None:
     assert sc.kind is SceneKind.NARRATION
     assert sc.verse is None and sc.idea_key is None and sc.match is None
     assert sc.flags == [] and sc.est_duration_s == 0
+    assert sc.sketch_id is None
+    dumped = sc.model_copy(update={"sketch_id": 7}).model_dump_json()
+    assert Scene.model_validate_json(dumped).sketch_id == 7
 
 
 def test_verse_ref_range_validated() -> None:

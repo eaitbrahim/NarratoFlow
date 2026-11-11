@@ -7,7 +7,7 @@ import pytest
 
 from narratoflow.library.blobs import BlobStore
 from narratoflow.library.db import open_library
-from narratoflow.library.repository import SketchLibrary
+from narratoflow.library.repository import SketchLibrary, clear_library_cache
 from narratoflow.settings import get_settings
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -22,6 +22,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+    clear_library_cache()
 
 
 @pytest.fixture

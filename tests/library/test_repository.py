@@ -13,6 +13,7 @@ from narratoflow.library.orm import Sketch
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
 from narratoflow.settings import Settings
+from narratoflow.visuals.strokes import StrokeSet
 
 
 def prov() -> Provenance:
@@ -293,3 +294,47 @@ def test_copy_integrity_error_is_chained(
     with pytest.raises(LibraryError) as exc:
         library.copy_to(src.id, v2)
     assert isinstance(exc.value.__cause__, IntegrityError)
+
+
+def _strokes() -> StrokeSet:
+    from narratoflow.visuals.strokes import Stroke
+
+    return StrokeSet(width=8, height=4, strokes=[Stroke(points=[(0.0, 0.0), (1.0, 0.5)])])
+
+
+def test_strokes_roundtrip_as_content_addressed_blob(
+    library: SketchLibrary, tmp_path: Path
+) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    a = _add(library, v, "k|generic", b"A")
+    assert library.get_strokes(a.id) is None
+    library.put_strokes(a.id, _strokes())
+    assert library.get_strokes(a.id) == _strokes()
+    [blob] = list((tmp_path / "blobs").rglob("*.strokes.json"))
+    assert blob.read_bytes() == _strokes().to_json()
+
+
+def test_put_strokes_unknown_sketch_raises(library: SketchLibrary) -> None:
+    with pytest.raises(LibraryError, match="unknown sketch id"):
+        library.put_strokes(999, _strokes())
+    with pytest.raises(LibraryError, match="unknown sketch id"):
+        library.get_strokes(999)
+
+
+def test_sketch_bytes_reads_the_stored_blob(library: SketchLibrary) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    a = _add(library, v, "k|generic", b"PNGDATA")
+    assert library.sketch_bytes(a) == b"PNGDATA"
+
+
+def test_default_library_caches_engine_per_data_dir(tmp_path: Path) -> None:
+    from narratoflow.library import repository
+
+    one = default_library(Settings(data_dir=tmp_path / "a"))
+    two = default_library(Settings(data_dir=tmp_path / "a" / ".." / "a"))
+    other = default_library(Settings(data_dir=tmp_path / "b"))
+    assert one._engine is two._engine
+    assert other._engine is not one._engine
+    repository.clear_library_cache()
+    assert default_library(Settings(data_dir=tmp_path / "a"))._engine is not one._engine
+    repository.clear_library_cache()

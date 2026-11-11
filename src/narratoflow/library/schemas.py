@@ -41,3 +41,4 @@ class SketchRecord(BaseModel):
     mirror_safe: bool
     provenance: Provenance
     created_at: datetime
+    strokes_hash: str | None = None

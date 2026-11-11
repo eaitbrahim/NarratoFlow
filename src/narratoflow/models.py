@@ -145,6 +145,8 @@ class Scene(BaseModel):
     idea_key: str | None = None
     idea_description: str = ""
     match: Literal["reused", "bundled", "new"] | None = None
+    sketch_id: int | None = None
+    """Library sketch drawn for this scene; None until generation attaches one."""
     est_duration_s: float = 0
     flags: list[str] = Field(default_factory=list)
 

@@ -446,3 +446,57 @@ def test_sources_are_ascii() -> None:
     root = Path(__file__).parents[2] / "src" / "narratoflow"
     for path in (root / "visuals" / "strokes.py", root / "errors.py", Path(__file__)):
         assert path.read_bytes().isascii()
+
+
+def _ring_only(size: int, radius: int, pen: int) -> np.ndarray:
+    canvas = np.zeros((size, size), np.uint8)
+    cv2.circle(canvas, (size // 2, size // 2), radius, 255, pen)
+    return canvas > 0
+
+
+@pytest.mark.parametrize(
+    ("size", "radius", "pen"),
+    [(2048, 3, 2), (2048, 4, 1), (1024, 4, 3), (2048, 4, 3)],
+    ids=["2048-r3-pen2", "2048-r4-pen1", "1024-r4-pen3", "2048-r4-pen3"],
+)
+def test_ring_counter_is_not_filled_into_a_dot(size: int, radius: int, pen: int) -> None:
+    # the counter is wider than the pen can cover: it is paper, not a pinhole
+    ink = _ring_only(size, radius, pen)
+    result = extract_strokes(ink)
+    assert len(result.strokes) == 1
+    (loop,) = result.strokes
+    assert loop.width is None
+    assert len(loop.points) >= 3
+    assert math.dist(loop.points[0], loop.points[-1]) * size <= 2
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [(1, 1), (8, 8), (10, 64), (64, 10)],
+    ids=["1x1", "8x8", "disc-64-wide", "disc-10-wide"],
+)
+def test_dot_width_never_exceeds_the_image(shape: tuple[int, int]) -> None:
+    height, width = shape
+    if shape in ((1, 1), (8, 8)):
+        ink = np.ones(shape, dtype=bool)
+    else:
+        canvas = np.zeros(shape, np.uint8)
+        cv2.circle(canvas, (width // 2, height // 2), 5, 255, -1)  # d = 11
+        ink = canvas > 0
+    result = extract_strokes(ink)
+    assert result.strokes
+    assert all(s.width is None or s.width <= 1.0 for s in result.strokes)
+
+
+@pytest.mark.parametrize("size", [1024, 2048])
+@pytest.mark.parametrize("pen", [1, 2])
+@pytest.mark.parametrize("gap", [3, 7])
+def test_thin_pen_dashes_are_not_chained(size: int, pen: int, gap: int) -> None:
+    # a paper gap wider than the pen is visible: each dash is its own stroke
+    ink = np.zeros((size, size), dtype=bool)
+    x, dashes = 20, 0
+    while x < 400:
+        ink[100 : 100 + pen, x : x + 20] = True
+        x += 20 + gap
+        dashes += 1
+    assert len(extract_strokes(ink).strokes) == dashes

@@ -3,8 +3,9 @@
 Pipeline (all pure and deterministic, ties go to the lowest (y, x)). Pixel
 thresholds are given at 512 px and scale with min(h, w) / 512.
   1. Fill pinholes: enclosed background components of at most
-     PINHOLE_PX * scale^2 px (a thick or anti-aliased stroke leaves them, and
-     each one would become a tiny skeleton loop).
+     PINHOLE_PX * scale^2 px that the surrounding line width covers anyway
+     (a thick or anti-aliased stroke leaves them, and each one would become a
+     tiny skeleton loop). A counter wider than the pen is never filled.
   2. Skeletonize the ink mask.
   3. Classify skeleton pixels by 8-neighbour count: endpoint (1), path (2),
      junction (>= 3). Adjacent junction pixels form one junction cluster.
@@ -22,8 +23,9 @@ thresholds are given at 512 px and scale with min(h, w) / 512.
      rtl) and each step takes the stroke whose nearer end is closest to the
      pen, reversed when its far end was the nearer one. So the first stroke is
      the one with an end nearest the corner, drawn from that end.
-  8. Chain: a stroke starting within CHAIN_PX of the pen's end is appended to
-     the current stroke (no pen lift). Dots are never chained.
+  8. Chain: a stroke starting within CHAIN_PX of the pen's end, across a
+     paper gap no wider than the local line width, is appended to the current
+     stroke (no pen lift). Dots are never chained.
 
 Ink is never dropped. PACING_STROKES is only a hint for the renderer (Task 5
 speeds up the reveal above it); nothing here enforces it.
@@ -114,10 +116,11 @@ def extract_strokes(ink: np.ndarray, *, rtl: bool = False) -> StrokeSet:
         raise StrokeDataError(f"ink mask must be a non-empty 2-D array, got shape {ink.shape}")
     height, width = ink.shape
     scale = min(height, width) / REFERENCE_PX
-    filled = _fill_pinholes(ink.astype(bool), round(PINHOLE_PX * scale * scale))
+    filled = _fill_pinholes(ink.astype(bool), PINHOLE_PX * scale * scale, scale)
     skel = skeletonize(filled).astype(bool)  # type: ignore[no-untyped-call]
+    depth = cv2.distanceTransform(filled.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     lines = _dots_and_edges(
-        skel, filled, spur_px=MIN_SPUR_PX * scale, reach_px=SPUR_REACH_PX * scale
+        skel, filled, depth, spur_px=MIN_SPUR_PX * scale, reach_px=SPUR_REACH_PX * scale
     )
     ordered = _order(lines, start=(0.0, float(width) if rtl else 0.0))
     return StrokeSet(
@@ -126,35 +129,72 @@ def extract_strokes(ink: np.ndarray, *, rtl: bool = False) -> StrokeSet:
         strokes=[
             Stroke(
                 points=[(x / width, y / height) for y, x in line.points],
-                width=None if line.diameter is None else line.diameter / width,
+                # a dot blob can be wider than a tiny image; clamp to the schema
+                width=None if line.diameter is None else min(1.0, line.diameter / width),
             )
-            for line in _chain(ordered, CHAIN_PX * scale)
+            for line in _chain(ordered, CHAIN_PX * scale, depth)
         ],
     )
 
 
-def _fill_pinholes(ink: np.ndarray, limit: int) -> np.ndarray:
-    """Fill enclosed (not border-touching) 4-connected background holes <= limit px."""
+def _fill_pinholes(ink: np.ndarray, limit: float, scale: float) -> np.ndarray:
+    """Fill enclosed background holes that the surrounding stroke already covers.
+
+    Holes are 4-connected background components that do not touch the
+    border: skeletonize treats ink as 8-connected, so these are exactly the
+    holes it would trace a loop around. A 4-connected fragment of a larger
+    8-connected hole is judged on its own by the width bound below, so it is
+    filled only where the pen covers it. A hole is filled only if drawing the
+    skeleton at the local line width would cover it anyway:
+      - area <= min(limit, pi * (w / 2)^2), w = 2 * r - 1 the local line width;
+      - the hole's inscribed diameter 2 * d - 1 (d its max distance to ink)
+        is at most the pen's half-width r - 0.5,
+    where r is the largest ink distance-transform value in a ring of
+    ceil(2 * scale) + 2 px around the hole. So a 1 px pen never has a hole
+    filled, and a ring counter as wide as the pen stays paper, whatever the
+    image scale.
+    """
     if limit < 1:
         return ink
     height, width = ink.shape
-    _, labels, stats, _ = cv2.connectedComponentsWithStats((~ink).astype(np.uint8), connectivity=4)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (~ink).astype(np.uint8), connectivity=4
+    )
     left, top = stats[:, cv2.CC_STAT_LEFT], stats[:, cv2.CC_STAT_TOP]
     right = left + stats[:, cv2.CC_STAT_WIDTH]
     bottom = top + stats[:, cv2.CC_STAT_HEIGHT]
-    hole = (
+    candidate = (
         (stats[:, cv2.CC_STAT_AREA] <= limit)
         & (left > 0)
         & (top > 0)
         & (right < width)
         & (bottom < height)
     )
-    hole[0] = False  # label 0 is the ink itself
-    return np.asarray(ink | hole[labels])
+    candidate[0] = False  # label 0 is the ink itself
+    if not candidate.any():
+        return ink
+    ink_depth = cv2.distanceTransform(ink.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    hole_depth = cv2.distanceTransform((~ink).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    margin = math.ceil(2 * scale) + 2
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin + 1, 2 * margin + 1))
+    fill = np.zeros(count, dtype=bool)
+    for label in np.flatnonzero(candidate):
+        y0, x0 = max(0, int(top[label]) - margin), max(0, int(left[label]) - margin)
+        y1 = min(height, int(bottom[label]) + margin)
+        x1 = min(width, int(right[label]) + margin)
+        hole = labels[y0:y1, x0:x1] == label
+        ring = cv2.dilate(hole.astype(np.uint8), kernel).astype(bool) & ink[y0:y1, x0:x1]
+        radius = float(ink_depth[y0:y1, x0:x1][ring].max())
+        pen = 2.0 * radius - 1.0
+        area = float(stats[label, cv2.CC_STAT_AREA])
+        inscribed = float(hole_depth[y0:y1, x0:x1][hole].max())
+        # pixel-centre depths: r reaches r - 0.5 px, a hole of depth d is 2d - 1 wide
+        fill[label] = area <= math.pi * (pen / 2.0) ** 2 and 2.0 * inscribed - 1.0 <= radius - 0.5
+    return np.asarray(ink | fill[labels])
 
 
 def _dots_and_edges(
-    skel: np.ndarray, ink: np.ndarray, *, spur_px: float, reach_px: float
+    skel: np.ndarray, ink: np.ndarray, depth: np.ndarray, *, spur_px: float, reach_px: float
 ) -> list[_Line]:
     """Skeleton -> simplified polylines in (y, x) pixel units."""
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(
@@ -177,7 +217,6 @@ def _dots_and_edges(
         x, y = (float(v) for v in centroids[label])
         lines.append(_Line([(y, x), (y, x + DOT_TAP_PX)], max(1.0, diameter)))
     graph = skel & ~small[labels]
-    depth = cv2.distanceTransform(ink.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     for edge in _merge(_prune(_trace(graph), depth, spur_px=spur_px, reach_px=reach_px)):
         lines.append(_Line(_simplify(edge.pixels)))
     return lines
@@ -367,16 +406,41 @@ def _order(lines: list[_Line], *, start: Point) -> list[_Line]:
     return ordered
 
 
-def _chain(lines: list[_Line], chain_px: float) -> list[_Line]:
-    """Append each stroke starting within chain_px of the pen to the current one."""
+def _chain(lines: list[_Line], chain_px: float, depth: np.ndarray) -> list[_Line]:
+    """Append each stroke starting within chain_px of the pen to the current one.
+
+    The paper gap between the two ends (centre distance minus each end's ink
+    radius) must also be no wider than the local line width, so a thin pen's
+    visible dash gap keeps its pen lift at any image scale.
+    """
     chained: list[_Line] = []
     for line in lines:
         if chained:
             current = chained[-1]
-            touching = math.dist(current.points[-1], line.points[0]) <= chain_px
-            if touching and current.diameter is None and line.diameter is None:
-                tail = line.points[1:] if line.points[0] == current.points[-1] else line.points
+            end, start = current.points[-1], line.points[0]
+            distance = math.dist(end, start)
+            if (
+                distance <= chain_px
+                and current.diameter is None
+                and line.diameter is None
+                and _paper_gap(distance, end, start, depth) <= _line_width(end, start, depth)
+            ):
+                tail = line.points[1:] if start == end else line.points
                 chained[-1] = _Line(current.points + tail)
                 continue
         chained.append(line)
     return chained
+
+
+def _radius(point: Point, depth: np.ndarray) -> float:
+    # line ends are skeleton pixels (Douglas-Peucker keeps them), so ink
+    return float(depth[int(point[0]), int(point[1])])
+
+
+def _paper_gap(distance: float, a: Point, b: Point, depth: np.ndarray) -> float:
+    # a pixel with depth r reaches r - 0.5 px from its centre to the paper
+    return distance - (_radius(a, depth) - 0.5) - (_radius(b, depth) - 0.5)
+
+
+def _line_width(a: Point, b: Point, depth: np.ndarray) -> float:
+    return 2.0 * min(_radius(a, depth), _radius(b, depth)) - 1.0

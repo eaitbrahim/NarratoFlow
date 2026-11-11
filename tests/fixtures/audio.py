@@ -22,6 +22,7 @@ def _amp(dbfs: float) -> float:
 
 
 def tone(ms: int, hz: float = 440, dbfs: float = -20, lead_ms: int = 0) -> NDArray[np.float32]:
+    """Sine tone; ``dbfs`` is the RMS level (peak is 3 dB higher)."""
     t = np.arange(_n(ms)) / SR
     body = (np.sin(2 * np.pi * hz * t) * _amp(dbfs) * np.sqrt(2)).astype(np.float32)
     return np.concatenate([np.zeros(_n(lead_ms), dtype=np.float32), body])

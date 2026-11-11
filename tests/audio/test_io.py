@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
+import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +42,7 @@ def test_master_hits_target(ffmpeg_bin: str) -> None:
     out, loud = aio.master(speechlike(20))
     assert loud.integrated_lufs is not None
     assert abs(loud.integrated_lufs + 14) <= 1.0
+    assert loud.true_peak_dbtp is not None
     assert loud.true_peak_dbtp <= -1.0
     assert out.dtype == np.float32
 
@@ -90,3 +94,56 @@ def test_missing_ffmpeg_raises_clean_error(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     with pytest.raises(AudioError, match="ffmpeg not found"):
         aio.require_ffmpeg()
+
+
+def test_measure_never_returns_nonfinite(ffmpeg_bin: str) -> None:
+    for x in (aio.silence(1000), np.zeros(0, dtype=np.float32)):
+        loud = aio.measure(x)
+        assert loud.integrated_lufs is None
+        json.dumps(dataclasses.asdict(loud), allow_nan=False)
+
+
+def test_measure_short_clip_has_no_integrated(ffmpeg_bin: str) -> None:
+    assert aio.measure(tone(300)).integrated_lufs is None
+
+
+def test_trim_keeps_sub_window_clip_and_trailing_partial() -> None:
+    tiny = np.full(aio.ms_to_samples(5), 0.5, dtype=np.float32)
+    out, _ = aio.trim_silence(tiny)
+    assert len(out) == len(tiny)
+    x = np.concatenate([aio.silence(100), np.full(aio.ms_to_samples(4), 0.5, np.float32)])
+    out2, _ = aio.trim_silence(x, keep_ms=0)
+    assert len(out2) == aio.ms_to_samples(4) + (len(x) - aio.ms_to_samples(104))
+
+
+def test_trim_keep_lead_ms_overrides() -> None:
+    x = speechlike(2, lead_ms=500)
+    _, lead = aio.trim_silence(x, keep_ms=20, keep_lead_ms=100)
+    assert 395 <= lead <= 405
+
+
+def test_encode_flac_mode(ffmpeg_bin: str, tmp_path: Path) -> None:
+    path = tmp_path / "m.flac"
+    aio.encode_flac(tone(200), path)
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_run_timeout_and_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+
+    def boom(*_a: object, **_k: object) -> object:
+        raise subprocess.TimeoutExpired("ffmpeg", 1)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(AudioError, match="timed out"):
+        aio.decode(b"x")
+
+    def fail(*_a: object, **_k: object) -> object:
+        return subprocess.CompletedProcess([], 1, b"", (("x" * 500 + "\n") * 8).encode())
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(AudioError) as exc:
+        aio.decode(b"x")
+    lines = str(exc.value).splitlines()
+    assert len(lines) == 5
+    assert all(len(ln) <= 260 for ln in lines)

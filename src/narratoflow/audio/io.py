@@ -41,7 +41,7 @@ def _run(args: list[str], data: bytes) -> tuple[bytes, str]:
         raise AudioError(f"ffmpeg timed out after {FFMPEG_TIMEOUT_S}s") from exc
     stderr = proc.stderr.decode("utf-8", errors="replace")
     if proc.returncode != 0:
-        tail = "\n".join(stderr.strip().splitlines()[-5:])
+        tail = "\n".join(line[:200] for line in stderr.strip().splitlines()[-5:])
         raise AudioError(f"ffmpeg failed (exit {proc.returncode}): {tail}")
     return proc.stdout, stderr
 
@@ -115,6 +115,7 @@ def encode_flac(samples: Samples, path: Path) -> None:
             _raw(samples),
         )
         tmp.write_bytes(out)
+        tmp.chmod(0o644)
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -123,7 +124,7 @@ def encode_flac(samples: Samples, path: Path) -> None:
 @dataclass(frozen=True)
 class Loudness:
     integrated_lufs: float | None
-    true_peak_dbtp: float
+    true_peak_dbtp: float | None
     lra: float
     threshold: float
     offset: float
@@ -161,29 +162,25 @@ def measure(samples: Samples) -> Loudness:
     try:
         data = json.loads(blocks[-1])
         integrated = _num(data["input_i"])
-        result = Loudness(
-            integrated_lufs=integrated,
-            true_peak_dbtp=_num(data["input_tp"]),
-            lra=_num(data["input_lra"]),
-            threshold=_num(data["input_thresh"]),
-            offset=_num(data["target_offset"]),
-        )
+        peak = _num(data["input_tp"])
+        lra = _num(data["input_lra"])
+        thresh = _num(data["input_thresh"])
+        offset = _num(data["target_offset"])
     except (ValueError, KeyError, TypeError) as exc:
         raise AudioError("ffmpeg loudnorm measurement could not be parsed") from exc
     too_short = len(samples) < ms_to_samples(MIN_GATED_MS)
-    if too_short or not math.isfinite(integrated):
-        return Loudness(
-            None,
-            _finite(result.true_peak_dbtp),
-            _finite(result.lra),
-            _finite(result.threshold),
-            _finite(result.offset),
-        )
-    return result
+    gated = not too_short and math.isfinite(integrated)
+    return Loudness(
+        integrated if gated else None,
+        peak if math.isfinite(peak) else None,
+        _finite(lra),
+        _finite(thresh),
+        _finite(offset),
+    )
 
 
 def _finite(value: float) -> float:
-    return value if math.isfinite(value) else -math.inf if value < 0 else 0.0
+    return value if math.isfinite(value) else 0.0
 
 
 def master(
@@ -194,7 +191,7 @@ def master(
     lra: float = 11.0,
 ) -> tuple[Samples, Loudness]:
     first = measure(samples)
-    if first.integrated_lufs is None:
+    if first.integrated_lufs is None or first.true_peak_dbtp is None:
         return samples, first
     params = (
         f"loudnorm=I={target_lufs}:TP={true_peak_dbtp}:LRA={lra}"
@@ -218,11 +215,15 @@ def trim_silence(
     keep_lead_ms: int | None = None,
 ) -> tuple[Samples, int]:
     win = ms_to_samples(10)
-    count = len(samples) // win
-    if count == 0:
+    if len(samples) == 0:
         return samples[:0], 0
-    frames = samples[: count * win].reshape(count, win).astype(np.float64)
-    rms = np.sqrt(np.mean(frames**2, axis=1))
+    count = math.ceil(len(samples) / win)
+    padded = np.zeros(count * win, dtype=np.float64)
+    padded[: len(samples)] = samples
+    sums = np.sum(padded.reshape(count, win) ** 2, axis=1)
+    sizes = np.full(count, win, dtype=np.float64)
+    sizes[-1] = len(samples) - (count - 1) * win
+    rms = np.sqrt(sums / sizes)
     loud = np.flatnonzero(rms > 10 ** (threshold_dbfs / 20))
     if loud.size == 0:
         return samples[:0], 0

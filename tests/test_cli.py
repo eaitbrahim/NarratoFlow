@@ -1612,3 +1612,38 @@ def test_review_unapproved_refused_and_confirmed_run_proceeds(
     out = runner.invoke(cli.app, _review_args(path, channel_file))
     assert out.exit_code == 0, out.output
     assert len(asked) == 1 and len(seen) == 1
+
+
+def test_review_ctrl_c_saves_spend_and_exits_130(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.publish.review import ReviewCancelledError, ReviewResult
+
+    _review_channel(channel_file, monkeypatch)
+    path = _approved_series(tmp_path)
+    partial = Series.load(path)
+    partial.parts[0].spent_usd = Decimal("0.03")
+    done = ReviewResult(spent_usd=Decimal("0.03"))
+    _patch_review(monkeypatch, raises=ReviewCancelledError((partial, done)))
+    out = runner.invoke(cli.app, _review_args(path, channel_file, "--yes"))
+    assert out.exit_code == 130
+    assert "interrupted" in out.output and "total spent $0.03" in out.output
+    assert "Traceback" not in out.output
+    assert Series.load(path).parts[0].spent_usd == Decimal("0.03")
+
+
+def test_review_unknown_part_refused_before_prompt_and_spend(
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _review_channel(channel_file, monkeypatch)
+    path = _approved_series(tmp_path)
+    before = path.read_bytes()
+    seen = _patch_review(monkeypatch, None)
+    asked = _no_confirm(monkeypatch)
+    code = run_main(monkeypatch, *_review_args(path, channel_file, "--part", "9"))
+    assert code == 1 and asked == [] and seen == []
+    assert "no part 9" in capsys.readouterr().err
+    assert path.read_bytes() == before

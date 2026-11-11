@@ -65,6 +65,15 @@ class ReviewInterruptedError(NarratoFlowError):
         self.partial = partial
 
 
+class ReviewCancelledError(KeyboardInterrupt):
+    """Ctrl-C stopped the review mid-run; spend so far is in `partial`, as for
+    `ReviewInterruptedError`. The caller saves `partial[0]` and exits 130."""
+
+    def __init__(self, partial: tuple[Series, ReviewResult]) -> None:
+        super().__init__("review cancelled")
+        self.partial = partial
+
+
 def _ident(channel: ChannelConfig) -> tuple[str, str]:
     """Provider and model exactly as `make_llm` uses them."""
     return channel.llm.provider.strip().lower(), channel.llm.model
@@ -172,7 +181,7 @@ def review_series(
         tracked = TrackedLLM(client, tracker, provider, model, prices)
         try:
             review = review_part(part, rules, tracked, provider=provider, model=model, now=clock())
-        except NarratoFlowError as exc:
+        except (NarratoFlowError, KeyboardInterrupt) as exc:
             part.spent_usd = tracker.spent
             add_spend(part.spend, tracker)
             result.spent_usd += tracker.spent - start
@@ -182,7 +191,10 @@ def review_series(
                 spent_usd=result.spent_usd,
                 per_part=list(result.per_part),
             )
-            raise ReviewInterruptedError(exc, (out.model_copy(deep=True), partial)) from exc
+            snapshot = (out.model_copy(deep=True), partial)
+            if isinstance(exc, KeyboardInterrupt):
+                raise ReviewCancelledError(snapshot) from exc
+            raise ReviewInterruptedError(exc, snapshot) from exc
         part.content_review = review
         part.spent_usd = tracker.spent
         add_spend(part.spend, tracker)

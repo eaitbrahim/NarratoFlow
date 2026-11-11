@@ -36,6 +36,7 @@ from narratoflow.publish.content import (
     review_text,
 )
 from narratoflow.publish.review import (
+    ReviewCancelledError,
     ReviewInterruptedError,
     _ReviewOutput,
     estimate_review,
@@ -650,3 +651,42 @@ def test_review_result_per_part_counts(
         checks = content_checks(out.parts[index - 1], rules)
         assert fails == _severities(checks).count(Severity.FAIL)
         assert warns == _severities(checks).count(Severity.WARN)
+
+
+class _CtrlC(_Fake):
+    """Bills the first call, then the user presses Ctrl-C during the second."""
+
+    def complete_structured[T: BaseModel](
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
+    ) -> StructuredResult[T]:
+        if self.calls:
+            raise KeyboardInterrupt
+        return super().complete_structured(system=system, user=user, output=output, images=images)
+
+
+def test_ctrl_c_keeps_earlier_spend(
+    channel: ChannelConfig, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    series = _series()
+    with pytest.raises(ReviewCancelledError) as info:
+        review_series(
+            series,
+            _channel(channel),
+            _settings(tmp_path_factory),
+            llm=_CtrlC([_output(_finding())]),
+            prices=PRICES,
+            rules=_rules(),
+            now=lambda: NOW,
+        )
+    assert isinstance(info.value.__cause__, KeyboardInterrupt)
+    partial, result = info.value.partial
+    assert partial.parts[0].content_review is not None
+    assert partial.parts[0].spent_usd == COST and partial.parts[0].spend == {WHAT: COST}
+    assert partial.parts[1].content_review is None and partial.parts[1].spent_usd == 0
+    assert result.reviewed == [1] and result.spent_usd == COST
+    assert series.parts[0].content_review is None

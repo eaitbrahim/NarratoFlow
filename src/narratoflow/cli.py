@@ -33,6 +33,7 @@ from narratoflow.planning.pipeline import plan_series
 from narratoflow.publish.build import PublishResult, build_publish
 from narratoflow.publish.checks import Severity
 from narratoflow.publish.review import (
+    ReviewCancelledError,
     ReviewInterruptedError,
     ReviewResult,
     estimate_review,
@@ -517,6 +518,11 @@ def review(
         exc.partial[0].save(series_json)
         _print_review(exc.partial[1])
         raise
+    except ReviewCancelledError as exc:
+        exc.partial[0].save(series_json)
+        _err.print("[red]interrupted: review stopped; spend so far is saved[/red]")
+        _print_review(exc.partial[1])
+        raise typer.Exit(130) from None
     updated.save(series_json)
     _print_review(result)
 

@@ -714,3 +714,80 @@ def test_reference_verse_part_checks_reciter(
         if c.check is CheckId.ASSET_PROVENANCE and c.severity is Severity.FAIL
     ]
     assert fails and any("files-hafs" in c.reason for c in fails)
+
+
+# -- the CLI, end to end (nothing patched) ------------------------------------
+
+
+def _cli_publish(
+    series: Series,
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tools: RenderTools,
+) -> tuple[Any, Path, bytes]:
+    from typer.testing import CliRunner
+
+    from narratoflow import cli
+
+    monkeypatch.setenv("NARRATOFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NARRATOFLOW_FFMPEG", str(tools.ffmpeg))
+    _tiny_rules(tmp_path)  # data_dir/platform_rules.toml is the rules override
+    path = tmp_path / "series.json"
+    series.save(path)
+    before = path.read_bytes()
+    out = CliRunner().invoke(
+        cli.app,
+        [
+            "publish",
+            str(path),
+            "--channel",
+            str(channel_file),
+            "--render",
+            str(tmp_path / "video"),
+        ],
+    )
+    return out, path, before
+
+
+def test_cli_publish_exports_and_leaves_series_bytes(
+    one_part: Series,
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    render_tools: RenderTools,
+) -> None:
+    import hashlib
+
+    out, path, before = _cli_publish(one_part, channel_file, tmp_path, monkeypatch, render_tools)
+    assert out.exit_code == 0, out.output
+    export = tmp_path / "export"
+    for name in EXPORTS:
+        assert (export / name).is_file()
+    assert (export / "series.publish.md").is_file()
+    video = tmp_path / "video"
+    assert (video / "part-01.publish.json").is_file()
+    assert (video / "series.publish.json").is_file()
+    assert (export / "part-01.mp4").read_bytes() == (video / "part-01.mp4").read_bytes()
+    report = PublishReport.load(video / "part-01.publish.json")
+    assert report.exported is True
+    assert report.video_sha256 == hashlib.sha256((export / "part-01.mp4").read_bytes()).hexdigest()
+    assert "part 1/1:" in out.output and "series summary:" in out.output
+    assert path.read_bytes() == before
+
+
+def test_cli_publish_fail_blocks_exit_1(
+    one_part: Series,
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    render_tools: RenderTools,
+) -> None:
+    undisclosed = one_part.model_copy(update={"ai_disclosure": False})
+    out, path, before = _cli_publish(undisclosed, channel_file, tmp_path, monkeypatch, render_tools)
+    assert out.exit_code == 1
+    assert "FAIL" in out.output and "not exported" in out.output
+    export = tmp_path / "export"
+    assert not export.exists() or list(export.iterdir()) == []
+    assert (tmp_path / "video" / "part-01.publish.json").is_file()
+    assert path.read_bytes() == before

@@ -1,8 +1,19 @@
+import hashlib
+import itertools
+import math
+
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from narratoflow.visuals.marker import marker_seed, render_marker
+from narratoflow.visuals.marker import (
+    PreparedStroke,
+    draw_stroke,
+    marker_seed,
+    prepare_marker,
+    render_marker,
+    stroke_point,
+)
 from narratoflow.visuals.strokes import Stroke, StrokeSet
 
 SIZE = (200, 120)
@@ -129,3 +140,97 @@ def test_render_marker_upto_one_draws_every_stroke(seed: int) -> None:
     alone = _ink(render_marker(dot, SIZE, line_weight_px=4.0, ink="#112233", seed=seed))
     # Same disc up to the sub-pixel wobble, which differs because the draws differ.
     assert (full & alone).sum() >= 0.5 * alone.sum()
+
+
+# Pinned on the fixed render_marker (commit 86a72bf), before the per-stroke refactor.
+_DIGEST_FULL = "89d61a3efe99fcda26a7362414d60db4c486e7313841cc6203b43c96089d64f4"
+_DIGEST_HALF = "f84bbed4d48100fc8f78fe87fee0ef554d0d5e9fc4f48ca6361f7ca8f02c628d"
+
+
+def test_render_marker_digest_pinned() -> None:
+    assert hashlib.sha256(_render().tobytes()).hexdigest() == _DIGEST_FULL
+    assert hashlib.sha256(_render(upto=0.5).tobytes()).hexdigest() == _DIGEST_HALF
+
+
+def _prep(**kw: object) -> list[PreparedStroke]:
+    args: dict[str, object] = {"line_weight_px": 4.0, "seed": 1}
+    args.update(kw)
+    return prepare_marker(_set(), SIZE, **args)  # type: ignore[arg-type]
+
+
+def _paint(prepared: list[PreparedStroke], fraction: float = 1.0) -> Image.Image:
+    img = Image.new("RGB", SIZE, (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    for stroke in prepared:
+        draw_stroke(draw, stroke, fraction, (0, 0, 0))
+    return img
+
+
+def test_prepare_marker_length_is_plain_sum_and_zero_length_polyline_complete() -> None:
+    prepared = _prep()
+    assert [p.dot for p in prepared] == [False, False, True]
+    for p in prepared[:2]:
+        assert len(p.points) >= 2
+        assert p.length == sum(math.dist(a, b) for a, b in itertools.pairwise(p.points))
+    dot = prepared[2]
+    assert len(dot.points) == 1 and dot.length == dot.weight == max(0.05 * 200, dot.weight)
+
+    flat = PreparedStroke(points=((10.0, 10.0), (10.0, 10.0)), weight=4.0, dot=False, length=0.0)
+    for fraction in (0.0, 0.5, 1.0):
+        img = Image.new("RGB", SIZE, (255, 255, 255))
+        draw_stroke(ImageDraw.Draw(img), flat, fraction, (0, 0, 0))
+        assert _ink(img)[10, 10]
+        assert stroke_point(flat, fraction) == (10.0, 10.0)
+
+
+def test_dot_px_per_unit_scales_dot_diameter() -> None:
+    assert _prep() == _prep(dot_px_per_unit=float(SIZE[0]))
+    assert _paint(_prep()).tobytes() == _paint(_prep(dot_px_per_unit=200.0)).tobytes()
+    big = _prep(dot_px_per_unit=400.0)
+    assert big[2].weight == pytest.approx(2 * _prep()[2].weight)
+    assert big[:2] == _prep()[:2]
+    only = [_prep()[2]], [big[2]]
+    assert _ink(_paint(only[1])).sum() > 3 * _ink(_paint(only[0])).sum()
+
+
+def test_prepare_reverse_does_not_change_rng_draws() -> None:
+    plain = _prep()
+    rev = _prep(reverse=[True, False, True])
+    assert rev[0].points == plain[0].points[::-1]
+    assert rev[0].weight == plain[0].weight
+    assert rev[0].length == pytest.approx(plain[0].length)
+    assert rev[1:] == plain[1:]
+
+
+def test_to_pixels_identity_matches_default() -> None:
+    w, h = SIZE
+
+    def mapping(x: float, y: float) -> tuple[float, float]:
+        return (x * (w - 1), y * (h - 1))
+
+    assert _prep(to_pixels=mapping) == _prep()
+    shifted = _prep(to_pixels=lambda x, y: (x * (w - 1) + 7.0, y * (h - 1)))
+    assert shifted[0].points[0][0] == pytest.approx(_prep()[0].points[0][0] + 7.0)
+
+
+def test_stroke_point_walks_the_polyline() -> None:
+    line = PreparedStroke(
+        points=((0.0, 0.0), (10.0, 0.0), (10.0, 10.0)), weight=2.0, dot=False, length=20.0
+    )
+    assert stroke_point(line, 0.0) == (0.0, 0.0)
+    assert stroke_point(line, 0.25) == (5.0, 0.0)
+    assert stroke_point(line, 0.75) == (10.0, 5.0)
+    assert stroke_point(line, 1.0) == (10.0, 10.0)
+    dot = PreparedStroke(points=((3.0, 4.0),), weight=6.0, dot=True, length=6.0)
+    assert stroke_point(dot, 0.5) == (3.0, 4.0)
+
+
+def test_draw_stroke_dot_only_when_complete() -> None:
+    dot = _prep()[2]
+    assert not _ink(_paint([dot], 0.99)).any()
+    assert _ink(_paint([dot], 1.0)).any()
+
+
+def test_prepare_reverse_length_checked() -> None:
+    with pytest.raises(ValueError):
+        _prep(reverse=[True])

@@ -1,8 +1,9 @@
 """Free bundled icons, usable only for generic idea keys."""
 
+import hashlib
 import logging
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from importlib import resources
 from pathlib import Path
 
@@ -10,9 +11,10 @@ from pydantic import BaseModel
 
 from narratoflow.errors import ChannelConfigError, InvalidIdeaKeyError
 from narratoflow.library.keys import IdeaKey, parse_idea_key
+from narratoflow.planning.ideas import MAX_DESCRIPTION_WORDS
 
 logger = logging.getLogger(__name__)
-_FIELDS = frozenset({"file", "license", "source"})
+_FIELDS = frozenset({"file", "description", "license", "source", "sha256"})
 
 
 class BundledIcon(BaseModel):
@@ -20,6 +22,8 @@ class BundledIcon(BaseModel):
     file: Path
     license: str
     source: str
+    description: str
+    sha256: str
 
 
 class BundledIcons:
@@ -53,8 +57,26 @@ class BundledIcons:
             icons[str(key)] = _build(raw_key, key, entry, index_path)
         return icons
 
+    def __len__(self) -> int:
+        return len(self._icons)
+
     def get(self, key: IdeaKey) -> BundledIcon | None:
         return self._icons.get(str(key))
+
+    def catalog(self) -> list[tuple[str, str]]:
+        """(key, description) pairs sorted by key, like `SketchLibrary.idea_catalog`."""
+        return [(key, self._icons[key].description) for key in sorted(self._icons)]
+
+    def search(self, words: Sequence[str]) -> list[BundledIcon]:
+        """Icons, sorted by key, whose key and description contain every word."""
+        needles = [word.strip().lower() for word in words if word.strip()]
+        found: list[BundledIcon] = []
+        for key in sorted(self._icons):
+            icon = self._icons[key]
+            haystack = f"{key} {icon.description}".lower()
+            if all(needle in haystack for needle in needles):
+                found.append(icon)
+        return found
 
 
 def _text(raw_key: str, entry: object, field: str) -> str:
@@ -90,13 +112,31 @@ def _build(raw_key: str, key: IdeaKey, entry: object, index_path: Path) -> Bundl
         raise ChannelConfigError(f"bundled icon index entry {raw_key!r}: unknown fields {unknown}")
     license_ = _text(raw_key, entry, "license")
     source = _text(raw_key, entry, "source")
+    description = _text(raw_key, entry, "description")
+    if len(description.split()) > MAX_DESCRIPTION_WORDS:
+        raise ChannelConfigError(
+            f"bundled icon index entry {raw_key!r}: description has more than "
+            f"{MAX_DESCRIPTION_WORDS} words"
+        )
+    sha256 = _text(raw_key, entry, "sha256")
     path = confined_file(
         f"bundled icon index entry {raw_key!r}",
         Path(_text(raw_key, entry, "file")),
         index_path,
         ".png",
     )
-    return BundledIcon(key=str(key), file=path, license=license_, source=source)
+    if hashlib.sha256(path.read_bytes()).hexdigest() != sha256:
+        raise ChannelConfigError(
+            f"bundled icon index entry '{key}': sha256 mismatch for {path.name}"
+        )
+    return BundledIcon(
+        key=str(key),
+        file=path,
+        license=license_,
+        source=source,
+        description=description,
+        sha256=sha256,
+    )
 
 
 def _packaged_index() -> Path:

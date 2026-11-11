@@ -1,6 +1,10 @@
 # Bundled free icons, usable only for generic idea keys ("object|generic").
-# Each entry: [icons."eye|generic"] file = "...", license = "...", source = "https://..."
-# Every entry needs file (relative, inside this directory), license and source.
+# Each entry: [icons."eye|generic"] with exactly these five fields, all required and non-blank:
+#   file        relative path to a .png inside this directory
+#   description at most 15 words; the planner reads it and keyword search matches it
+#   license     the icon's license
+#   source      where the icon came from (URL)
+#   sha256      hex sha256 of the file; a mismatch is an error
 # Keys must be generic; unknown fields, duplicates and missing files are errors.
-# No icons are bundled yet; add each one here with its license and source.
+# No icons are bundled yet; add each one here with its description, license, source and sha256.
 [icons]

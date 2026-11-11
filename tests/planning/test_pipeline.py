@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -344,7 +345,14 @@ def test_arabic_default_corpus_and_bundled_icon(
         loaded.append(st)
         return fixture_corpus()
 
-    icon = BundledIcon(key=SCRIPTED_IDEA, file=tmp_path / "scroll.svg", license="CC0", source="x")
+    icon = BundledIcon(
+        key=SCRIPTED_IDEA,
+        file=tmp_path / "scroll.svg",
+        license="CC0",
+        source="x",
+        description="a scroll",
+        sha256=hashlib.sha256(b"").hexdigest(),
+    )
     monkeypatch.setattr(pipeline_module, "default_corpus", corpus_for)
     monkeypatch.setattr(
         pipeline_module, "default_bundled_icons", lambda: BundledIcons({SCRIPTED_IDEA: icon})

@@ -12,6 +12,10 @@ image_model = "gpt-image-1"
 provider = "edge"
 voice_id = "ar-SA-HamedNeural"
 
+[embed]
+provider = "ollama"
+model = "nomic-embed-text"
+
 [llm]
 provider = "ollama"
 model = "qwen2.5"

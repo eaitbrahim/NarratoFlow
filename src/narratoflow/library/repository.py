@@ -1,6 +1,10 @@
 """Repository for storing and reusing sketches per channel and style version."""
 
+from collections.abc import Sequence
+
+import numpy as np
 from sqlalchemy import Engine, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -8,11 +12,12 @@ from narratoflow.errors import LibraryError
 from narratoflow.library.blobs import BlobStore
 from narratoflow.library.db import open_library
 from narratoflow.library.keys import IdeaKey, parse_idea_key
-from narratoflow.library.orm import Channel, Sketch, StyleVersion
+from narratoflow.library.orm import Channel, IdeaEmbedding, Sketch, StyleVersion, utc_now
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
 from narratoflow.settings import Settings
 
 _REUSABLE = (SketchStatus.PASSED, SketchStatus.UNCHECKED)
+_VECTOR_DTYPE = "<f4"
 
 
 def _canonical_key(idea_key: str | IdeaKey) -> str:
@@ -166,6 +171,50 @@ class SketchLibrary:
             if description or key not in catalog:
                 catalog[key] = description
         return sorted(catalog.items())
+
+    def cached_embeddings(
+        self, style_version_id: int, embed_model: str
+    ) -> dict[tuple[str, str], list[float]]:
+        """Cached catalog vectors keyed by (idea_key, description)."""
+        with Session(self._engine) as s:
+            rows = s.execute(
+                select(IdeaEmbedding.idea_key, IdeaEmbedding.description, IdeaEmbedding.vector)
+                .where(
+                    IdeaEmbedding.style_version_id == style_version_id,
+                    IdeaEmbedding.embed_model == embed_model,
+                )
+                .order_by(IdeaEmbedding.id)
+            ).all()
+        return {
+            (key, description): np.frombuffer(blob, dtype=_VECTOR_DTYPE).astype(float).tolist()
+            for key, description, blob in rows
+        }
+
+    def store_embeddings(
+        self,
+        style_version_id: int,
+        embed_model: str,
+        rows: Sequence[tuple[str, str, list[float]]],
+    ) -> None:
+        """Cache catalog vectors; rows already cached are left as they are."""
+        if not rows:
+            return
+        now = utc_now()
+        values = [
+            {
+                "style_version_id": style_version_id,
+                "idea_key": key,
+                "description": description,
+                "embed_model": embed_model,
+                "vector": np.asarray(vector, dtype=_VECTOR_DTYPE).tobytes(),
+                "created_at": now,
+            }
+            for key, description, vector in rows
+        ]
+        statement = sqlite_insert(IdeaEmbedding).on_conflict_do_nothing()
+        with Session(self._engine) as s:
+            s.execute(statement, values)
+            s.commit()
 
     def quarantine(self, sketch_id: int, reason: str) -> None:
         with Session(self._engine) as s:

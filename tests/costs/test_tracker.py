@@ -7,7 +7,7 @@ import pytest
 from llm.fakes import FakeLLM
 from pydantic import BaseModel
 
-from narratoflow.channels.config import ChannelConfig, load_channel
+from narratoflow.channels.config import ChannelConfig, EmbedConfig, load_channel
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.costs.tracker import (
     SpendTracker,
@@ -75,7 +75,8 @@ def test_estimate_planning_cost(prices: PriceTable, channel_file: Path) -> None:
         update={
             "llm": load_channel(channel_file).llm.model_copy(
                 update={"provider": "anthropic", "model": "claude-opus-5-5"}
-            )
+            ),
+            "embed": EmbedConfig(provider="voyage", model="voyage-multilingual-2"),
         }
     )
     text = "a" * 4000  # 1000 tokens
@@ -86,6 +87,8 @@ def test_estimate_planning_cost(prices: PriceTable, channel_file: Path) -> None:
     embed = (Decimal(301 * 20 + 1000)) * Decimal("0.12") / 1_000_000
     assert big == expected + embed
     assert estimate_planning_cost(text, ch, prices, catalog_size=300) == expected
+    free = ch.model_copy(update={"embed": EmbedConfig(provider="ollama", model="x")})
+    assert estimate_planning_cost(text, free, prices, catalog_size=301) == expected
 
 
 def test_estimate_part_cost(prices: PriceTable, channel_file: Path) -> None:

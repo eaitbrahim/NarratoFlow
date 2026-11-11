@@ -13,6 +13,7 @@ class ProviderKind(StrEnum):
     IMAGE = "image"
     VOICE = "voice"
     LLM = "llm"
+    EMBED = "embed"
 
 
 FREE_PROVIDERS: frozenset[str] = frozenset(
@@ -25,6 +26,7 @@ def required_key_env_vars(channel: ChannelConfig) -> dict[ProviderKind, str]:
         ProviderKind.IMAGE: channel.style.image_provider,
         ProviderKind.VOICE: channel.voice.provider,
         ProviderKind.LLM: channel.llm.provider,
+        ProviderKind.EMBED: channel.embed.provider,
     }
     return {
         kind: f"NARRATOFLOW_{kind.value.upper()}_API_KEY"
@@ -38,6 +40,7 @@ def check_provider_keys(channel: ChannelConfig, settings: Settings) -> None:
         ProviderKind.IMAGE: settings.image_api_key,
         ProviderKind.VOICE: settings.voice_api_key,
         ProviderKind.LLM: settings.llm_api_key,
+        ProviderKind.EMBED: settings.embed_api_key,
     }
     missing = []
     for kind, var in required_key_env_vars(channel).items():

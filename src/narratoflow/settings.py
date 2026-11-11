@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     image_api_key: SecretStr | None = None
     voice_api_key: SecretStr | None = None
     llm_api_key: SecretStr | None = None
+    embed_api_key: SecretStr | None = None
     ollama_url: str = "http://localhost:11434"
 
     @field_validator("data_dir")

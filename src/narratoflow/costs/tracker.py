@@ -84,14 +84,11 @@ def estimate_planning_cost(
     *,
     system_prompt_tokens: int = 1500,
     catalog_size: int = 0,
-    embed_provider: str = "voyage",
-    embed_model: str = "voyage-multilingual-2",
 ) -> Decimal:
     """Two LLM passes, each system + text tokens in and 1.2 x text tokens out.
 
     When `catalog_size` exceeds 300, adds embedding of the catalog descriptions
-    (~20 tokens each) plus the text. `embed_provider`/`embed_model` are keyword
-    defaults until `channel.embed` exists (Task 8).
+    (~20 tokens each) plus the text, priced for `channel.embed`.
     """
     text_tokens = estimate_tokens(text)
     output_tokens = math.ceil(text_tokens * _OUTPUT_FACTOR)
@@ -102,7 +99,8 @@ def estimate_planning_cost(
     total = 2 * per_pass
     if catalog_size > CATALOG_EMBED_THRESHOLD:
         embed_tokens = catalog_size * CATALOG_DESCRIPTION_TOKENS + text_tokens
-        total += embed_tokens * prices.embed(embed_provider, embed_model) / _MILLION
+        embed = channel.embed
+        total += embed_tokens * prices.embed(embed.provider, embed.model) / _MILLION
     return total
 
 

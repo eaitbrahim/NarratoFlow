@@ -46,6 +46,11 @@ class LlmConfig(BaseModel):
     refusal_fallback: bool = True
 
 
+class EmbedConfig(BaseModel):
+    provider: str = "voyage"
+    model: str = "voyage-multilingual-2"
+
+
 class ChannelConfig(BaseModel):
     name: str
     slug: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -53,6 +58,7 @@ class ChannelConfig(BaseModel):
     style: StyleConfig
     voice: VoiceConfig
     llm: LlmConfig
+    embed: EmbedConfig = EmbedConfig()
     outputs: list[AspectRatio] = Field(default_factory=lambda: [AspectRatio.PORTRAIT])
     spending_limit_usd: Decimal | None = Field(None, gt=0)
     approval_list: bool = True

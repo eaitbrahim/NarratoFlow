@@ -131,6 +131,8 @@ class VerseRef(BaseModel):
 class Scene(BaseModel):
     id: str
     narration: Narration
+    title: str = ""
+    """Short on-screen title for the scene's paragraph group (verse scenes: "2:255")."""
     visual: Visual = Field(default_factory=Visual)
     layouts: dict[AspectRatio, Box] = Field(default_factory=dict)
     min_duration_ms: int = 3000

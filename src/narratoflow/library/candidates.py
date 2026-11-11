@@ -20,6 +20,15 @@ if TYPE_CHECKING:
 
 Entry = tuple[str, str]
 
+# Bump when `catalog_text` changes: it is part of the cache key, so old vectors
+# (embedded from the old text) are no longer used.
+CATALOG_TEXT_VERSION = "v1"
+
+
+def cache_model_id(embedder: Embedder) -> str:
+    """The `embed_model` value under which catalog vectors are cached."""
+    return f"{embedder.name}/{embedder.model}#{CATALOG_TEXT_VERSION}"
+
 
 def catalog_text(idea_key: str, description: str) -> str:
     """The text embedded for one catalog entry."""
@@ -48,7 +57,7 @@ def _embed(embedder: Embedder, texts: Sequence[str], what: str) -> list[list[flo
 def _catalog_vectors(
     library: SketchLibrary, style_version_id: int, catalog: list[Entry], embedder: Embedder
 ) -> list[list[float]]:
-    model_id = f"{embedder.name}/{embedder.model}"
+    model_id = cache_model_id(embedder)
     cached = library.cached_embeddings(style_version_id, model_id)
     missing = [entry for entry in catalog if entry not in cached]
     if missing:
@@ -74,6 +83,10 @@ def candidate_keys(
     embedding call is made. Above it, each scene gets its `top_k` nearest entries
     by cosine similarity; ties keep catalog order.
     """
+    if top_k < 1:
+        raise ValueError(f"top_k must be >= 1, got {top_k}")
+    if full_limit < 0:
+        raise ValueError(f"full_limit must be >= 0, got {full_limit}")
     if not scenes:
         return []
     catalog = library.idea_catalog(style_version_id)

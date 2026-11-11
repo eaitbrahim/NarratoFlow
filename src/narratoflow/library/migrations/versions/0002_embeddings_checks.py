@@ -39,6 +39,14 @@ def upgrade() -> None:
     op.create_index("ix_idea_embedding_style_version_id", "idea_embedding", ["style_version_id"])
     # SQLite cannot ALTER in a CHECK: batch mode rebuilds the table, copying rows,
     # the foreign key, the unique dedupe constraint and the indexes.
+    #
+    # Batch rebuilds are only safe here because nothing references `sketch`.
+    # open_library runs migrations with PRAGMA foreign_keys=ON inside BEGIN IMMEDIATE,
+    # and that pragma cannot be switched off inside a transaction. Rebuilding a table
+    # that other tables reference (channel, style_version) would DROP it, and SQLite's
+    # implicit DELETE on DROP fires the foreign keys: ON DELETE CASCADE wipes the
+    # child rows, otherwise the DROP fails. Such a migration needs another strategy
+    # (e.g. run outside the transaction with foreign_keys=OFF, then foreign_key_check).
     with op.batch_alter_table("sketch") as batch:
         batch.create_check_constraint("ck_sketch_status", _STATUS_CHECK)
         batch.create_check_constraint("ck_sketch_origin", _ORIGIN_CHECK)

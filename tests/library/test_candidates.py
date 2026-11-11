@@ -206,3 +206,46 @@ def test_inconsistent_vectors_raise(library: SketchLibrary, bad: str) -> None:
 
     with pytest.raises(PlanningError, match="dimension"):
         candidate_keys(library, v, ["lamp"], Broken(), full_limit=2)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"), [({"top_k": 0}, "top_k"), ({"full_limit": -1}, "full_limit")]
+)
+def test_bad_bounds_raise_value_error(
+    library: SketchLibrary, kwargs: dict[str, int], match: str
+) -> None:
+    v = _seed(library, _THREE)
+    with pytest.raises(ValueError, match=match):
+        candidate_keys(library, v, ["lamp"], FakeEmbedder(), **kwargs)
+    with pytest.raises(ValueError, match=match):
+        candidate_keys(library, v, [], FakeEmbedder(), **kwargs)
+
+
+def test_top_k_above_catalog_size_returns_all_in_score_order(library: SketchLibrary) -> None:
+    v = _seed(library, _THREE)
+    (ranked,) = candidate_keys(library, v, ["battle"], FakeEmbedder(), full_limit=2, top_k=10)
+    assert ranked == [_THREE[2], _THREE[0], _THREE[1]]
+
+
+def test_cache_key_is_versioned(library: SketchLibrary) -> None:
+    from narratoflow.library import candidates
+
+    v = _seed(library, _THREE)
+    embedder = FakeEmbedder("m1")
+    assert candidates.cache_model_id(embedder) == "fake/m1#v1"
+    candidate_keys(library, v, ["lamp"], embedder, full_limit=2)
+    assert len(library.cached_embeddings(v, "fake/m1#v1")) == 3
+    assert library.cached_embeddings(v, "fake/m1") == {}
+
+
+def test_catalog_text_version_bump_invalidates_cache(
+    library: SketchLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.library import candidates
+
+    v = _seed(library, _THREE)
+    candidate_keys(library, v, ["lamp"], FakeEmbedder(), full_limit=2)
+    monkeypatch.setattr(candidates, "CATALOG_TEXT_VERSION", "v2")
+    embedder = FakeEmbedder()
+    candidate_keys(library, v, ["lamp"], embedder, full_limit=2)
+    assert [len(c) for c in embedder.calls] == [3, 1]

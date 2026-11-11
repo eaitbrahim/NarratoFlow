@@ -178,3 +178,18 @@ def test_transfer_original_marks_win() -> None:
 
 def test_transfer_keeps_newline_and_double_space() -> None:
     assert _transfer_marks("علم  نور\nأو", "عِلْمٌ نُورٌ أَوْ") == "عِلْمٌ  نُورٌ\nأَوْ"
+
+
+def test_transfer_tolerates_dropped_and_stray_punctuation() -> None:
+    original = "\u0639\u0644\u0645: \u0646\u0648\u0631"
+    out = _transfer_marks(
+        original, "\u0639\u0650\u0644\u0652\u0645\u064c \u060c \u0646\u064f\u0648\u0631\u064c"
+    )
+    assert out == "\u0639\u0650\u0644\u0652\u0645\u064c: \u0646\u064f\u0648\u0631\u064c"
+    assert_skeleton_preserved(original, out)
+
+
+def test_transfer_ignores_control_chars_in_output() -> None:
+    assert _transfer_marks("\u0639\u0644\u0645:", "\u0639\u0650\u0644\u0652\u0645\x01") == (
+        "\u0639\u0650\u0644\u0652\u0645:"
+    )

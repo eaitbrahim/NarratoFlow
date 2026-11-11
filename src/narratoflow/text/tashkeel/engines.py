@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 from typing import Any
 
 from pydantic import BaseModel
@@ -40,16 +41,22 @@ class LlmDiacritizer:
         return result.value.text
 
 
+def _is_neutral(ch: str) -> bool:
+    """Whitespace, punctuation, symbol or control char: ignored when matching base letters."""
+    return ch.isspace() or unicodedata.category(ch)[0] in "PSC"
+
+
 def _transfer_marks(original: str, diacritized: str) -> str:
     """Project the marks of `diacritized` onto `original`, keeping its spacing.
 
-    Base characters (neither diacritic nor whitespace) must match in order,
-    otherwise SkeletonMismatchError. Marks already in `original` win.
+    Base characters (not diacritic, whitespace, punctuation or symbol) must
+    match in order, otherwise SkeletonMismatchError. Marks already in
+    `original` win; its punctuation and spacing are kept as is.
     """
     marks: list[str] = []
     bases: list[str] = []
     for ch in diacritized:
-        if ch.isspace():
+        if _is_neutral(ch):
             continue
         if is_diacritic(ch):
             if marks:
@@ -57,14 +64,14 @@ def _transfer_marks(original: str, diacritized: str) -> str:
         else:
             bases.append(ch)
             marks.append("")
-    expected = [ch for ch in original if not ch.isspace() and not is_diacritic(ch)]
+    expected = [ch for ch in original if not _is_neutral(ch) and not is_diacritic(ch)]
     if bases != expected:
         raise SkeletonMismatchError("Mishkal output changed the base letters")
     out: list[str] = []
     n = 0
     for i, ch in enumerate(original):
         out.append(ch)
-        if ch.isspace() or is_diacritic(ch):
+        if _is_neutral(ch) or is_diacritic(ch):
             continue
         nxt = original[i + 1] if i + 1 < len(original) else ""
         if not (nxt and is_diacritic(nxt)):

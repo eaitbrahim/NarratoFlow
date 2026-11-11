@@ -180,10 +180,26 @@ def require_generation_prices(channel: ChannelConfig, prices: PriceTable, *, vis
         prices.vision(provider, model)
 
 
+def voice_chars(part: Part) -> int:
+    """Characters a voice speaks for `part`: `tts_text or source_text` of NARRATION scenes.
+
+    Verse scenes are recited, never voiced, so they count zero; hook, recap and
+    teaser texts are never spoken.
+    """
+    return sum(
+        len(s.narration.tts_text or s.narration.source_text)
+        for s in part.scenes
+        if s.kind is SceneKind.NARRATION
+    )
+
+
 def estimate_part_cost(
     part: Part, channel: ChannelConfig, prices: PriceTable, *, voice_chars: int
 ) -> Decimal:
     """What sketch generation may spend on `part`, plus voice characters x per-kchar price.
+
+    `voice_chars` is the part's spoken characters (`voice_chars(part)`: NARRATION
+    scenes only, never verses).
 
     Mirrors the pre-call budget checks of sketch generation, so the approval
     estimate is never below what the spending limit enforces:

@@ -253,6 +253,17 @@ def test_timeline_allows_silent_lufs_and_no_voice() -> None:
     assert make(data).voice is None
 
 
+def test_timeline_allows_unmeasurable_true_peak(tmp_path: Path) -> None:
+    data = base()
+    data["integrated_lufs"] = None
+    data["true_peak_dbtp"] = None
+    timeline = make(data)
+    assert timeline.true_peak_dbtp is None
+    path = tmp_path / "t.json"
+    timeline.save(path)
+    assert PartTimeline.load(path).true_peak_dbtp is None
+
+
 def test_saved_json_has_no_nan(tmp_path: Path) -> None:
     path = tmp_path / "t.json"
     make(base()).save(path)

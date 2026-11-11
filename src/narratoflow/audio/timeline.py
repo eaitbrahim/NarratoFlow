@@ -214,8 +214,8 @@ class PartTimeline(BaseModel):
     audio_file: str  # bare file name next to the timeline, e.g. "part-01.flac"
     sample_rate: Literal[48000] = 48000
     duration_ms: Ms
-    integrated_lufs: float | None
-    true_peak_dbtp: float
+    integrated_lufs: float | None  # None: not measurable (a warning says so)
+    true_peak_dbtp: float | None  # None: not measurable (a warning says so)
     scenes: list[SceneTiming] = Field(min_length=1)
     sfx: list[SfxHit]
     voice: VoiceUsed | None  # None: verse-only part

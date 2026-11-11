@@ -130,7 +130,6 @@ def _slice(samples: Samples, start_ms: int, end_ms: int) -> Samples:
 
 
 def _timeline(res: MixResult) -> PartTimeline:
-    peak = res.loudness.true_peak_dbtp
     return PartTimeline(
         series_title="S",
         channel_slug="chan",
@@ -139,7 +138,7 @@ def _timeline(res: MixResult) -> PartTimeline:
         audio_file="part-01.flac",
         duration_ms=res.scenes[-1].end_ms,
         integrated_lufs=res.loudness.integrated_lufs,
-        true_peak_dbtp=peak if peak is not None else -99.0,
+        true_peak_dbtp=res.loudness.true_peak_dbtp,
         scenes=res.scenes,
         sfx=res.sfx,
         voice=None,

@@ -80,6 +80,10 @@ class SfxPack:
     def ids(self) -> list[str]:
         return sorted(self._assets)
 
+    def asset(self, sid: str) -> SfxAsset:
+        """The asset entry (file, licence, source) of `sid`."""
+        return self._assets[sid]
+
     def samples(self, sid: str) -> aio.Samples:
         cached = self._cache.get(sid)
         if cached is None:

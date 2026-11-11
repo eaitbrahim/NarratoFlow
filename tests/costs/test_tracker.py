@@ -24,6 +24,7 @@ from narratoflow.costs.tracker import (
     estimate_tokens,
     require_generation_prices,
     require_prices,
+    voice_chars,
 )
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.llm.base import Usage
@@ -410,3 +411,23 @@ def test_tracked_llm_falls_back_to_configured_vision_price(prices: PriceTable) -
     llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", P())  # type: ignore[arg-type]
     llm.complete_structured(system="s", user="u", output=Out, images=[b"a"])
     assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000 + Decimal("0.01")
+
+
+def test_voice_chars_excludes_verses() -> None:
+    part = Part(
+        index=1,
+        count=1,
+        hook_text="HOOK never spoken",
+        recap_text="RECAP",
+        teaser_text="TEASER",
+        scenes=[
+            Scene(id="n1", narration=Narration(source_text="abcd")),
+            Scene(id="n2", narration=Narration(source_text="abcd", tts_text="abcdefg")),
+            Scene(
+                id="v1",
+                narration=Narration(source_text="verse text never voiced"),
+                kind=SceneKind.VERSE,
+            ),
+        ],
+    )
+    assert voice_chars(part) == 4 + 7

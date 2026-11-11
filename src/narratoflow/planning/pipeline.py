@@ -24,6 +24,7 @@ from narratoflow.costs.tracker import (
     estimate_planning_cost,
     estimate_tokens,
     require_prices,
+    voice_chars,
 )
 from narratoflow.embed import Embedder, make_embedder
 from narratoflow.interfaces import Diacritizer
@@ -33,7 +34,7 @@ from narratoflow.library.matching import MatchKind, match_idea
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.llm.base import LLMClient
 from narratoflow.llm.factory import make_llm
-from narratoflow.models import Language, Part, Scene, SceneKind, Series
+from narratoflow.models import Language, Scene, SceneKind, Series
 from narratoflow.planning.ideas import assign_ideas, render_candidates
 from narratoflow.planning.prompts import IDEAS_SYSTEM, SEGMENT_SYSTEM, TASHKEEL_SYSTEM
 from narratoflow.planning.segment import segment_script
@@ -122,10 +123,6 @@ def _match(library: SketchLibrary, version: int, scene: Scene, bundled: BundledI
     return scene.model_copy(update={"match": _MATCH[found.kind]})
 
 
-def _voice_chars(part: Part) -> int:
-    return sum(len(s.narration.tts_text or s.narration.source_text) for s in part.scenes)
-
-
 def plan_series(
     script_path: Path,
     channel: ChannelConfig,
@@ -180,7 +177,7 @@ def plan_series(
     parts = [
         p.model_copy(
             update={
-                "est_cost_usd": estimate_part_cost(p, channel, prices, voice_chars=_voice_chars(p))
+                "est_cost_usd": estimate_part_cost(p, channel, prices, voice_chars=voice_chars(p))
             }
         )
         for p in parts

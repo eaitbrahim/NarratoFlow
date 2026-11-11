@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.costs.prices import PriceTable
-from narratoflow.errors import BudgetExceededError, ProviderError
+from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.llm.base import LLMClient, StructuredResult, Usage
 from narratoflow.models import Language, Part
 
@@ -96,7 +96,7 @@ def estimate_planning_cost(
 ) -> Decimal:
     """Estimate every planning call, times `PLANNING_MARGIN`.
 
-    With T text tokens and n = max(1, ceil(words / 30)) scenes:
+    With T text tokens and n = max(1, ceil(words / WORDS_PER_SCENE)) scenes:
     - segmentation: `segment_calls` calls (one per non-verse stretch), each
       carrying the segment system prompt, plus T in and 1.2 x T out in all;
     - ideas: n calls, each ideas system + `candidate_tokens` (the real token
@@ -135,6 +135,20 @@ def estimate_planning_cost(
     return total * PLANNING_MARGIN
 
 
+def require_prices(channel: ChannelConfig, prices: PriceTable, *, embed: bool = False) -> None:
+    """Raise `PlanningError` unless every price the pipeline needs is known.
+
+    Called before any paid call so a missing entry cannot surface after spend.
+    """
+    llm, style, voice = channel.llm, channel.style, channel.voice
+    prices.llm(llm.provider, llm.model)
+    prices.vision(llm.provider, llm.model)
+    prices.image(style.image_provider, style.image_model)
+    prices.voice(voice.provider, voice.model)
+    if embed:
+        prices.embed(channel.embed.provider, channel.embed.model)
+
+
 def estimate_part_cost(
     part: Part, channel: ChannelConfig, prices: PriceTable, *, voice_chars: int
 ) -> Decimal:
@@ -165,6 +179,7 @@ class TrackedLLM:
         self.provider = provider
         self.model = model
         self.prices = prices
+        self._fallback_logged = False
 
     def complete_structured[T: BaseModel](
         self, *, system: str, user: str, output: type[T]
@@ -184,5 +199,20 @@ class TrackedLLM:
             # A failed call is charged nothing: no usage was returned to bill.
             logger.warning("LLM call failed (%s/%s): %s", self.provider, self.model, err)
             raise
-        self.tracker.charge_llm(self.provider, self.model, result.usage, self.prices)
+        self.tracker.charge_llm(
+            self.provider, self._billed_model(result.model), result.usage, self.prices
+        )
         return result
+
+    def _billed_model(self, served: str) -> str:
+        """The served model when it differs and is priced, else the configured one."""
+        if served == self.model:
+            return served
+        try:
+            self.prices.llm(self.provider, served)
+        except PlanningError:
+            return self.model
+        if not self._fallback_logged:
+            self._fallback_logged = True
+            logger.info("served by fallback model %s", served)
+        return served

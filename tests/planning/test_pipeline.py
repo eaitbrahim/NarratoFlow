@@ -17,6 +17,7 @@ from narratoflow.errors import (
     BudgetExceededError,
     ChannelConfigError,
     MissingApiKeyError,
+    PlanningError,
     ScriptBlockedError,
 )
 from narratoflow.library.keys import parse_idea_key
@@ -620,5 +621,33 @@ def test_bundled_icons_load_before_any_spend(
             llm=fake,
             corpus=fixture_corpus(),
             prices=prices,
+        )
+    assert fake.calls == []
+
+
+def test_missing_vision_price_blocks_before_llm(
+    tmp_path: Path, channel: ChannelConfig, settings: Settings, prices: PriceTable
+) -> None:
+    unpriced = channel.model_copy(
+        update={"llm": LlmConfig(provider="anthropic", model="claude-unpriced-vision")}
+    )
+    table = PriceTable(
+        {
+            **prices._tables,
+            "llm": {
+                **prices._tables["llm"],
+                "anthropic/claude-unpriced-vision": (Decimal(1), Decimal(1)),
+            },
+        }
+    )
+    fake = FakeLLM([])
+    with pytest.raises(PlanningError, match="no price for anthropic/claude-unpriced-vision"):
+        plan_series(
+            write_script(tmp_path, read("clean_ar.txt")),
+            unpriced,
+            settings,
+            llm=fake,
+            corpus=fixture_corpus(),
+            prices=table,
         )
     assert fake.calls == []

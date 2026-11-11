@@ -229,3 +229,38 @@ def test_sources_are_ascii() -> None:
     root = Path(__file__).parents[2] / "src" / "narratoflow"
     for path in [*(root / "costs").glob("*.py"), root / "llm" / "factory.py"]:
         path.read_bytes().decode("ascii")
+
+
+def test_tracked_llm_charges_fallback_model_and_logs_once(
+    prices: PriceTable, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = FakeLLM([Out(), Out()], model="claude-haiku-5-5")
+    t = SpendTracker(None)
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    with caplog.at_level(logging.INFO):
+        llm.complete_structured(system="s", user="u", output=Out)
+        llm.complete_structured(system="s", user="u", output=Out)
+    assert (
+        t.spent == 2 * (Decimal(100) * Decimal("0.10") + Decimal(50) * Decimal("0.50")) / 1_000_000
+    )
+    assert caplog.text.count("served by fallback model claude-haiku-5-5") == 1
+
+
+def test_tracked_llm_unpriced_served_model_charges_configured(prices: PriceTable) -> None:
+    fake = FakeLLM([Out()], model="mystery-model")
+    t = SpendTracker(None)
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    llm.complete_structured(system="s", user="u", output=Out)
+    assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
+
+
+def test_tracked_llm_same_model_charges_configured_without_log(
+    prices: PriceTable, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = FakeLLM([Out()], model="claude-opus-5-5")
+    t = SpendTracker(None)
+    llm = TrackedLLM(fake, t, "anthropic", "claude-opus-5-5", prices)
+    with caplog.at_level(logging.INFO):
+        llm.complete_structured(system="s", user="u", output=Out)
+    assert t.spent == (Decimal(100) * 4 + Decimal(50) * 20) / 1_000_000
+    assert "fallback" not in caplog.text

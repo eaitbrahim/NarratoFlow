@@ -14,5 +14,9 @@ per_mtok = "0.12"
 per_image = "0.04"
 [vision."anthropic/claude-opus-5-5"]
 per_image_check = "0.01"
+[vision."anthropic/claude-sonnet-5-5"]
+per_image_check = "0.005"
+[vision."anthropic/claude-haiku-5-5"]
+per_image_check = "0.0003"
 [voice."elevenlabs/eleven_multilingual_v2"]
 per_kchar = "0.30"

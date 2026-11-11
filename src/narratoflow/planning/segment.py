@@ -62,9 +62,18 @@ def _ends_clause(ch: str) -> bool:
 
 
 def _is_cut(stretch: str, at: int) -> bool:
-    """A scene may start at `at`: after whitespace, or right after closing punctuation."""
+    """A scene may start at `at`: after whitespace, or right after closing punctuation.
+
+    An apostrophe is a clause end only after clause punctuation (`stop.'`); between
+    letters it is a contraction (`don't`), and a closing quote before whitespace is
+    already a whitespace cut.
+    """
     before = stretch[at - 1]
-    return before.isspace() or (_ends_clause(before) and not _ends_clause(stretch[at]))
+    if before.isspace():
+        return True
+    if before == "'" and not (at >= 2 and _ends_clause(stretch[at - 2]) and stretch[at - 2] != "'"):
+        return False
+    return _ends_clause(before) and not _ends_clause(stretch[at])
 
 
 def _locate(stretch: str, spans: Sequence[SegmentSpan]) -> list[tuple[int, str]] | int:

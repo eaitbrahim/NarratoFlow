@@ -193,3 +193,9 @@ def test_transfer_ignores_control_chars_in_output() -> None:
     assert _transfer_marks("\u0639\u0644\u0645:", "\u0639\u0650\u0644\u0652\u0645\x01") == (
         "\u0639\u0650\u0644\u0652\u0645:"
     )
+
+
+def test_transfer_drops_leading_diacritic() -> None:
+    out = _transfer_marks("\u0639\u0644\u0645", "\u064e\u0639\u0650\u0644\u0652\u0645\u064c")
+    assert out == "\u0639\u0650\u0644\u0652\u0645\u064c"
+    assert_skeleton_preserved("\u0639\u0644\u0645", out)

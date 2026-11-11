@@ -101,7 +101,8 @@ def _forbidden_token(token: str) -> str | None:
 def _without_compounds(text: str) -> str:
     """`text` with every allowed compound (dash- or space-joined) blanked out."""
     for compound in ALLOWED_COMPOUNDS:
-        text = re.sub(r"[-\s]+".join(compound.split("-")), " ", text)
+        pattern = r"[-\s]+".join(compound.split("-"))
+        text = re.sub(rf"\b{pattern}\b", " ", text)
     return text
 
 

@@ -337,3 +337,22 @@ def test_several_leading_letterless_spans_merge_into_next_scene() -> None:
     text = "... -- Hello there."
     scenes = segment_script(text, [], FakeLLM([_out("...", "--", "Hello there.")]))
     assert [s.narration.source_text for s in scenes] == [text]
+
+
+def test_cut_inside_contraction_rejected() -> None:
+    text = "I don't know. It is fine."
+    llm = FakeLLM([_out("I don'", "t know. It is fine.")] * 2)
+    with pytest.raises(SegmentationError, match=f"offset {text.index('t know')}"):
+        segment_script(text, [], llm)
+
+
+def test_cut_after_closing_quote_accepted() -> None:
+    text = 'He said "stop" and left.'
+    scenes = segment_script(text, [], FakeLLM([_out('He said "stop"', "and left.")]))
+    assert scenes[1].narration.source_text == "and left."
+
+
+def test_cut_after_punctuated_quote_accepted() -> None:
+    text = 'He said "stop."And left.'
+    scenes = segment_script(text, [], FakeLLM([_out('He said "stop."', "And left.")]))
+    assert scenes[1].narration.source_text == "And left."

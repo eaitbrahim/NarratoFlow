@@ -230,3 +230,8 @@ def test_unfinished_ending_ignores_invisible_marks() -> None:
     unfinished = "hello there:\u200f\u2069"
     parts = split_into_parts([narr(unfinished)], Language.ENGLISH, min_s=60, max_s=90)
     assert "unfinished_ending" in parts[-1].flags
+
+
+@pytest.mark.parametrize("text", ["", "   \n", "\u200b\u200f", " \u200b \ufeff"])
+def test_blank_text_counts_as_unfinished(text: str) -> None:
+    assert series_module._is_unfinished(text) is True

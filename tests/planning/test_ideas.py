@@ -282,3 +282,8 @@ def test_ideas_system_carries_the_drawing_rules() -> None:
 
 def test_sources_are_ascii() -> None:
     assert Path(ideas_module.__file__ or "").read_bytes().isascii()
+
+
+def test_compound_matched_on_word_boundaries() -> None:
+    assert validate_idea(_idea("signpost|generic", "a narrow head"))
+    assert validate_idea(_idea("arrow-head|generic", "an arrow head")) == []

@@ -23,6 +23,7 @@ from narratoflow.costs.tracker import (
     estimate_part_cost,
     estimate_planning_cost,
     estimate_tokens,
+    require_prices,
 )
 from narratoflow.embed import Embedder, make_embedder
 from narratoflow.interfaces import Diacritizer
@@ -158,6 +159,7 @@ def plan_series(
     estimate = estimate_planning(
         text, channel, prices, catalog=catalog, segment_calls=len(verses) + 1
     )
+    require_prices(channel, prices, embed=len(catalog) > CATALOG_EMBED_THRESHOLD)
     tracker.ensure_room(estimate, "planning")
 
     if llm is None:

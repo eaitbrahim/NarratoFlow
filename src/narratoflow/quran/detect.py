@@ -119,10 +119,21 @@ def _runs(words: list[_Word], index: VerseIndex, min_words: int) -> list[_Run]:
     return runs
 
 
+def _shape(index: VerseIndex, run: _Run) -> tuple[bool, bool, int]:
+    """Coverage shape: (starts at an ayah start, ends at an ayah end, ayat touched)."""
+    stream = index.streams[run.surah]
+    head, tail = stream[run.slot], stream[run.slot + run.length - 1]
+    return (head.pos == 0, tail.last, tail.ayah - head.ayah + 1)
+
+
 def detect_verses(
     text: str, corpus: QuranCorpus, *, min_words: int = 4, certain_words: int = 6
 ) -> list[VerseHit]:
-    """Find quoted verses in `text`, sorted by start offset."""
+    """Find quoted verses in `text`, sorted by start offset.
+
+    A run that matches identically (same words, same coverage shape) at more than
+    one corpus location keeps the earliest location but is never `certain`.
+    """
     if min_words < _GRAM:
         raise ValueError(f"min_words must be >= {_GRAM} (the index n-gram size)")
     if not _ARABIC.search(text):
@@ -134,9 +145,16 @@ def detect_verses(
         slot = index.streams[r.surah][r.slot]
         return (-r.length, r.surah, slot.ayah, slot.pos, r.first)
 
+    runs = _runs(words, index, min_words)
+    # Runs over the same text words match the same normalized sequence by construction;
+    # several of them with the same coverage shape make the reference ambiguous.
+    shapes: dict[tuple[int, int], list[tuple[bool, bool, int]]] = {}
+    for r in runs:
+        shapes.setdefault((r.first, r.length), []).append(_shape(index, r))
+
     taken = [False] * len(words)
     hits: list[VerseHit] = []
-    for run in sorted(_runs(words, index, min_words), key=rank):
+    for run in sorted(runs, key=rank):
         covered = range(run.first, run.first + run.length)
         if any(taken[i] for i in covered):
             continue
@@ -144,12 +162,14 @@ def detect_verses(
             taken[i] = True
         stream = index.streams[run.surah]
         head, tail = stream[run.slot], stream[run.slot + run.length - 1]
-        full = head.pos == 0 and tail.last
+        shape = _shape(index, run)
+        full = shape[0] and shape[1]
+        ambiguous = shapes[(run.first, run.length)].count(shape) > 1
         ref = VerseRef(
             surah=run.surah,
             ayah_start=head.ayah,
             ayah_end=tail.ayah,
-            certain=full or run.length >= certain_words,
+            certain=not ambiguous and (full or run.length >= certain_words),
             uthmani_text=corpus.text_range(run.surah, head.ayah, tail.ayah),
         )
         hits.append(VerseHit(words[run.first].start, words[covered[-1]].end, ref))

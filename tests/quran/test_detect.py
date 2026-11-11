@@ -196,3 +196,42 @@ def test_index_built_once_per_corpus(corpus: QuranCorpus) -> None:
 
 def test_detect_source_is_ascii() -> None:
     assert Path(detect_module.__file__).read_bytes().isascii()
+
+
+def test_identical_run_at_two_locations_is_uncertain(tmp_path: Path) -> None:
+    six = "بب تت ثث جج خخ دد"
+    c = _corpus(tmp_path, [f"5|1|{six}", "5|2|سس شش", f"7|3|{six}"])
+    [hit] = detect_verses(six, c)
+    # full ayah and 6 words, but ambiguous: earliest location kept, marked uncertain
+    assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.ayah_end, hit.ref.certain) == (
+        5,
+        1,
+        1,
+        False,
+    )
+    assert hit.ref.uthmani_text == c.ayah(5, 1).uthmani
+
+
+def test_ambiguity_from_duplicated_fixture_ayah(tmp_path: Path) -> None:
+    q = FIXTURES / "quran"
+    simple = (q / "quran-simple-clean.txt").read_text(encoding="utf-8")
+    uthmani = (q / "quran-uthmani.txt").read_text(encoding="utf-8")
+    dup_s = next(ln for ln in simple.splitlines() if ln.startswith("19|3|")).replace(
+        "19|3|", "20|1|"
+    )
+    dup_u = next(ln for ln in uthmani.splitlines() if ln.startswith("19|3|")).replace(
+        "19|3|", "20|1|"
+    )
+    (tmp_path / "s.txt").write_text(simple + "\n" + dup_s + "\n", encoding="utf-8")
+    (tmp_path / "u.txt").write_text(uthmani + "\n" + dup_u + "\n", encoding="utf-8")
+    c = QuranCorpus.from_files(tmp_path / "s.txt", tmp_path / "u.txt")
+    [hit] = detect_verses("إذ نادى ربه نداء خفيا", c)
+    assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.certain) == (19, 3, False)
+
+
+def test_same_words_different_coverage_shape_stays_certain(tmp_path: Path) -> None:
+    six = "بب تت ثث جج خخ دد"
+    # 8:1 ends with the run (suffix), 8:2 starts with it (prefix): different shapes
+    c = _corpus(tmp_path, [f"8|1|سس {six}", f"8|2|{six} شش"])
+    [hit] = detect_verses(six, c)
+    assert (hit.ref.surah, hit.ref.ayah_start, hit.ref.certain) == (8, 1, True)

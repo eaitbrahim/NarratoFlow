@@ -277,3 +277,32 @@ def pen_dots(*, size: int = SIZE) -> bytes:
         x, y = size // 3 + n * size // 10, size // 2
         draw.ellipse((x, y, x + diameter, y + diameter), fill="black")
     return _png(image)
+
+
+def calligraphy(*, lines: int = 7, size: int = SIZE, seed: int = 4) -> bytes:
+    """Right-to-left cursive-like rows: wavy runs, small loops and ascenders."""
+    rng = random.Random(seed)  # noqa: S311 - deterministic fixture
+    image = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(image)
+    k = size / SIZE
+    w = max(1, int(3 * k))
+    for row in range(lines):
+        baseline = (90 + row * 55) * k
+        x = 460 * k
+        while x > 50 * k:
+            run = rng.uniform(25, 70) * k
+            points = []
+            for t in range(int(run)):
+                sign = 1 if t % 40 < 30 else -1
+                wave = 6 * k * math.sin(t / (3 * k) + rng.random() * 0.2) * sign
+                points.append((x - t, baseline + wave))
+            draw.line(points, fill="black", width=w)
+            for _ in range(rng.randint(1, 3)):
+                cx, cy = x - rng.uniform(0, run), baseline - rng.uniform(8, 25) * k
+                r = rng.uniform(3, 8) * k
+                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline="black", width=w)
+            for _ in range(rng.randint(0, 2)):
+                cx = x - rng.uniform(0, run)
+                draw.line((cx, baseline, cx + 3 * k, baseline - 30 * k), fill="black", width=w)
+            x -= run + rng.uniform(6, 16) * k
+    return _png(image)

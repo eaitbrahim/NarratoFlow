@@ -1,25 +1,34 @@
 """Skeletonize -> polylines -> stroke ordering for draw-on animation.
 
-Pipeline (all pure and deterministic, ties go to the lowest (y, x)):
-  1. Skeletonize the ink mask.
-  2. Classify skeleton pixels by 8-neighbour count: endpoint (1), path (2),
+Pipeline (all pure and deterministic, ties go to the lowest (y, x)). Pixel
+thresholds are given at 512 px and scale with min(h, w) / 512.
+  1. Fill pinholes: enclosed background components of at most
+     PINHOLE_PX * scale^2 px (a thick or anti-aliased stroke leaves them, and
+     each one would become a tiny skeleton loop).
+  2. Skeletonize the ink mask.
+  3. Classify skeleton pixels by 8-neighbour count: endpoint (1), path (2),
      junction (>= 3). Adjacent junction pixels form one junction cluster.
-  3. Trace edges from endpoints and clusters along path pixels; node-less
+  4. Trace edges from endpoints and clusters along path pixels; node-less
      closed loops start at their lowest (y, x) pixel. Skeleton components of
-     1-3 pixels are dots and become 2-point "tap" strokes.
-  4. Prune spurs (endpoint-to-cluster edges shorter than MIN_SPUR_PX) while the
-     cluster keeps >= 3 edges, then join the two edges at every cluster left
+     1-3 pixels are dots and become 2-point "tap" strokes whose `width` is the
+     dot's ink diameter (Task 5 draws a filled disc).
+  5. Prune spurs (endpoint-to-cluster edges shorter than MIN_SPUR_PX whose tip
+     the main stroke's line width already covers) while the cluster keeps
+     >= 3 edges, then join the two edges at every cluster left
      with exactly 2 (corners and staircase artefacts are not real junctions).
      Junctions of degree >= 3 are never merged through: a "+" is 4 strokes.
-  5. Simplify with Douglas-Peucker (cv2.approxPolyDP, epsilon 1 px).
-  6. Cap at MAX_STROKES by dropping the shortest (polyline length) strokes.
+  6. Simplify with Douglas-Peucker (cv2.approxPolyDP, epsilon 1 px).
   7. Order greedily: the pen starts at the top-left corner (top-right when
      rtl) and each step takes the stroke whose nearer end is closest to the
      pen, reversed when its far end was the nearer one. So the first stroke is
      the one with an end nearest the corner, drawn from that end.
+  8. Chain: a stroke starting within CHAIN_PX of the pen's end is appended to
+     the current stroke (no pen lift). Dots are never chained.
+
+Ink is never dropped. PACING_STROKES is only a hint for the renderer (Task 5
+speeds up the reveal above it); nothing here enforces it.
 """
 
-import itertools
 import json
 import math
 from dataclasses import dataclass
@@ -31,13 +40,18 @@ from skimage.morphology import skeletonize
 
 from narratoflow.errors import StrokeDataError
 
+REFERENCE_PX = 512
 MIN_SPUR_PX = 8
-MAX_STROKES = 400
+SPUR_REACH_PX = 2.0
+CHAIN_PX = 2.0
+PINHOLE_PX = 4
+PACING_STROKES = 400
 SIMPLIFY_EPSILON_PX = 1.0
 MAX_DOT_PX = 3
 DOT_TAP_PX = 0.5
 
 Pixel = tuple[int, int]  # (y, x)
+Point = tuple[float, float]  # (y, x) in pixels
 
 _OFFSETS: tuple[Pixel, ...] = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
 
@@ -46,6 +60,8 @@ class Stroke(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     points: list[tuple[float, float]] = Field(min_length=2)
+    # dot diameter normalized by image width; None for ordinary line strokes
+    width: float | None = Field(default=None, gt=0.0, le=1.0)
 
     @field_validator("points")
     @classmethod
@@ -66,7 +82,10 @@ class StrokeSet(BaseModel):
 
     def to_json(self) -> bytes:
         return json.dumps(
-            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            self.model_dump(mode="json", exclude_none=True),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
         ).encode("utf-8")
 
     @classmethod
@@ -77,47 +96,90 @@ class StrokeSet(BaseModel):
             raise StrokeDataError(f"invalid stroke data: {exc}") from exc
 
 
-@dataclass
+@dataclass(frozen=True)
 class _Edge:
-    a: int  # node id at pixels[0], -1 for a closed node-less loop
+    a: int  # node id at pixels[0], -1 for a closed loop
     b: int  # node id at pixels[-1]
     pixels: list[Pixel]
+
+
+@dataclass(frozen=True)
+class _Line:
+    points: list[Point]
+    diameter: float | None = None  # pixels, dots only
 
 
 def extract_strokes(ink: np.ndarray, *, rtl: bool = False) -> StrokeSet:
     if ink.ndim != 2 or ink.size == 0:
         raise StrokeDataError(f"ink mask must be a non-empty 2-D array, got shape {ink.shape}")
     height, width = ink.shape
-    skel = skeletonize(ink.astype(bool)).astype(bool)  # type: ignore[no-untyped-call]
-    polylines = _dots_and_edges(skel)
-    if len(polylines) > MAX_STROKES:
-        lengths = [_length(p) for p in polylines]
-        keep = sorted(range(len(polylines)), key=lambda i: -lengths[i])[:MAX_STROKES]
-        polylines = [polylines[i] for i in sorted(keep)]
-    ordered = _order(polylines, start=(0.0, float(width) if rtl else 0.0))
+    scale = min(height, width) / REFERENCE_PX
+    filled = _fill_pinholes(ink.astype(bool), round(PINHOLE_PX * scale * scale))
+    skel = skeletonize(filled).astype(bool)  # type: ignore[no-untyped-call]
+    lines = _dots_and_edges(
+        skel, filled, spur_px=MIN_SPUR_PX * scale, reach_px=SPUR_REACH_PX * scale
+    )
+    ordered = _order(lines, start=(0.0, float(width) if rtl else 0.0))
     return StrokeSet(
         width=width,
         height=height,
-        strokes=[Stroke(points=[(x / width, y / height) for y, x in line]) for line in ordered],
+        strokes=[
+            Stroke(
+                points=[(x / width, y / height) for y, x in line.points],
+                width=None if line.diameter is None else line.diameter / width,
+            )
+            for line in _chain(ordered, CHAIN_PX * scale)
+        ],
     )
 
 
-def _dots_and_edges(skel: np.ndarray) -> list[list[tuple[float, float]]]:
+def _fill_pinholes(ink: np.ndarray, limit: int) -> np.ndarray:
+    """Fill enclosed (not border-touching) 4-connected background holes <= limit px."""
+    if limit < 1:
+        return ink
+    height, width = ink.shape
+    _, labels, stats, _ = cv2.connectedComponentsWithStats((~ink).astype(np.uint8), connectivity=4)
+    left, top = stats[:, cv2.CC_STAT_LEFT], stats[:, cv2.CC_STAT_TOP]
+    right = left + stats[:, cv2.CC_STAT_WIDTH]
+    bottom = top + stats[:, cv2.CC_STAT_HEIGHT]
+    hole = (
+        (stats[:, cv2.CC_STAT_AREA] <= limit)
+        & (left > 0)
+        & (top > 0)
+        & (right < width)
+        & (bottom < height)
+    )
+    hole[0] = False  # label 0 is the ink itself
+    return np.asarray(ink | hole[labels])
+
+
+def _dots_and_edges(
+    skel: np.ndarray, ink: np.ndarray, *, spur_px: float, reach_px: float
+) -> list[_Line]:
     """Skeleton -> simplified polylines in (y, x) pixel units."""
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(
         skel.astype(np.uint8), connectivity=8
     )
-    lines: list[list[tuple[float, float]]] = []
+    lines: list[_Line] = []
     small = np.zeros(count, dtype=bool)
     small[1:] = stats[1:, cv2.CC_STAT_AREA] <= MAX_DOT_PX
-    dot_mask = small[labels]
+    if small.any():
+        _, blobs, blob_stats, _ = cv2.connectedComponentsWithStats(
+            ink.astype(np.uint8), connectivity=8
+        )
     for label in np.flatnonzero(small):
-        ys, xs = np.nonzero(labels == label)
-        y, x = float(ys.mean()), float(xs.mean())
-        lines.append([(y, x), (y, x + DOT_TAP_PX)])
-    graph = skel & ~dot_mask
-    for edge in _merge(_prune(_trace(graph))):
-        lines.append(_simplify(edge.pixels))
+        left, top, w, h = (int(v) for v in stats[label, :4])
+        window = labels[top : top + h, left : left + w] == label
+        ys, xs = np.nonzero(window)
+        blob = int(blobs[top + int(ys[0]), left + int(xs[0])])
+        # equivalent-area diameter of the dot's ink blob
+        diameter = 2.0 * math.sqrt(float(blob_stats[blob, cv2.CC_STAT_AREA]) / math.pi)
+        x, y = (float(v) for v in centroids[label])
+        lines.append(_Line([(y, x), (y, x + DOT_TAP_PX)], max(1.0, diameter)))
+    graph = skel & ~small[labels]
+    depth = cv2.distanceTransform(ink.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    for edge in _merge(_prune(_trace(graph), depth, spur_px=spur_px, reach_px=reach_px)):
+        lines.append(_Line(_simplify(edge.pixels)))
     return lines
 
 
@@ -193,14 +255,23 @@ def _degrees(edges: list[_Edge]) -> dict[int, int]:
     return degree
 
 
-def _prune(edges: list[_Edge]) -> list[_Edge]:
-    """Drop short endpoint-to-junction spurs while the junction keeps >= 3 edges."""
+def _prune(
+    edges: list[_Edge], depth: np.ndarray, *, spur_px: float, reach_px: float
+) -> list[_Edge]:
+    """Drop short endpoint-to-junction spurs while the junction keeps >= 3 edges.
+
+    Only spurs whose ink the remaining stroke redraws are dropped: the tip's
+    ink (distance plus its own radius beyond one pixel) must lie within the
+    line radius at the junction plus reach_px. A short real stroke (an
+    ascender, a serif, a tick) reaches further and is kept, so pruning never
+    deletes visible ink. _trace walks every endpoint first, so a spur's tip is
+    always pixels[0] and its junction pixel pixels[-1].
+    """
     degree = _degrees(edges)
     kept: list[_Edge] = []
     for edge in edges:
-        ends = (degree[edge.a], degree[edge.b])
-        is_spur = edge.a != edge.b and 1 in ends and max(ends) >= 3
-        if is_spur and len(edge.pixels) - 1 < MIN_SPUR_PX:
+        is_spur = degree[edge.a] == 1 and degree[edge.b] >= 3
+        if is_spur and len(edge.pixels) - 1 < spur_px and _redrawn(edge, depth, reach_px):
             degree[edge.a] -= 1
             degree[edge.b] -= 1
             continue
@@ -208,33 +279,48 @@ def _prune(edges: list[_Edge]) -> list[_Edge]:
     return kept
 
 
+def _redrawn(edge: _Edge, depth: np.ndarray, reach_px: float) -> bool:
+    tip, attach = edge.pixels[0], edge.pixels[-1]
+    covered = float(depth[attach]) + reach_px
+    return math.dist(tip, attach) + float(depth[tip]) - 1.0 <= covered
+
+
 def _merge(edges: list[_Edge]) -> list[_Edge]:
-    """Join the two edges meeting at every degree-2 junction cluster."""
-    alive = list(edges)
-    changed = True
-    while changed:
-        changed = False
-        degree = _degrees(alive)
-        for nid in sorted(n for n, d in degree.items() if d == 2 and n >= 0):
-            incident = [e for e in alive if nid in (e.a, e.b)]
-            if len(incident) == 1:
-                # a loop leaving and re-entering the same cluster: now closed
-                loop = incident[0]
-                loop.a = loop.b = -1
-                if loop.pixels[0] != loop.pixels[-1]:
-                    loop.pixels.append(loop.pixels[0])
-                continue
-            first, second = incident
-            head = first.pixels if first.b == nid else first.pixels[::-1]
-            tail = second.pixels if second.a == nid else second.pixels[::-1]
-            start = first.a if first.b == nid else first.b
-            end = second.b if second.a == nid else second.a
-            joined = head + (tail[1:] if tail[0] == head[-1] else tail)
-            alive = [e for e in alive if e is not first and e is not second]
-            alive.append(_Edge(start, end, joined))
-            changed = True
-            break
-    return alive
+    """Join the two edges meeting at every degree-2 junction cluster.
+
+    Builds new edges; the inputs are never mutated. Merging replaces two edges
+    by one at the far nodes, so node degrees do not change and one pass over
+    the degree-2 nodes in sorted order suffices.
+    """
+    pool: dict[int, _Edge] = dict(enumerate(edges))
+    next_id = len(edges)
+    incident: dict[int, list[int]] = {}
+    for eid, edge in pool.items():
+        for end in (edge.a, edge.b):
+            if end >= 0:
+                incident.setdefault(end, []).append(eid)
+    for nid in sorted(n for n, ids in incident.items() if len(ids) == 2):
+        first_id, second_id = incident[nid]
+        if first_id == second_id:
+            # a loop leaving and re-entering the same cluster: now closed
+            loop = pool.pop(first_id)
+            pixels = (
+                loop.pixels if loop.pixels[0] == loop.pixels[-1] else [*loop.pixels, loop.pixels[0]]
+            )
+            pool[next_id] = _Edge(-1, -1, pixels)
+            next_id += 1
+            continue
+        first, second = pool.pop(first_id), pool.pop(second_id)
+        head = first.pixels if first.b == nid else first.pixels[::-1]
+        tail = second.pixels if second.a == nid else second.pixels[::-1]
+        start = first.a if first.b == nid else first.b
+        end = second.b if second.a == nid else second.a
+        pool[next_id] = _Edge(start, end, head + (tail[1:] if tail[0] == head[-1] else tail))
+        for far, old in ((start, first_id), (end, second_id)):
+            ids = incident[far]
+            ids[ids.index(old)] = next_id
+        next_id += 1
+    return list(pool.values())
 
 
 def _simplify(pixels: list[Pixel]) -> list[tuple[float, float]]:
@@ -255,29 +341,42 @@ def _douglas_peucker(pixels: list[Pixel]) -> list[tuple[float, float]]:
     return [(float(y), float(x)) for x, y in approx]
 
 
-def _length(line: list[tuple[float, float]]) -> float:
-    return sum(math.dist(a, b) for a, b in itertools.pairwise(line))
-
-
-def _order(
-    lines: list[list[tuple[float, float]]], *, start: tuple[float, float]
-) -> list[list[tuple[float, float]]]:
-    """Greedy nearest-end ordering from the start corner; O(n^2)."""
-    remaining = list(lines)
-    ordered: list[list[tuple[float, float]]] = []
-    pen = start
-    while remaining:
-        best_key: tuple[float, float, float] | None = None
-        best_index = 0
-        best_line: list[tuple[float, float]] = []
-        for index, line in enumerate(remaining):
-            for candidate in (line, line[::-1]):
-                head = candidate[0]
-                dy, dx = head[0] - pen[0], head[1] - pen[1]
-                key = (dy * dy + dx * dx, head[0], head[1])
-                if best_key is None or key < best_key:
-                    best_key, best_index, best_line = key, index, candidate
-        ordered.append(best_line)
-        pen = best_line[-1]
-        del remaining[best_index]
+def _order(lines: list[_Line], *, start: Point) -> list[_Line]:
+    """Greedy nearest-end ordering from the start corner; O(n^2) in numpy."""
+    n = len(lines)
+    if n == 0:
+        return []
+    # rows 0..n-1: each line's first point; rows n..2n-1: its last point
+    heads = np.array([line.points[0] for line in lines] + [line.points[-1] for line in lines])
+    alive = np.ones(2 * n, dtype=bool)
+    ordered: list[_Line] = []
+    pen = np.array(start)
+    for _ in range(n):
+        dist2 = ((heads - pen) ** 2).sum(axis=1)
+        dist2[~alive] = np.inf
+        best = np.flatnonzero(dist2 == dist2.min())
+        # ties: lowest (y, x) of the candidate's start; lexsort is stable
+        pick = int(best[np.lexsort((heads[best, 1], heads[best, 0]))[0]])
+        index = pick % n
+        alive[index] = alive[index + n] = False
+        line = lines[index]
+        if pick >= n:
+            line = _Line(line.points[::-1], line.diameter)
+        ordered.append(line)
+        pen = np.array(line.points[-1])
     return ordered
+
+
+def _chain(lines: list[_Line], chain_px: float) -> list[_Line]:
+    """Append each stroke starting within chain_px of the pen to the current one."""
+    chained: list[_Line] = []
+    for line in lines:
+        if chained:
+            current = chained[-1]
+            touching = math.dist(current.points[-1], line.points[0]) <= chain_px
+            if touching and current.diameter is None and line.diameter is None:
+                tail = line.points[1:] if line.points[0] == current.points[-1] else line.points
+                chained[-1] = _Line(current.points + tail)
+                continue
+        chained.append(line)
+    return chained

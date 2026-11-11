@@ -5,21 +5,27 @@ import math
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
-from fixtures.images import line_drawing_scroll, noisy_line_drawing, scroll
+from fixtures.images import (
+    brick,
+    calligraphy,
+    label_map,
+    line_drawing_scroll,
+    noisy_line_drawing,
+    road_map,
+    scroll,
+)
 from PIL import Image, ImageDraw
+from skimage.morphology import skeletonize
 
 from narratoflow.errors import NarratoFlowError, StrokeDataError
-from narratoflow.visuals import strokes as strokes_module
 from narratoflow.visuals.lineart import binarize
 from narratoflow.visuals.strokes import (
-    MAX_STROKES,
-    MIN_SPUR_PX,
+    PACING_STROKES,
     Stroke,
     StrokeSet,
-    _Edge,
-    _merge,
     extract_strokes,
 )
 
@@ -41,6 +47,34 @@ def _px_length(stroke: Stroke, width: int, height: int) -> float:
 
 def _is_dot(stroke: Stroke, width: int) -> bool:
     return len(stroke.points) == 2 and _px_length(stroke, width, width) <= 0.51
+
+
+def _render(strokes: StrokeSet, thickness: int) -> np.ndarray:
+    image = np.zeros((strokes.height, strokes.width), np.uint8)
+    for stroke in strokes.strokes:
+        pts = np.array(
+            [[round(x * strokes.width), round(y * strokes.height)] for x, y in stroke.points],
+            np.int32,
+        )
+        cv2.polylines(image, [pts], False, 255, thickness=max(1, thickness), lineType=cv2.LINE_8)
+        if stroke.width is not None:  # Task 5 draws a dot as a filled disc
+            centre = (int(pts[0][0]), int(pts[0][1]))
+            cv2.circle(image, centre, max(1, round(stroke.width * strokes.width / 2)), 255, -1)
+    return image > 0
+
+
+def _line_width(ink: np.ndarray) -> int:
+    depth = cv2.distanceTransform(ink.astype(np.uint8), cv2.DIST_L2, 3)
+    skeleton = skeletonize(ink)  # type: ignore[no-untyped-call]
+    return max(1, round(2 * float(depth[skeleton].mean()) - 1))
+
+
+def _ink_coverage(ink: np.ndarray, strokes: StrokeSet) -> float:
+    """Share of ink pixels within 2 px of a stroke drawn at the line width."""
+    width = _line_width(ink)
+    centre = _render(strokes, 1)
+    to_stroke = cv2.distanceTransform((~centre).astype(np.uint8), cv2.DIST_L2, 3)
+    return float((to_stroke[ink] <= 2 + width / 2).mean())
 
 
 def test_square_outline_is_one_closed_stroke_or_at_most_four() -> None:
@@ -71,13 +105,17 @@ def test_t_shape_splits_at_the_junction() -> None:
 
 
 def test_plus_gives_four_strokes() -> None:
-    # Documented behaviour: no merging through a junction of degree >= 3.
+    # Documented behaviour: the graph is never merged through a junction of
+    # degree >= 3, so a "+" traces as 4 arms. (At 256 px CHAIN_PX is 1 px and
+    # the arm ends sit on different cluster pixels, so they are not chained.)
     def draw(d: ImageDraw.ImageDraw) -> None:
         d.line((40, 128, 216, 128), fill=0, width=3)
         d.line((128, 40, 128, 216), fill=0, width=3)
 
-    result = extract_strokes(_ink(draw))
+    ink = _ink(draw)
+    result = extract_strokes(ink)
     assert len(result.strokes) == 4
+    assert _ink_coverage(ink, result) == 1.0
 
 
 def test_circle_is_one_closed_stroke() -> None:
@@ -115,21 +153,156 @@ def test_dots_are_never_pruned() -> None:
     assert len(result.strokes) == 2
 
 
-def test_spurs_pruned_on_noisy_drawing() -> None:
-    result = extract_strokes(binarize(noisy_line_drawing()))
-    assert 0 < len(result.strokes) <= MAX_STROKES
-    for stroke in result.strokes:
-        if not _is_dot(stroke, result.width):
-            assert _px_length(stroke, result.width, result.height) >= MIN_SPUR_PX
+def test_noisy_drawing_matches_the_clean_one() -> None:
+    # binarize's speck filter removes the single-pixel noise before tracing
+    noisy = extract_strokes(binarize(noisy_line_drawing()))
+    assert noisy == extract_strokes(binarize(line_drawing_scroll()))
 
 
-def test_short_spur_is_pruned() -> None:
-    ink = np.zeros((SIZE, SIZE), dtype=bool)
+def test_short_spur_is_pruned_at_512() -> None:
+    ink = np.zeros((512, 512), dtype=bool)
     ink[100, 40:200] = True
-    ink[101:105, 120] = True  # 4 px spur off the line
+    ink[101:104, 120] = True  # 3 px spur: shorter than 8 and within the reach
     result = extract_strokes(ink)
     assert len(result.strokes) == 1
-    assert _px_length(result.strokes[0], SIZE, SIZE) == pytest.approx(159, abs=2)
+    assert _px_length(result.strokes[0], 512, 512) == pytest.approx(159, abs=2)
+
+
+def test_spur_threshold_scales_with_resolution() -> None:
+    # the same 3 px spur is pruned at 512 (limit 8 px) but kept at 128 (2 px)
+    def build(size: int) -> np.ndarray:
+        ink = np.zeros((size, size), dtype=bool)
+        ink[60, 10:110] = True
+        ink[61:64, 50] = True
+        return ink
+
+    assert len(extract_strokes(build(512)).strokes) == 1
+    assert len(extract_strokes(build(128)).strokes) == 3
+
+
+def test_short_real_stroke_is_not_pruned() -> None:
+    # a 6 px tick reaches well past the 1 px line: real ink, kept
+    ink = np.zeros((512, 512), dtype=bool)
+    ink[100, 40:200] = True
+    ink[101:107, 120] = True
+    result = extract_strokes(ink)
+    assert _ink_coverage(ink, result) == 1.0
+    assert len(result.strokes) >= 2
+
+
+def _ring(size: int, tails: tuple[tuple[int, int], ...]) -> np.ndarray:
+    canvas = np.zeros((size, size), np.uint8)
+    cv2.circle(canvas, (64, 64), 30, 255, 1)
+    for top, bottom in tails:
+        canvas[top:bottom, 64] = 255
+    return canvas > 0
+
+
+@pytest.mark.parametrize(
+    "tails",
+    [((94, 96),), ((94, 96), (32, 34))],
+    ids=["one-bump", "two-bumps"],
+)
+def test_ring_with_bumps_is_one_closed_stroke(tails: tuple[tuple[int, int], ...]) -> None:
+    # a 1 px ring traced through junction clusters: the 2 px bumps are pruned,
+    # the clusters drop to degree 2 and the arcs join into one closed loop
+    ink = _ring(512, tails)
+    before = ink.copy()
+    result = extract_strokes(ink)
+    assert np.array_equal(ink, before)
+    assert len(result.strokes) == 1
+    points = result.strokes[0].points
+    assert math.dist(points[0], points[-1]) * 512 <= 2
+    assert _px_length(result.strokes[0], 512, 512) == pytest.approx(2 * math.pi * 30, rel=0.08)
+
+
+@pytest.mark.parametrize(
+    ("tails", "count"),
+    [(((94, 99),), 1), (((94, 99), (29, 34)), 2)],
+    ids=["one-tail", "two-tails"],
+)
+def test_ring_with_real_tails_keeps_all_ink(tails: tuple[tuple[int, int], ...], count: int) -> None:
+    # 5 px tails are real ink and are kept; chaining keeps the pen down
+    ink = _ring(512, tails)
+    result = extract_strokes(ink)
+    assert len(result.strokes) == count
+    assert _ink_coverage(ink, result) == 1.0
+
+
+def test_touching_strokes_are_chained() -> None:
+    ink = np.zeros((512, 512), dtype=bool)
+    ink[10, 10:51] = True
+    ink[10, 52:91] = True  # separate component, 2 px from the pen: chained
+    ink[10, 94:130] = True  # 4 px gap: pen lift
+    result = extract_strokes(ink)
+    assert len(result.strokes) == 2
+    assert _px_length(result.strokes[0], 512, 512) == pytest.approx(80, abs=1)
+
+
+def test_dots_are_not_chained() -> None:
+    ink = np.zeros((512, 512), dtype=bool)
+    ink[10, 10:51] = True
+    ink[10, 52] = True  # a 1 px dot touching the pen's end
+    result = extract_strokes(ink)
+    assert len(result.strokes) == 2
+    assert result.strokes[1].width is not None
+
+
+def test_large_dot_keeps_its_diameter() -> None:
+    ink = _ink(lambda d: (d.ellipse((100, 100, 118, 118), fill=0),), size=512)
+    assert ink.sum() > 250  # a 19 x 19 disc
+    result = extract_strokes(ink)
+    (dot,) = result.strokes
+    assert dot.width is not None
+    assert dot.width * 512 == pytest.approx(19, abs=1)
+    (x, y), _ = dot.points
+    assert x * 512 == pytest.approx(109, abs=1)
+    assert y * 512 == pytest.approx(109, abs=1)
+
+
+def test_line_strokes_have_no_width() -> None:
+    result = extract_strokes(binarize(line_drawing_scroll()))
+    assert all(s.width is None for s in result.strokes)
+    assert b'"width":null' not in result.to_json()
+
+
+def test_pinholes_are_filled_before_skeletonizing() -> None:
+    ink = np.zeros((512, 512), dtype=bool)
+    ink[100:108, 40:200] = True
+    ink[103:105, 80] = False  # a 2 px pinhole inside the thick line
+    result = extract_strokes(ink)
+    assert len(result.strokes) == 1
+
+
+def test_calligraphy_stroke_count_is_stable_across_resolutions() -> None:
+    low = len(extract_strokes(binarize(calligraphy(size=512))).strokes)
+    high = len(extract_strokes(binarize(calligraphy(size=1024))).strokes)
+    assert high <= 1.6 * low
+
+
+@pytest.mark.parametrize(
+    ("name", "png"),
+    [
+        ("road_map", road_map()),
+        ("brick 20x10", brick(brick_w=20, brick_h=10)),
+        ("label_map", label_map()),
+    ],
+)
+def test_no_ink_is_dropped(name: str, png: bytes) -> None:
+    ink = binarize(png)
+    assert _ink_coverage(ink, extract_strokes(ink)) >= 0.98, name
+
+
+def test_calligraphy_keeps_nearly_all_ink() -> None:
+    # filled pinholes make small loops thicker than the line width; the drawn
+    # centreline still covers all but a sliver of those blobs
+    ink = binarize(calligraphy())
+    assert _ink_coverage(ink, extract_strokes(ink)) >= 0.975
+
+
+def test_pacing_hint_is_never_enforced() -> None:
+    assert PACING_STROKES == 400
+    assert len(extract_strokes(binarize(brick(brick_w=20, brick_h=10))).strokes) > PACING_STROKES
 
 
 def test_scroll_fixture_has_few_strokes() -> None:
@@ -137,12 +310,22 @@ def test_scroll_fixture_has_few_strokes() -> None:
     assert 5 <= len(result.strokes) < 60
 
 
-def test_scroll_1024_is_fast() -> None:
-    ink = binarize(scroll(size=1024))
+@pytest.mark.parametrize(
+    ("png", "max_strokes"),
+    [
+        (scroll(size=1024), 60),
+        (scroll(size=2048, width=6), 60),
+        (road_map(size=2048, width=12), None),
+    ],
+    ids=["scroll-1024", "scroll-2048", "road-map-2048"],
+)
+def test_extraction_is_fast(png: bytes, max_strokes: int | None) -> None:
+    ink = binarize(png)
     start = time.perf_counter()
     result = extract_strokes(ink)
     elapsed = time.perf_counter() - start
-    assert len(result.strokes) < 60
+    if max_strokes is not None:
+        assert len(result.strokes) < max_strokes
     assert elapsed < 2.0
 
 
@@ -205,35 +388,6 @@ def test_points_are_normalized_x_by_width_y_by_height() -> None:
     assert ys == {10 / 100}
 
 
-def test_cap_drops_the_shortest_strokes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(strokes_module, "MAX_STROKES", 2)
-    ink = np.zeros((SIZE, SIZE), dtype=bool)
-    ink[10, 10:30] = True  # 19 px, dropped
-    ink[60, 10:100] = True
-    ink[120, 10:200] = True
-    result = extract_strokes(ink)
-    lengths = sorted(round(_px_length(s, SIZE, SIZE)) for s in result.strokes)
-    assert lengths == [89, 189]
-
-
-def test_loop_through_a_degree_two_cluster_becomes_closed() -> None:
-    # two arcs between clusters 0 and 1: merged at 0, then closed at 1
-    arcs = [
-        _Edge(0, 1, [(0, 0), (0, 1), (0, 2)]),
-        _Edge(1, 0, [(1, 2), (1, 1), (1, 0)]),
-    ]
-    (loop,) = _merge(arcs)
-    assert (loop.a, loop.b) == (-1, -1)
-    assert loop.pixels[0] == loop.pixels[-1] == (0, 2)
-    assert len(loop.pixels) == 7
-
-
-def test_already_closed_loop_at_a_cluster_is_not_extended() -> None:
-    (loop,) = _merge([_Edge(3, 3, [(0, 0), (0, 1), (1, 1), (0, 0)])])
-    assert (loop.a, loop.b) == (-1, -1)
-    assert loop.pixels == [(0, 0), (0, 1), (1, 1), (0, 0)]
-
-
 def test_empty_ink_gives_no_strokes() -> None:
     result = extract_strokes(np.zeros((32, 48), dtype=bool))
     assert result.strokes == []
@@ -271,6 +425,7 @@ def test_json_roundtrip_is_compact_and_sorted() -> None:
         b'{"version":1,"width":0,"height":10,"strokes":[]}',
         b'{"version":2,"width":10,"height":10,"strokes":[]}',
         b'{"version":1,"width":10,"height":10,"strokes":[],"extra":1}',
+        b'{"version":1,"width":10,"height":10,"strokes":[{"points":[[0,0],[0,0]],"width":0}]}',
     ],
 )
 def test_from_json_rejects_bad_data(raw: bytes) -> None:

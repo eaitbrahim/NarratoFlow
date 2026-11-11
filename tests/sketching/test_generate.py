@@ -29,6 +29,7 @@ from narratoflow.models import (
     Narration,
     Scene,
     SceneKind,
+    Series,
     VerseRef,
 )
 from narratoflow.settings import Settings
@@ -41,6 +42,7 @@ from narratoflow.sketching.generate import (
 )
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons
 from narratoflow.visuals.marker import marker_seed
+from narratoflow.visuals.marker import video_id as marker_video_id
 from sketching.support import (
     PER_SKETCH,
     PRICES,
@@ -83,6 +85,24 @@ def test_happy_path_three_new_scenes_pass_with_strokes(
     assert [imgs[1] for imgs in vision.images] == [reference] * 3
     # the input series is not mutated
     assert all(sc.sketch_id is None for sc in scenes_of(original))
+
+
+def test_sketching_calls_marker_video_id(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Series] = []
+
+    def spy(s: Series) -> str:
+        seen.append(s)
+        return marker_video_id(s)
+
+    monkeypatch.setattr(generate_module, "video_id", spy)
+    original = series([scene(1)])
+    run(original, channel, settings, library, FakeImages(), FakeLLM(clean(1)))
+    assert seen and seen[0].title == original.title
 
 
 def test_seeds_are_stable_across_runs(

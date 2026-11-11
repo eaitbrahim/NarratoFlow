@@ -53,6 +53,7 @@ from narratoflow.sketching.generate import require_series_channel
 from narratoflow.text.tashkeel.verify import SkeletonMismatchError, assert_skeleton_preserved
 from narratoflow.tts import VoiceChoice
 from narratoflow.tts.factory import build_voice_chain
+from narratoflow.visuals.marker import video_id
 from narratoflow.visuals.strokes import StrokeSet
 
 logger = logging.getLogger(__name__)
@@ -337,7 +338,7 @@ class _Run:
             clips,
             strokes,
             self.pack,
-            video_id=f"{self.series.channel_slug}/{self.series.title}",
+            video_id=video_id(self.series),
         )
         warnings = [*mix.warnings, *verse_warnings]
         if self.align_missing or narration.aligner_unavailable:

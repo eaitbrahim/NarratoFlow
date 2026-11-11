@@ -59,6 +59,7 @@ from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.reciters import Reciter, ReciterIndex
 from narratoflow.settings import Settings
 from narratoflow.tts import Speech, SpeechRequest, VoiceChoice
+from narratoflow.visuals.marker import video_id as marker_video_id
 from narratoflow.visuals.strokes import Stroke, StrokeSet
 
 pytestmark = pytest.mark.usefixtures("ffmpeg_bin")
@@ -301,6 +302,27 @@ def test_builds_flac_and_timeline_per_part(
     assert (asset.kind, asset.asset_id, asset.license) == ("sfx", "pen", "CC0-1.0")
     assert asset.source == "https://sfx.example/"
     assert result.parts[1].timeline.assets == []
+
+
+def test_audio_and_sketching_call_marker_video_id(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Series] = []
+
+    def spy(series: Series) -> str:
+        seen.append(series)
+        return marker_video_id(series)
+
+    monkeypatch.setattr(build_module, "video_id", spy)
+    sid = _sketch(library)
+    original = make_series([narr("s1", "alpha beta", sketch=sid)])
+    run(original, channel, settings, tmp_path, voices=[FakeVoice()], library=library, pack=pack)
+    assert seen and all(s.title == "Scenes" for s in seen)
 
 
 def test_verse_part_records_recitation_and_warnings(

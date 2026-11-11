@@ -13,12 +13,18 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image, ImageColor, ImageDraw
 
+from narratoflow.models import Series
 from narratoflow.visuals.strokes import StrokeSet
 
 WOBBLE_SIGMA_PX = 0.6
 WEIGHT_JITTER = 0.10
 
 _Pt = tuple[float, float]
+
+
+def video_id(series: Series) -> str:
+    """The id audio, sketching and render all seed their randomness with."""
+    return f"{series.channel_slug}/{series.title}"
 
 
 def marker_seed(video_id: str, scene_id: str, attempt: int = 0) -> int:

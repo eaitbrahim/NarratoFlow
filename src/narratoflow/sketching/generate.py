@@ -51,7 +51,7 @@ from narratoflow.settings import Settings
 from narratoflow.sketching.vision import check_sketch, estimate_check_cost
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons, default_bundled_icons
 from narratoflow.visuals.lineart import binarize, check_density
-from narratoflow.visuals.marker import marker_seed
+from narratoflow.visuals.marker import marker_seed, video_id
 from narratoflow.visuals.strokes import extract_strokes
 
 logger = logging.getLogger(__name__)
@@ -567,7 +567,7 @@ def generate_missing(
         vision=vision_client,
         prices=prices,
         reference=reference,
-        video_id=f"{series.channel_slug}/{series.title}",
+        video_id=video_id(series),
         result=result,
     )
     out = series.model_copy(deep=True)

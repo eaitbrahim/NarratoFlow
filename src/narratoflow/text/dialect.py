@@ -22,9 +22,10 @@ import re
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from narratoflow.errors import DialectUnavailableError, ProviderError
+from narratoflow.quran.detect import ORNATE_CLOSE, ORNATE_OPEN
 from narratoflow.text.quality import normalize_input
 
 MSA_LABEL = "MSA"
@@ -33,7 +34,7 @@ INSTALL_HINT = (
     "&& uv run camel_data -i dialectid-model26"
 )
 _SENTENCE_END = re.compile("(?<=[.!?\\u061f\\u06d4])(?=\\s|$)")
-_VERSE = re.compile("\\ufd3e[^\\ufd3f]*\\ufd3f")
+_VERSE = re.compile(f"{ORNATE_OPEN}[^{ORNATE_CLOSE}]*{ORNATE_CLOSE}")
 _ARABIC_LETTER = re.compile("[\u0621-\u064a]")
 
 
@@ -49,7 +50,7 @@ class SentenceDialect(BaseModel):
     line: int
     text: str
     label: str
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     flagged: bool
 
 
@@ -96,6 +97,8 @@ def check_dialect(
     predictions = model.predict([sentence for _, sentence in found]) if found else []
     if len(predictions) != len(found):
         raise ProviderError("dialect model returned the wrong number of predictions")
+    if not all(0.0 <= confidence <= 1.0 for _, confidence in predictions):  # NaN fails too
+        raise ProviderError("dialect model returned a confidence outside [0, 1]")
     sentences = tuple(
         SentenceDialect(
             line=line,

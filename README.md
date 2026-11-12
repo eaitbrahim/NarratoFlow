@@ -221,7 +221,7 @@ uv run camel_data -i dialectid-model26
 uv run narratoflow check-dialect script.txt [--threshold 0.5] [--report PATH]
 ```
 
-A sentence is flagged when the model's top label is not `MSA` and its probability is at least `--threshold` (default 0.5). Lines with no Arabic letters are never checked, and Qur'anic verses in ﴾…﴿ are skipped (they are classical, not dialect). Labels are CAMeL city or variety codes, for example `CAI` Cairo, `RAB` Rabat, `BEI` Beirut, `DOH` Doha, `TUN` Tunis and `MSA` Modern Standard Arabic. Each flagged sentence prints as `line N: LABEL 0.87 «excerpt»`, followed by a summary. The full report (every Arabic sentence with its label and confidence) is written to `FILE.dialect.json`, or to `--report PATH`. Without the extra or its data, the command exits 1 with one line naming both install steps.
+A sentence is flagged when the model's top label is not `MSA` and its probability is at least `--threshold` (default 0.5). Lines with no Arabic letters are never checked, and Qur'anic verses in ﴿…﴾ are skipped (they are classical, not dialect). Labels are CAMeL city or variety codes, for example `CAI` Cairo, `RAB` Rabat, `BEI` Beirut, `DOH` Doha, `TUN` Tunis and `MSA` Modern Standard Arabic. Each flagged sentence prints as `line N: LABEL 0.87 «excerpt»`, followed by a summary. The full report (every Arabic sentence with its label and confidence) is written to `FILE.dialect.json`, or to `--report PATH`. Without the extra or its data, the command exits 1 with one line naming both install steps.
 
 ## Where settings live
 

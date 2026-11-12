@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from narratoflow.audio.words import norm_for_timing, tokens
 from narratoflow.models import Language
+from narratoflow.text.amounts import spell_amount
 from narratoflow.text.numbers import spell_number
 from narratoflow.text.tashkeel.verify import is_diacritic
 
@@ -167,7 +168,11 @@ def spoken_text(text: str, language: Language, lexicon: Lexicon) -> SpokenText:
         if hit is not None and hit[1] and suffix.startswith(hit[1]) and _continues(match):
             suffix = suffix[len(hit[1]) :]  # "the U.S. economy": the key's "." ends no sentence
         if replacement is None and core:
-            replacement = spell_number(core, language)
+            amount = spell_amount(prefix, core, suffix, language)
+            if amount is not None:
+                prefix, replacement, suffix = amount
+            else:
+                replacement = spell_number(core, language)
         if replacement is None:
             groups.append(1)
             return token

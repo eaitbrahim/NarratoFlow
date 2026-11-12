@@ -223,13 +223,13 @@ def _ar_cardinal(n: int) -> str:
     return _AR_AND.join(parts)
 
 
-def spell_number(token: str, language: Language) -> str | None:
+def spell_number(token: str, language: Language, *, years: bool = True) -> str | None:
     """The number core of `token` spelled out, or None when it is not one we handle.
 
     `token` has no surrounding punctuation. Handles integers up to
     999,999,999,999 with optional thousands separators and decimal part, in any
     Unicode decimal digits, plus English ordinals (`22nd`). English reads a bare
-    4-digit integer from 1100 to 1999 as a year.
+    4-digit integer from 1100 to 1999 as a year unless `years` is False.
     """
     if len({ord(c) - unicodedata.decimal(c) for c in token if c.isdecimal()}) > 1:
         return None  # mixed digit scripts
@@ -249,7 +249,10 @@ def spell_number(token: str, language: Language) -> str | None:
     if english:
         spoken = (
             _en_year(value)
-            if match["frac"] is None and raw.isdigit() and (1100 <= value <= 1999 and len(raw) == 4)
+            if years
+            and match["frac"] is None
+            and raw.isdigit()
+            and (1100 <= value <= 1999 and len(raw) == 4)
             else _en_cardinal(value)
         )
     else:

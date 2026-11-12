@@ -152,12 +152,22 @@ this reduction are rejected. Numbers are spoken as words while captions keep the
   five"), and ordinals such as "22nd" are spelled as ordinals ("twenty-second");
 - decimals read the fraction digit by digit after "point" in English, or after the Arabic word for
   "comma";
+- a `-` or `+` touching the number is read as "minus" or "plus" ("-5" is "minus five"; Arabic
+  "-٥" is "سالب خمسة"); a `%` or `٪` after it is "percent"
+  ("50%" is "fifty percent"; Arabic "٥٠٪" is "خمسون بالمائة");
+- `$`, `€` and `£` before or after a number name the unit after it ("$5" is "five dollars",
+  "$1.50" is "one dollar and fifty cents"; Arabic "$5" is "خمسة دولارات"). These
+  amounts never use the year reading ("$1453" is "one thousand four hundred and fifty-three
+  dollars"). A spaced sign ("- 5"), or a token with two currencies or a currency and a percent, is
+  left as written;
 - anything else (larger numbers, mixed digit scripts, numbers joined to letters such as `1453م`,
   `٨٥٧هـ` or `1990s`) is left as digits for the voice to read.
 
 Changing an entry re-voices the scenes it touches. After upgrading to this version, scenes that
 contain numbers are voiced again once, and a paid voice bills them again; scenes without numbers
 are reused. The spend can then differ from an estimate approved before the upgrade.
+Scenes containing a sign, currency or percent next to a number are likewise voiced again once after
+upgrading, and a paid voice bills them once more.
 
 ### Alignment
 

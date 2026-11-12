@@ -188,3 +188,27 @@ def test_key_own_trailing_period_is_not_a_sentence_end() -> None:
     assert spoken_text("NASA, then", EN, Lexicon.from_entries({"NASA": "nasa"})).text == (
         "nasa, then"
     )
+
+
+def test_amount_is_one_group() -> None:
+    result = spoken_text("Pay $5 now", EN, Lexicon.EMPTY)
+    assert result.text == "Pay five dollars now"
+    assert result.groups == (1, 2, 1)
+
+
+def test_plain_text_unchanged_by_amounts() -> None:
+    assert (
+        spoken_text("In 1453, it fell.", EN, Lexicon.EMPTY).text
+        == "In fourteen fifty-three, it fell."
+    )
+    result = spoken_text("a  1453\tb", EN, Lexicon.EMPTY)
+    assert result.text == "a  fourteen fifty-three\tb"
+    assert result.groups == (1, 2, 1)
+
+
+def test_hyphen_not_a_sign() -> None:
+    for text in ("3-5", "well-known", "-"):
+        assert spoken_text(text, EN, Lexicon.EMPTY).text == text
+    assert spoken_text("- 5", EN, Lexicon.EMPTY).text == "- five"
+    assert spoken_text("(-5)", EN, Lexicon.EMPTY).text == "(minus five)"
+    assert spoken_text("1990-", EN, Lexicon.EMPTY).text == "nineteen ninety-"

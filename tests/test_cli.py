@@ -1,6 +1,8 @@
+import json
 import os
 import shutil
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -14,7 +16,7 @@ from narratoflow import cli
 from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, PartAudio
 from narratoflow.audio.timeline import PartTimeline, SceneTiming, TimingSource, VoiceUsed
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint
-from narratoflow.errors import BudgetExceededError
+from narratoflow.errors import BudgetExceededError, DialectUnavailableError
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchStatus
 from narratoflow.models import (
@@ -31,6 +33,7 @@ from narratoflow.models import (
 )
 from narratoflow.settings import Settings, get_settings
 from narratoflow.sketching.generate import GenerationInterruptedError, GenerationResult
+from narratoflow.text.dialect import INSTALL_HINT
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons
 
 runner = CliRunner()
@@ -1756,3 +1759,123 @@ def test_library_icons_no_match_hint(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert result.exit_code == 0, result.output
     assert "no bundled icon matches 'zzz'" in result.output
     assert "--text-card" in result.output
+
+
+class _FakeDialectModel:
+    def predict(self, sentences: Sequence[str]) -> list[tuple[str, float]]:
+        return [("CAI", 0.87) if i == 0 else ("MSA", 0.9) for i, _ in enumerate(sentences)]
+
+
+def test_check_dialect_prints_flagged_and_writes_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _FakeDialectModel)
+    script = tmp_path / "script.txt"
+    first = "\u0643\u062a\u0628 \u0627\u0644\u0637\u0627\u0644\u0628."
+    script.write_text(f"Hello.\n{first}\n\u0643\u062a\u0628.\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["check-dialect", str(script)])
+    assert result.exit_code == 0, result.output
+    assert f"line 2: CAI 0.87 \u00ab{first}\u00bb" in result.output
+    report_path = tmp_path / "script.txt.dialect.json"
+    assert "1 of 2 Arabic sentences flagged (threshold 0.5); report:" in result.output
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    assert data["threshold"] == 0.5
+    assert [s["flagged"] for s in data["sentences"]] == [True, False]
+
+
+def test_check_dialect_without_extra_names_install_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom() -> object:
+        raise DialectUnavailableError(f"camel_tools failed to load (ImportError); {INSTALL_HINT}")
+
+    monkeypatch.setattr(cli, "load_camel_model", boom)
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    monkeypatch.setenv("COLUMNS", "300")
+    code = run_main(monkeypatch, "check-dialect", str(script))
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "uv sync --extra arabic" in err
+    assert "camel_data -i dialectid-model26" in err
+    assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1
+
+
+@pytest.mark.parametrize("threshold", ["0", "-1", "2"])
+def test_check_dialect_bad_threshold_fails_before_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threshold: str
+) -> None:
+    def never() -> object:
+        raise AssertionError("model must not be loaded")
+
+    monkeypatch.setattr(cli, "load_camel_model", never)
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["check-dialect", str(script), "--threshold", threshold])
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output
+
+
+def _never_load() -> object:
+    raise AssertionError("model must not be loaded")
+
+
+def test_check_dialect_refuses_report_equal_to_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _never_load)
+    monkeypatch.setenv("COLUMNS", "300")
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    link = tmp_path / "alias.json"
+    link.symlink_to(script)
+    hard = tmp_path / "hard.json"
+    hard.hardlink_to(script)
+    for report in (script, link, hard):
+        code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(report))
+        err = capsys.readouterr().err
+        assert code == 1
+        assert len(err.strip().splitlines()) == 1
+    assert script.read_text(encoding="utf-8") == "\u0643\u062a\u0628\n"
+
+
+def test_check_dialect_unwritable_report_fails_before_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _never_load)
+    monkeypatch.setenv("COLUMNS", "300")
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        if os.access(locked, os.W_OK):
+            pytest.skip("chmod does not restrict writes here (root or unsupported filesystem)")
+        report = locked / "r.json"
+        code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(report))
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "--report PATH" in err
+        assert len(err.strip().splitlines()) == 1
+        missing = tmp_path / "nope" / "r.json"
+        code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(missing))
+        assert code == 1
+        assert "--report PATH" in capsys.readouterr().err
+    finally:
+        locked.chmod(0o700)
+
+
+def test_check_dialect_directory_report_fails_before_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _never_load)
+    monkeypatch.setenv("COLUMNS", "300")
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    folder = tmp_path / "out"
+    folder.mkdir()
+    code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(folder))
+    assert code == 1
+    assert "--report PATH" in capsys.readouterr().err

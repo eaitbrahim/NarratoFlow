@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
@@ -21,6 +22,7 @@ from narratoflow.errors import (
     NarratoFlowError,
     PlanningError,
     PublishCheckFailedError,
+    ReportWriteError,
 )
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import SketchStatus
@@ -56,6 +58,8 @@ from narratoflow.sketching.resolve import (
     use_text_card,
 )
 from narratoflow.sketching.vision import estimate_check_cost
+from narratoflow.text.dialect import check_dialect as run_dialect_check
+from narratoflow.text.dialect import load_camel_model
 from narratoflow.text.quality import require_clean
 from narratoflow.visuals.bundled import default_bundled_icons
 
@@ -94,6 +98,58 @@ def check_input(file: Path, language: Language = Language.ARABIC) -> None:
         raise CorruptInputError(f"cannot read {file}: {exc}") from exc
     require_clean(text, language)
     _out.print("[green]OK[/green]")
+
+
+def _require_writable_report(source: Path, target: Path) -> None:
+    """Fail before the slow model load when the report would clobber or miss its target."""
+    same = target.exists() and os.path.samefile(target, source)  # also catches hard links
+    if same or target.resolve() == source.resolve():
+        raise ReportWriteError(f"the report path is the input file {source}; pass --report PATH")
+    parent = target.parent
+    writable = not target.is_dir() and parent.is_dir() and os.access(parent, os.W_OK | os.X_OK)
+    if writable and target.exists():
+        writable = os.access(target, os.W_OK)
+    if not writable:
+        raise ReportWriteError(f"cannot write the report to {target}; pass --report PATH")
+
+
+@app.command("check-dialect")
+def check_dialect(
+    file: Path,
+    threshold: Annotated[
+        float, typer.Option(help="Flag non-MSA sentences at or above this.")
+    ] = 0.5,
+    report: Annotated[
+        Path | None, typer.Option(help="Report path (default FILE.dialect.json).")
+    ] = None,
+) -> None:
+    """Flag sentences that read as dialect, not MSA. Flags only; never rejects."""
+    if not 0 < threshold <= 1:
+        raise typer.BadParameter("--threshold must be in (0, 1]", param_hint="--threshold")
+    try:
+        text = file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CorruptInputError(f"cannot read {file}: {exc}") from exc
+    target = report if report is not None else file.with_name(file.name + ".dialect.json")
+    _require_writable_report(file, target)
+    result = run_dialect_check(
+        text, load_camel_model(), threshold=threshold, model_name="camel-tools dialectid-model26"
+    )
+    for s in result.flagged:
+        excerpt = escape(s.text[:40])
+        _out.print(
+            f"line {s.line}: {escape(s.label)} {s.confidence:.2f} \u00ab{excerpt}\u00bb",
+            highlight=False,
+        )
+    try:
+        target.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise ReportWriteError(f"cannot write {target}: {exc}") from exc
+    _out.print(
+        f"{len(result.flagged)} of {len(result.sentences)} Arabic sentences flagged "
+        f"(threshold {threshold:g}); report: {escape(str(target))}",
+        highlight=False,
+    )
 
 
 @channel_app.command("check")

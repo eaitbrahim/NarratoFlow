@@ -28,8 +28,8 @@ _ARABIC = re.compile("[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe7
 _TOKEN = re.compile(r"\S+")
 _OPEN_CATEGORIES = ("Ps", "Pi")
 # The author's Qur'an brackets as they open and close in Arabic text.
-_ORNATE_OPEN = "\ufd3f"
-_ORNATE_CLOSE = "\ufd3e"
+ORNATE_OPEN = "\ufd3f"
+ORNATE_CLOSE = "\ufd3e"
 _MAX_BRACKET_EXTRA = 2  # author words inside the brackets a hit may absorb
 _CLOSE_CATEGORIES = ("Pe", "Pf")
 
@@ -277,8 +277,8 @@ def _extend_to_brackets(text: str, hits: list[VerseHit]) -> list[VerseHit]:
     """
     out: list[VerseHit] = []
     for hit in hits:
-        opening = text.rfind(_ORNATE_OPEN, 0, hit.start)
-        closing = text.find(_ORNATE_CLOSE, hit.end)
+        opening = text.rfind(ORNATE_OPEN, 0, hit.start)
+        closing = text.find(ORNATE_CLOSE, hit.end)
         if opening < 0 or closing < 0:
             out.append(hit)
             continue
@@ -287,7 +287,7 @@ def _extend_to_brackets(text: str, hits: list[VerseHit]) -> list[VerseHit]:
         start = opening + 1 + tokens[0].start()
         end = opening + 1 + tokens[-1].end()
         extra = len(_tokenize(text[start : hit.start])) + len(_tokenize(text[hit.end : end]))
-        lone_pair = _ORNATE_OPEN not in inside and _ORNATE_CLOSE not in inside
+        lone_pair = ORNATE_OPEN not in inside and ORNATE_CLOSE not in inside
         alone = all(o is hit or o.end <= start or o.start >= end for o in hits)
         if lone_pair and alone and 0 < extra <= _MAX_BRACKET_EXTRA:
             ref = hit.ref.model_copy(update={"certain": False})

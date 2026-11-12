@@ -162,3 +162,8 @@ def test_arabic_count_ending_in_one_or_two_before_scale(token: str, expected: st
 def test_mixed_digit_scripts_rejected(token: str) -> None:
     assert spell_number(token, EN) is None
     assert spell_number(token, AR) is None
+
+
+def test_years_false_reads_cardinal() -> None:
+    assert spell_number("1453", EN, years=False) == "one thousand four hundred and fifty-three"
+    assert spell_number("1453", EN) == "fourteen fifty-three"

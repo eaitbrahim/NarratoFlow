@@ -20,6 +20,7 @@ uv run narratoflow library keys channel.toml           # reusable sketch idea ke
 uv run narratoflow library icons light   # bundled icon keys, e.g. for sketch resolve --swap on a quarantined scene
 uv run narratoflow library copy SKETCH_ID other.toml   # reuse a sketch in another channel
 uv run narratoflow check-input script.txt --language ar   # reject corrupt PDF copy-paste
+uv run narratoflow check-dialect script.txt            # flag dialect sentences (needs the arabic extra; see Dialect check)
 
 uv run python scripts/fetch_quran.py                   # one-time: Tanzil Qur'an text for verse detection
 uv run narratoflow plan script.txt --channel channel.toml   # writes series.json next to the script
@@ -96,6 +97,9 @@ network; it does not change `series.json`.
 text, shows the estimated cost and asks before spending (`--yes` skips the question), and counts the
 spend against the part's limit. Without it `publish` only notes that no content review was run;
 a part edited after its review gets a "stale" warning. Run `review` again after editing.
+The review sees the `[spoken]` line, which is exactly what the voice says: numbers, signs,
+currency and pronunciation entries already applied. After upgrading, parts with numbers or
+pronunciation entries show the stale-review WARN once, until `narratoflow review` is run again.
 
 The platform rules live in `src/narratoflow/data/platform_rules.toml` (copy it to
 `$NARRATOFLOW_DATA_DIR/platform_rules.toml` to override). Updating it is a manual task: every value
@@ -152,12 +156,22 @@ this reduction are rejected. Numbers are spoken as words while captions keep the
   five"), and ordinals such as "22nd" are spelled as ordinals ("twenty-second");
 - decimals read the fraction digit by digit after "point" in English, or after the Arabic word for
   "comma";
+- a `-` or `+` touching the number is read as "minus" or "plus" ("-5" is "minus five"; Arabic
+  "-٥" is "سالب خمسة"); a `%` or `٪` after it is "percent"
+  ("50%" is "fifty percent"; Arabic "٥٠٪" is "خمسون بالمائة");
+- `$`, `€` and `£` before or after a number name the unit after it ("$5" is "five dollars",
+  "$1.50" is "one dollar and fifty cents"; Arabic "$5" is "خمسة دولارات"). These
+  amounts never use the year reading ("$1453" is "one thousand four hundred and fifty-three
+  dollars"). With a spaced sign ("- 5"), two currencies, two signs or a currency and a percent, the
+  symbols are not read; the number is still spelled out;
 - anything else (larger numbers, mixed digit scripts, numbers joined to letters such as `1453م`,
   `٨٥٧هـ` or `1990s`) is left as digits for the voice to read.
 
 Changing an entry re-voices the scenes it touches. After upgrading to this version, scenes that
 contain numbers are voiced again once, and a paid voice bills them again; scenes without numbers
 are reused. The spend can then differ from an estimate approved before the upgrade.
+Scenes containing a sign, currency or percent next to a number are likewise voiced again once after
+upgrading, and a paid voice bills them once more.
 
 ### Alignment
 
@@ -185,12 +199,29 @@ System requirement: `ffmpeg` on `PATH`.
 - `approve` is idempotent.
 - `sketch generate` keeps attached sketches and pays only for the missing ones.
 - `audio build` reuses each cached scene. After upgrading to the version with spoken numbers,
-  scenes containing numbers are voiced again once and a paid voice bills them again, so the spend
+  scenes containing numbers, signs, currency or percent are voiced again once and a paid voice bills them again, so the spend
   can differ from an estimate approved before the upgrade. Changing a pronunciation entry likewise
   re-voices the scenes it touches.
 - `render` re-renders the selected parts deterministically at no cost (after an error it prints the finished parts; pass `--part` for the others).
 - `review` shows an estimate and asks before spending, unless `--yes` is given.
 - `publish` is free.
+
+## Dialect check
+
+`narratoflow check-dialect` flags Arabic sentences that read as a dialect rather than Modern Standard Arabic, using CAMeL Tools. It is free, separate from `plan`, and it flags, never rejects: it exits 0 even when sentences are flagged.
+
+Install once (NarratoFlow never downloads the 274 MB model data itself). Add `--extra arabic` to the extras you already sync (for example `uv sync --extra arabic --extra tts-edge`); a plain `uv sync --extra arabic` would drop your other extras.
+
+```
+uv sync --extra arabic --extra tts-edge   # your usual extras plus arabic
+uv run camel_data -i dialectid-model26
+```
+
+```
+uv run narratoflow check-dialect script.txt [--threshold 0.5] [--report PATH]
+```
+
+A sentence is flagged when the model's top label is not `MSA` and its probability is at least `--threshold` (default 0.5). Lines with no Arabic letters are never checked, and Qur'anic verses in ﴿…﴾ are skipped (they are classical, not dialect). Labels are CAMeL city or variety codes, for example `CAI` Cairo, `RAB` Rabat, `BEI` Beirut, `DOH` Doha, `TUN` Tunis and `MSA` Modern Standard Arabic. Each flagged sentence prints as `line N: LABEL 0.87 «excerpt»`, followed by a summary. The full report (every Arabic sentence with its label and confidence) is written to `FILE.dialect.json`, or to `--report PATH`. Without the extra or its data, the command exits 1 with one line naming both install steps.
 
 ## Where settings live
 
@@ -198,7 +229,7 @@ System requirement: `ffmpeg` on `PATH`.
 |---|---|---|
 | Secrets, machine paths, log level | environment or `.env` (`Settings`, `NARRATOFLOW_*`) | `*_API_KEY`, `DATA_DIR`, `FFMPEG`, `LOG_LEVEL`, `OLLAMA_URL` |
 | Channel choices | channel TOML (`ChannelConfig`; defaults in code) | style, voice, llm, embed, vision, `spending_limit_usd`, `approval_list`, part lengths, `riwaya`, `diacritizer` |
-| Per-run choices | CLI options | `--part`, `--out`, `--workers`, `--yes`, `--replace` |
+| Per-run choices | CLI options | `--part`, `--out`, `--workers`, `--yes`, `--replace`, `--threshold` (dialect check) |
 | Prices / platform rules | `data/prices.toml` / `data/platform_rules.toml`, each overridable in `NARRATOFLOW_DATA_DIR` | |
 | Output contract | code constants pinned by Plans 4-6 | 1080x1920, 30 fps, -14 LUFS |
 

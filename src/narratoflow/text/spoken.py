@@ -7,6 +7,7 @@ so word timings can be merged back onto the caption tokens.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -111,21 +112,23 @@ def spoken_text(text: str, language: Language, lexicon: Lexicon) -> SpokenText:
     word); otherwise a number the speller handles is spelled out; otherwise the
     token is unchanged.
     """
-    words: list[str] = []
     groups: list[int] = []
-    for token in tokens(text):
+
+    def rewrite(match: re.Match[str]) -> str:
+        token = match.group()
         prefix, core, suffix = _split_edges(token)
         replacement = lexicon.lookup(token)
         if replacement is None and core:
             replacement = spell_number(core, language)
         if replacement is None:
-            words.append(token)
             groups.append(1)
-            continue
+            return token
         spoken = _attach(replacement.split(), prefix, suffix)
-        words.extend(spoken)
         groups.append(len(spoken))
-    return SpokenText(" ".join(words), tuple(groups))
+        return " ".join(spoken)
+
+    # Only the tokens that change are rewritten: every separator survives as written.
+    return SpokenText(re.sub(r"\S+", rewrite, text), tuple(groups))
 
 
 def channel_lexicon(channel: ChannelConfig) -> Lexicon:

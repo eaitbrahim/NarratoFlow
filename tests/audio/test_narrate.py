@@ -17,6 +17,7 @@ from narratoflow.audio.io import SAMPLE_RATE, Samples, trim_silence
 from narratoflow.audio.narrate import (
     ADAPTER_VERSION,
     ALIGN_EXTRA_WARNING,
+    STAGE,
     NarrationResult,
     narrate_part,
     uncached_chars,
@@ -829,3 +830,21 @@ def test_estimated_timings_use_spoken_words(cache: StageCache) -> None:
     assert result.clips["s1"].timing_source is TimingSource.ESTIMATED
     assert [w.text for w in words] == ["In", "1453", "it", "fell"]
     assert words[1].end_ms - words[1].start_ms > words[0].end_ms - words[0].start_ms
+
+
+def test_cache_key_unchanged_without_numbers(cache: StageCache) -> None:
+    raw = "The city fell that spring. \n\n"
+    voice = FakeVoice()
+    part = make_part(narration("s1", raw))
+    choice = VoiceChoice(voice, "v")
+    run(part, [choice], cache)
+    assert [r.text for r in voice.requests] == [raw]
+    old_key = cache_key(
+        STAGE,
+        ADAPTER_VERSION,
+        {"provider": "paid", "model": "m1", "voice_id": "v", "text": raw},
+    )
+    assert cache.get(STAGE, old_key, ".audio") is not None
+    assert (
+        uncached_chars(part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY) == 0
+    )

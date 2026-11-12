@@ -124,3 +124,13 @@ def test_lexicon_rejects_symbol_keys_but_allows_punctuation() -> None:
         Lexicon.from_entries({"C++": "SECRETPHRASE"})
     assert "SECRETPHRASE" not in str(exc.value)
     assert Lexicon.from_entries({"COVID-19": "covid nineteen"}).lookup("covid19") is not None
+
+
+def test_unchanged_text_is_identical() -> None:
+    raw = "The city fell that spring. \n\n"
+    result = spoken_text(raw, EN, Lexicon.EMPTY)
+    assert result.text == raw
+    assert result.groups == (1,) * 5
+    changed = spoken_text("In  1453\n\nit fell. ", EN, Lexicon.EMPTY)
+    assert changed.text == "In  fourteen fifty-three\n\nit fell. "
+    assert changed.groups == (1, 2, 1, 1)

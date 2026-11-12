@@ -121,14 +121,20 @@ keeps the word as written:
 ```toml
 [pronunciation]
 "NASA" = "nasa"
-"Khadija" = "Khadeeja"
+"خديجة" = "خديجه"
 ```
 
 Keys are single words and match ignoring tashkeel, case and punctuation, so an Arabic name matches
-with or without its vowel marks. Numbers are spoken as words ("1453" is voiced "fourteen
-fifty-three") while captions keep the digits. In English a bare four-digit number from 1100 to 1999
-is read as a year (pairs: "nineteen oh five"); any other number is read as a cardinal. Changing an
-entry re-voices only the scenes that use it.
+with or without its vowel marks. Numbers are spoken as words while captions keep the digits:
+
+- plain integers up to 999,999,999,999 (thousands separators allowed) are spelled as cardinals;
+- in English, a bare four-digit number from 1100 to 1999 is read as a year ("1905" is "nineteen oh
+  five"), and ordinals such as "22nd" are spelled as ordinals ("twenty-second");
+- decimals read the fraction digit by digit after "point" in English, or after the Arabic word for
+  "comma";
+- anything else (larger numbers, mixed digit scripts) is left as digits for the voice to read.
+
+Changing an entry re-voices only the scenes that use it.
 
 ### Alignment
 

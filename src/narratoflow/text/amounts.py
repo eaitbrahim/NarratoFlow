@@ -109,7 +109,7 @@ def spell_amount(
     """`(remaining_prefix, phrase, remaining_suffix)` or None.
 
     None when no sign, currency or percent touches `core`, when a token has two
-    currencies or both a currency and a percent, or when `core` is not a plain
+    currencies, two signs, or both a currency and a percent, or when `core` is not a plain
     number the speller handles.
     """
     sign: str | None = None
@@ -134,7 +134,7 @@ def spell_amount(
         tail = tail[1:]
     if sign is None and currency is None and not percent:
         return None
-    if (rest and rest[-1] in _CURRENCIES) or (
+    if (rest and (rest[-1] in _CURRENCIES or rest[-1] in _SIGNS)) or (
         tail and (tail[0] in _CURRENCIES or tail[0] in _PERCENTS)
     ):
         return None  # two currencies, or a currency with a percent

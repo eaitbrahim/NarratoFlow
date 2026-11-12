@@ -4,7 +4,14 @@ import pytest
 
 from narratoflow.channels.config import load_channel
 from narratoflow.models import Language
-from narratoflow.text.spoken import Lexicon, SpokenText, channel_lexicon, spoken_text
+from narratoflow.text.amounts import spell_amount
+from narratoflow.text.spoken import (
+    Lexicon,
+    SpokenText,
+    _split_edges,
+    channel_lexicon,
+    spoken_text,
+)
 
 EN = Language.ENGLISH
 AR = Language.ARABIC
@@ -201,6 +208,19 @@ def test_plain_text_unchanged_by_amounts() -> None:
         spoken_text("In 1453, it fell.", EN, Lexicon.EMPTY).text
         == "In fourteen fifty-three, it fell."
     )
+    for sample in (
+        "hello world.",
+        "In 1453, Constantinople fell.",
+        '("22nd")',
+        "(1453)",
+        "... 5",
+        "5\u200b",
+        "COVID-19",
+        "1453,",
+    ):
+        for token in sample.split():
+            prefix, core, suffix = _split_edges(token)
+            assert spell_amount(prefix, core, suffix, EN) is None
     result = spoken_text("a  1453\tb", EN, Lexicon.EMPTY)
     assert result.text == "a  fourteen fifty-three\tb"
     assert result.groups == (1, 2, 1)

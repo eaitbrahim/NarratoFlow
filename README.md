@@ -158,8 +158,8 @@ this reduction are rejected. Numbers are spoken as words while captions keep the
 - `$`, `€` and `£` before or after a number name the unit after it ("$5" is "five dollars",
   "$1.50" is "one dollar and fifty cents"; Arabic "$5" is "خمسة دولارات"). These
   amounts never use the year reading ("$1453" is "one thousand four hundred and fifty-three
-  dollars"). A spaced sign ("- 5"), or a token with two currencies or a currency and a percent, is
-  left as written;
+  dollars"). With a spaced sign ("- 5"), two currencies, two signs or a currency and a percent, the
+  symbols are not read; the number is still spelled out;
 - anything else (larger numbers, mixed digit scripts, numbers joined to letters such as `1453م`,
   `٨٥٧هـ` or `1990s`) is left as digits for the voice to read.
 

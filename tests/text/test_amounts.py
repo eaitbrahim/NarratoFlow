@@ -80,6 +80,8 @@ def test_arabic(prefix: str, core: str, suffix: str, expected: str) -> None:
         ("$", "abc", ""),
         ("- ", "5", ""),
         ("-", "5th", ""),
+        ("--", "5", ""),
+        ("-$-", "5", ""),
     ],
 )
 def test_not_an_amount(prefix: str, core: str, suffix: str) -> None:

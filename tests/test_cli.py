@@ -1830,7 +1830,9 @@ def test_check_dialect_refuses_report_equal_to_input(
     script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
     link = tmp_path / "alias.json"
     link.symlink_to(script)
-    for report in (script, link):
+    hard = tmp_path / "hard.json"
+    hard.hardlink_to(script)
+    for report in (script, link, hard):
         code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(report))
         err = capsys.readouterr().err
         assert code == 1
@@ -1863,3 +1865,17 @@ def test_check_dialect_unwritable_report_fails_before_loading(
         assert "--report PATH" in capsys.readouterr().err
     finally:
         locked.chmod(0o700)
+
+
+def test_check_dialect_directory_report_fails_before_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _never_load)
+    monkeypatch.setenv("COLUMNS", "300")
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    folder = tmp_path / "out"
+    folder.mkdir()
+    code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(folder))
+    assert code == 1
+    assert "--report PATH" in capsys.readouterr().err

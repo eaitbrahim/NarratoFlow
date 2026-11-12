@@ -102,10 +102,11 @@ def check_input(file: Path, language: Language = Language.ARABIC) -> None:
 
 def _require_writable_report(source: Path, target: Path) -> None:
     """Fail before the slow model load when the report would clobber or miss its target."""
-    if target.resolve() == source.resolve():
+    same = target.exists() and os.path.samefile(target, source)  # also catches hard links
+    if same or target.resolve() == source.resolve():
         raise ReportWriteError(f"the report path is the input file {source}; pass --report PATH")
     parent = target.parent
-    writable = os.access(parent, os.W_OK | os.X_OK) if parent.is_dir() else False
+    writable = not target.is_dir() and parent.is_dir() and os.access(parent, os.W_OK | os.X_OK)
     if writable and target.exists():
         writable = os.access(target, os.W_OK)
     if not writable:

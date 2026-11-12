@@ -21,6 +21,7 @@ from narratoflow.errors import (
     NarratoFlowError,
     PlanningError,
     PublishCheckFailedError,
+    ReportWriteError,
 )
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import SketchStatus
@@ -109,6 +110,8 @@ def check_dialect(
     ] = None,
 ) -> None:
     """Flag sentences that read as dialect, not MSA. Flags only; never rejects."""
+    if not 0 < threshold <= 1:
+        raise typer.BadParameter("--threshold must be in (0, 1]", param_hint="--threshold")
     try:
         text = file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -126,7 +129,7 @@ def check_dialect(
     try:
         target.write_text(result.model_dump_json(indent=2), encoding="utf-8")
     except OSError as exc:
-        raise CorruptInputError(f"cannot write {target}: {exc}") from exc
+        raise ReportWriteError(f"cannot write {target}: {exc}") from exc
     _out.print(
         f"{len(result.flagged)} of {len(result.sentences)} Arabic sentences flagged "
         f"(threshold {threshold:g}); report: {escape(str(target))}",

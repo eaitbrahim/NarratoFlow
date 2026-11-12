@@ -138,6 +138,10 @@ class DialectUnavailableError(NarratoFlowError):
     """The CAMeL Tools dialect model or its data is not installed or cannot load."""
 
 
+class ReportWriteError(NarratoFlowError):
+    """A report file could not be written."""
+
+
 class RenderError(NarratoFlowError):
     """Rendering failed: missing tools, bad inputs or an ffmpeg failure."""
 

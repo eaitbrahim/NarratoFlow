@@ -1,3 +1,4 @@
+import importlib
 import sys
 from collections.abc import Sequence
 from types import ModuleType, SimpleNamespace
@@ -73,6 +74,11 @@ def test_bad_threshold_rejected(threshold: float) -> None:
         check_dialect(AR, FakeModel([]), threshold=threshold, model_name="m")
 
 
+def test_wrong_prediction_count_is_provider_error() -> None:
+    with pytest.raises(ProviderError):
+        check_dialect(f"{AR}.\n{AR}.", FakeModel([("MSA", 0.9)]), threshold=0.5, model_name="m")
+
+
 def test_report_round_trips() -> None:
     r = check_dialect(AR, FakeModel([("CAI", 0.7)]), threshold=0.5, model_name="m")
     assert DialectReport.model_validate_json(r.model_dump_json()) == r
@@ -104,10 +110,14 @@ def test_camel_adapter_maps_didpred(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_camel_import_error_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(sys.modules, "camel_tools.dialectid", None)
+    def fail(name: str) -> object:
+        raise ImportError("SECRET-detail")
+
+    monkeypatch.setattr(importlib, "import_module", fail)
     with pytest.raises(DialectUnavailableError) as info:
         load_camel_model()
     assert "camel_data -i dialectid-model26" in str(info.value)
+    assert "SECRET-detail" not in str(info.value)
 
 
 def test_camel_load_error_hides_message(monkeypatch: pytest.MonkeyPatch) -> None:

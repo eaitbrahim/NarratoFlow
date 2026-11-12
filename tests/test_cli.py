@@ -33,6 +33,7 @@ from narratoflow.models import (
 )
 from narratoflow.settings import Settings, get_settings
 from narratoflow.sketching.generate import GenerationInterruptedError, GenerationResult
+from narratoflow.text.dialect import INSTALL_HINT
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons
 
 runner = CliRunner()
@@ -1786,16 +1787,31 @@ def test_check_dialect_without_extra_names_install_steps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def boom() -> object:
-        raise DialectUnavailableError(
-            "camel_tools failed to load (ImportError); "
-            "install with: uv sync --extra arabic && uv run camel_data -i dialectid-model26"
-        )
+        raise DialectUnavailableError(f"camel_tools failed to load (ImportError); {INSTALL_HINT}")
 
     monkeypatch.setattr(cli, "load_camel_model", boom)
     script = tmp_path / "script.txt"
     script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    monkeypatch.setenv("COLUMNS", "300")
     code = run_main(monkeypatch, "check-dialect", str(script))
     err = capsys.readouterr().err
     assert code == 1
-    assert "camel_data -i dialectid-model26" in " ".join(err.split())  # rich wraps at 80 cols
+    assert "uv sync --extra arabic" in err
+    assert "camel_data -i dialectid-model26" in err
     assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1
+
+
+@pytest.mark.parametrize("threshold", ["0", "-1", "2"])
+def test_check_dialect_bad_threshold_fails_before_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threshold: str
+) -> None:
+    def never() -> object:
+        raise AssertionError("model must not be loaded")
+
+    monkeypatch.setattr(cli, "load_camel_model", never)
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["check-dialect", str(script), "--threshold", threshold])
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output

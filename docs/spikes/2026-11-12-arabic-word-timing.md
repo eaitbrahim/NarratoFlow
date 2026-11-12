@@ -92,12 +92,16 @@ Reading:
 
 ## Recommendation
 
-Rule as written (absolute drift): native mapping 11 of 11, median start drift 115 ms (limit 80), p95 206 ms (limit 200). The absolute rule is not met.
+Decision rule (binding, as written in the plan): absolute start drift must be within median 80 ms and p95 200 ms. Measured: median 115 ms, p95 206 ms. The binding rule is NOT met. By the rule, the answer is "CTC first for Arabic".
 
-Because the drift is signed and constant, the decision uses the residual after the pooled offset: the sign is consistent across all sentences and the residual after the pooled signed median is median 24 ms, p95 91 ms, which is within 80 / 200.
+The signed data adds a caveat the rule does not capture: the drift is a constant offset of about 115 ms (all 92 word starts earlier in edge than in CTC), and after subtracting it the residual is median 24 ms, p95 91 ms. The origin of the offset is unknown. Candidates: an edge boundary offset, a CTC frame or blank-token bias, or MP3 decoder priming delay in `decode(speech.audio)`. The same open question applies to the last-word end gap (edge ends it about 860 ms before CTC). Because CTC is a reference and not ground truth, the data cannot say which side is right.
 
-Recommendation: keep native edge boundaries first, apply a fixed offset of +115 ms to edge word starts (shifting them later, to match CTC), and handle the last-word end (edge ends it about 860 ms before CTC; decide by ear or waveform which is right, and clamp or keep the native end accordingly). CTC stays the fallback.
+Recommendation: do not change production yet. The first step of the follow-up is to establish onset ground truth on a few words (waveform inspection or by ear) and to measure the decoder priming delay. Then choose between:
+- (a) shift native edge starts by the measured offset, in the direction the ground truth shows, keeping native edge first; or
+- (b) CTC first.
 
-Follow-up issue (controller files it):
-- Title: Shift edge-tts Arabic word starts by a fixed offset and fix the last-word end
-- Body: Spike #13 (docs/spikes/2026-11-12-arabic-word-timing.md) measured edge-tts ar-SA-HamedNeural word starts against CTC on 92 words: edge is earlier by a constant 115 ms (all 92 negative, same sign in all 11 sentences, std 45 ms); after subtracting it the start drift is median 24 ms, p95 91 ms. Apply a fixed +115 ms shift to native edge word starts in the Arabic path (keep native first, CTC as fallback). Also, the last word's end differs by about 860 ms (edge ends earlier than CTC) in every sentence: verify by listening or waveform which end is right and handle it. CTC is a reference, not ground truth, so confirm the offset on a few more voices and sentences, and on digits, before hard-coding it.
+The same ground-truth check decides how to handle the last-word end gap.
+
+Follow-up issue (tracked as #133):
+- Title: Arabic word timings: establish onset ground truth, then fix the ~115 ms edge/CTC offset and last-word end
+- Body: Spike #13 (docs/spikes/2026-11-12-arabic-word-timing.md) measured edge-tts ar-SA-HamedNeural word starts against CTC on 92 words. The binding absolute-drift rule is not met (median 115 ms vs 80, p95 206 ms vs 200), so by the rule CTC goes first for Arabic. The signed data shows a constant offset of about 115 ms (all 92 negative, same sign in all 11 sentences, std 45 ms) with residual median 24 ms, p95 91 ms; the origin is unknown (edge boundary offset, CTC frame/blank bias, or MP3 decoder priming in `decode(speech.audio)`). The last word's end also differs by about 860 ms. Step 1: establish onset ground truth on a few words (waveform or by ear) and measure the decoder priming delay. Step 2: choose (a) shift native edge starts by the measured offset in the right direction, keeping native first, or (b) CTC first; decide the last-word end the same way. Confirm on more voices, sentences and digits before hard-coding anything.

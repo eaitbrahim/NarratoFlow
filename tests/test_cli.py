@@ -1,6 +1,8 @@
+import json
 import os
 import shutil
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -14,7 +16,7 @@ from narratoflow import cli
 from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, PartAudio
 from narratoflow.audio.timeline import PartTimeline, SceneTiming, TimingSource, VoiceUsed
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint
-from narratoflow.errors import BudgetExceededError
+from narratoflow.errors import BudgetExceededError, DialectUnavailableError
 from narratoflow.library.repository import default_library
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchStatus
 from narratoflow.models import (
@@ -1756,3 +1758,44 @@ def test_library_icons_no_match_hint(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert result.exit_code == 0, result.output
     assert "no bundled icon matches 'zzz'" in result.output
     assert "--text-card" in result.output
+
+
+class _FakeDialectModel:
+    def predict(self, sentences: Sequence[str]) -> list[tuple[str, float]]:
+        return [("CAI", 0.87) if i == 0 else ("MSA", 0.9) for i, _ in enumerate(sentences)]
+
+
+def test_check_dialect_prints_flagged_and_writes_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _FakeDialectModel)
+    script = tmp_path / "script.txt"
+    first = "\u0643\u062a\u0628 \u0627\u0644\u0637\u0627\u0644\u0628."
+    script.write_text(f"Hello.\n{first}\n\u0643\u062a\u0628.\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["check-dialect", str(script)])
+    assert result.exit_code == 0, result.output
+    assert f"line 2: CAI 0.87 \u00ab{first}\u00bb" in result.output
+    report_path = tmp_path / "script.txt.dialect.json"
+    assert "1 of 2 Arabic sentences flagged (threshold 0.5); report:" in result.output
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    assert data["threshold"] == 0.5
+    assert [s["flagged"] for s in data["sentences"]] == [True, False]
+
+
+def test_check_dialect_without_extra_names_install_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom() -> object:
+        raise DialectUnavailableError(
+            "camel_tools failed to load (ImportError); "
+            "install with: uv sync --extra arabic && uv run camel_data -i dialectid-model26"
+        )
+
+    monkeypatch.setattr(cli, "load_camel_model", boom)
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    code = run_main(monkeypatch, "check-dialect", str(script))
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "camel_data -i dialectid-model26" in " ".join(err.split())  # rich wraps at 80 cols
+    assert "Traceback" not in err

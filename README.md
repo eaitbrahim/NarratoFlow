@@ -20,6 +20,7 @@ uv run narratoflow library keys channel.toml           # reusable sketch idea ke
 uv run narratoflow library icons light   # bundled icon keys, e.g. for sketch resolve --swap on a quarantined scene
 uv run narratoflow library copy SKETCH_ID other.toml   # reuse a sketch in another channel
 uv run narratoflow check-input script.txt --language ar   # reject corrupt PDF copy-paste
+uv run narratoflow check-dialect script.txt            # flag dialect sentences (needs the arabic extra; see Dialect check)
 
 uv run python scripts/fetch_quran.py                   # one-time: Tanzil Qur'an text for verse detection
 uv run narratoflow plan script.txt --channel channel.toml   # writes series.json next to the script
@@ -205,13 +206,30 @@ System requirement: `ffmpeg` on `PATH`.
 - `review` shows an estimate and asks before spending, unless `--yes` is given.
 - `publish` is free.
 
+## Dialect check
+
+`narratoflow check-dialect` flags Arabic sentences that read as a dialect rather than Modern Standard Arabic, using CAMeL Tools. It is free, separate from `plan`, and it flags, never rejects: it exits 0 even when sentences are flagged.
+
+Install once (NarratoFlow never downloads the 274 MB model data itself):
+
+```
+uv sync --extra arabic
+uv run camel_data -i dialectid-model26
+```
+
+```
+uv run narratoflow check-dialect script.txt [--threshold 0.5] [--report PATH]
+```
+
+A sentence is flagged when the model's top label is not `MSA` and its probability is at least `--threshold` (default 0.5). Lines with no Arabic letters are never checked. Each flagged sentence prints as `line N: LABEL 0.87 «excerpt»`, followed by a summary. The full report (every Arabic sentence with its label and confidence) is written to `FILE.dialect.json`, or to `--report PATH`. Without the extra or its data, the command exits 1 with one line naming both install steps.
+
 ## Where settings live
 
 | Kind | Lives in | Examples |
 |---|---|---|
 | Secrets, machine paths, log level | environment or `.env` (`Settings`, `NARRATOFLOW_*`) | `*_API_KEY`, `DATA_DIR`, `FFMPEG`, `LOG_LEVEL`, `OLLAMA_URL` |
 | Channel choices | channel TOML (`ChannelConfig`; defaults in code) | style, voice, llm, embed, vision, `spending_limit_usd`, `approval_list`, part lengths, `riwaya`, `diacritizer` |
-| Per-run choices | CLI options | `--part`, `--out`, `--workers`, `--yes`, `--replace` |
+| Per-run choices | CLI options | `--part`, `--out`, `--workers`, `--yes`, `--replace`, `--threshold` (dialect check) |
 | Prices / platform rules | `data/prices.toml` / `data/platform_rules.toml`, each overridable in `NARRATOFLOW_DATA_DIR` | |
 | Output contract | code constants pinned by Plans 4-6 | 1080x1920, 30 fps, -14 LUFS |
 

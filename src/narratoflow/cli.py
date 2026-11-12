@@ -56,6 +56,8 @@ from narratoflow.sketching.resolve import (
     use_text_card,
 )
 from narratoflow.sketching.vision import estimate_check_cost
+from narratoflow.text.dialect import check_dialect as run_dialect_check
+from narratoflow.text.dialect import load_camel_model
 from narratoflow.text.quality import require_clean
 from narratoflow.visuals.bundled import default_bundled_icons
 
@@ -94,6 +96,42 @@ def check_input(file: Path, language: Language = Language.ARABIC) -> None:
         raise CorruptInputError(f"cannot read {file}: {exc}") from exc
     require_clean(text, language)
     _out.print("[green]OK[/green]")
+
+
+@app.command("check-dialect")
+def check_dialect(
+    file: Path,
+    threshold: Annotated[
+        float, typer.Option(help="Flag non-MSA sentences at or above this.")
+    ] = 0.5,
+    report: Annotated[
+        Path | None, typer.Option(help="Report path (default FILE.dialect.json).")
+    ] = None,
+) -> None:
+    """Flag sentences that read as dialect, not MSA. Flags only; never rejects."""
+    try:
+        text = file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CorruptInputError(f"cannot read {file}: {exc}") from exc
+    result = run_dialect_check(
+        text, load_camel_model(), threshold=threshold, model_name="camel-tools dialectid-model26"
+    )
+    for s in result.flagged:
+        excerpt = escape(s.text[:40])
+        _out.print(
+            f"line {s.line}: {escape(s.label)} {s.confidence:.2f} \u00ab{excerpt}\u00bb",
+            highlight=False,
+        )
+    target = report if report is not None else file.with_name(file.name + ".dialect.json")
+    try:
+        target.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise CorruptInputError(f"cannot write {target}: {exc}") from exc
+    _out.print(
+        f"{len(result.flagged)} of {len(result.sentences)} Arabic sentences flagged "
+        f"(threshold {threshold:g}); report: {escape(str(target))}",
+        highlight=False,
+    )
 
 
 @channel_app.command("check")

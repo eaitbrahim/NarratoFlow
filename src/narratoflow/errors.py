@@ -134,6 +134,10 @@ class AlignerUnavailableError(AudioError):
     """The forced aligner is not installed or cannot run."""
 
 
+class DialectUnavailableError(NarratoFlowError):
+    """The CAMeL Tools dialect model or its data is not installed or cannot load."""
+
+
 class RenderError(NarratoFlowError):
     """Rendering failed: missing tools, bad inputs or an ffmpeg failure."""
 

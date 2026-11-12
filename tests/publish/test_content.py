@@ -910,28 +910,43 @@ def test_review_hash_unchanged_without_spoken_changes() -> None:
     assert digest == "390596dce22374775192a13aa2a271537c8f3733443db707daede220845938d1"
 
 
-def test_number_edit_makes_review_stale() -> None:
-    rules = _rules()
-    part = _en_part("In 1453 the city fell")
-    review = ContentReview(
-        rules_version=rules.file.version,
+def _stored_review(part: Part, lexicon: Lexicon) -> ContentReview:
+    return ContentReview(
+        rules_version=_rules().file.version,
         provider=PROVIDER,
         model=MODEL,
         reviewed_at=NOW,
         text_sha256=review_sha256(
-            part, series_title=TITLE, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+            part, series_title=TITLE, language=Language.ENGLISH, lexicon=lexicon
         ),
         findings=[],
     )
-    reviewed = part.model_copy(update={"content_review": review})
-    assert _severities(
-        content_checks(
-            reviewed, rules, series_title=TITLE, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
-        )
-    ) == [Severity.PASS]
-    edited = _en_part("In 1454 the city fell").model_copy(update={"content_review": review})
-    results = content_checks(
-        edited, rules, series_title=TITLE, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+
+
+def _en_results(part: Part, review: ContentReview, lexicon: Lexicon) -> list[CheckResult]:
+    stored = part.model_copy(update={"content_review": review})
+    return content_checks(
+        stored, _rules(), series_title=TITLE, language=Language.ENGLISH, lexicon=lexicon
     )
+
+
+def test_number_edit_makes_review_stale() -> None:
+    # source_text stays fixed: only the spoken line can change the hash
+    source = "The city fell long ago"
+    part = _en_part(source, "In 1453 the city fell")
+    review = _stored_review(part, Lexicon.EMPTY)
+    assert _severities(_en_results(part, review, Lexicon.EMPTY)) == [Severity.PASS]
+    edited = _en_part(source, "In 1454 the city fell")
+    results = _en_results(edited, review, Lexicon.EMPTY)
+    assert _severities(results) == [Severity.WARN]
+    assert "stale" in results[0].reason
+
+
+def test_lexicon_change_makes_review_stale() -> None:
+    part = _en_part("WHO said")
+    review = _stored_review(part, Lexicon.EMPTY)
+    assert _severities(_en_results(part, review, Lexicon.EMPTY)) == [Severity.PASS]
+    lexicon = Lexicon.from_entries({"WHO": "the World Health Organization"})
+    results = _en_results(part, review, lexicon)
     assert _severities(results) == [Severity.WARN]
     assert "stale" in results[0].reason

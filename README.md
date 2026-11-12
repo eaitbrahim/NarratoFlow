@@ -67,6 +67,7 @@ text; style matches the reference sketch). Set it in the channel TOML with
 per part, into `audio/` next to the series file unless `--out` is given. It refuses an unapproved
 series, a changed narration text or a missing reciter before any spend, keeps finished parts when a
 later one fails, and counts its spend against the same per-part limit as `sketch generate`.
+The marker SFX duck 8 dB under narration (10 ms frames, 30 ms attack, 250 ms release).
 Nothing but the scenes' narration text is ever spoken.
 
 `render` turns each part's FLAC and timeline into `part-NN.mp4` (1080x1920, 30 fps, H.264 High

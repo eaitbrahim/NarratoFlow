@@ -48,4 +48,4 @@ def duck(sfx: Samples, voice: Samples) -> Samples:
     gain = duck_gain_db(voice)
     if not np.any(gain < 0.0):
         return sfx
-    return (sfx * (10 ** (gain / 20))).astype(np.float32)
+    return (sfx * (10 ** (gain / 20))).astype(sfx.dtype)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -70,3 +72,10 @@ def test_attack_is_fast() -> None:
 def test_length_mismatch_raises() -> None:
     with pytest.raises(ValueError, match="samples"):
         duck(np.zeros(10, dtype=np.float32), np.zeros(11, dtype=np.float32))
+
+
+def test_float64_sfx_keeps_dtype_on_both_paths() -> None:
+    voice = _tone(500)
+    sfx: Any = _noise(len(voice)).astype(np.float64)
+    assert duck(sfx, voice).dtype == np.float64
+    assert duck(sfx, np.zeros(len(voice), dtype=np.float32)).dtype == np.float64

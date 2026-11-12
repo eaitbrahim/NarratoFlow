@@ -799,3 +799,22 @@ def test_bundled_icons_count_toward_the_embed_threshold(
 def test_ideas_system_names_bundled_icons() -> None:
     assert "bundled icons" in IDEAS_SYSTEM
     assert "|generic" in IDEAS_SYSTEM
+
+
+def test_part_estimate_reflects_pronunciation_lexicon(
+    tmp_path: Path, channel: ChannelConfig, settings: Settings, prices: PriceTable
+) -> None:
+    settings = settings.model_copy(update={"voice_api_key": SecretStr("voice-key")})
+    _seed(settings, channel, SCRIPTED_IDEA)
+    voice = channel.voice.model_copy(
+        update={"provider": "elevenlabs", "model": "eleven_multilingual_v2"}
+    )
+    base = channel.model_copy(update={"language": Language.ENGLISH, "voice": voice})
+    spoken = base.model_copy(update={"pronunciation": {"Constantinople": "kon stan tin no pul"}})
+    script = write_script(tmp_path, "Constantinople fell in 1453.\n")
+
+    def estimate(ch: ChannelConfig) -> Decimal:
+        series = plan_series(script, ch, settings, llm=ScriptedLLM(), prices=prices)
+        return sum((p.est_cost_usd for p in series.parts), Decimal(0))
+
+    assert estimate(spoken) > estimate(base) > 0

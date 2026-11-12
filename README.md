@@ -67,7 +67,9 @@ text; style matches the reference sketch). Set it in the channel TOML with
 per part, into `audio/` next to the series file unless `--out` is given. It refuses an unapproved
 series, a changed narration text or a missing reciter before any spend, keeps finished parts when a
 later one fails, and counts its spend against the same per-part limit as `sketch generate`.
-Nothing but the scenes' narration text is ever spoken.
+The marker SFX duck 8 dB under narration (10 ms frames, 30 ms attack, 250 ms release).
+Only the spoken form of the scenes' narration text is ever voiced: numbers spelled out and the
+channel's pronunciation entries applied (see Pronunciation).
 
 `render` turns each part's FLAC and timeline into `part-NN.mp4` (1080x1920, 30 fps, H.264 High
 yuv420p, AAC 48 kHz) plus `part-NN.render.json` (frames, scenes, fonts and hand licences, warnings),
@@ -113,6 +115,50 @@ installed (`uv sync --extra tts-edge`), otherwise an outage ends the build with 
 narrate part N". A rejected ElevenLabs key (HTTP 401/403) or an unknown voice (HTTP 404) is a
 configuration error: the build stops (finished parts are kept) instead of falling back.
 
+Temporary failures retry inside one voice before any fallback: edge-tts errors and timeouts, and
+ElevenLabs connection failures, HTTP 429 and HTTP 5xx, are tried up to 3 times in all, waiting 1 s
+and then 4 s. A request that may already have been billed (an ElevenLabs read timeout or an unusable
+200 response) is never retried. Piper is local and is not retried. `edge-tts` drives an unofficial,
+undocumented Microsoft endpoint that may break or be rate-limited without notice; the fallback chain
+(for example ElevenLabs, then Piper) is the mitigation, so keep a second voice configured. Worst
+case before a fallback, per part: a hung edge request can take about 9 minutes (3 attempts of up
+to 180 s plus 5 s of waits); an unreachable ElevenLabs about 6 minutes (3 attempts of up to 120 s
+plus 5 s). Every part restarts at the primary voice, so with edge hanging a 10-part series waits
+about 90 minutes before its fallbacks.
+
+### Pronunciation
+
+A channel's `[pronunciation]` table tells the voice how to say words it gets wrong; the caption
+keeps the word as written:
+
+```toml
+[pronunciation]
+"NASA" = "nasa"
+"سقراط" = "سُقْراط"
+```
+
+Keys are single words. A key with no uppercase letter and no punctuation inside it (`"nasa"`, an
+Arabic name) matches ignoring case, tashkeel and edge punctuation, so an Arabic name matches with
+or without its vowel marks. A key with an uppercase letter or punctuation inside it (`"NASA"`,
+`"WHO"`, `"U.S."`) matches only a word spelled exactly like it (case counts; tashkeel and
+punctuation around the word are ignored), so `"WHO"` leaves "who" alone and `"U.S." = "you ess"`
+leaves "us" alone. A key's own final period is dropped when a lowercase word follows ("the U.S.
+economy" is voiced "the you ess economy") and kept before a capital or at the end, where it may
+end the sentence. If both kinds collide, the exact key wins; two keys that are the same after
+this reduction are rejected. Numbers are spoken as words while captions keep the digits:
+
+- plain integers up to 999,999,999,999 (thousands separators allowed) are spelled as cardinals;
+- in English, a bare four-digit number from 1100 to 1999 is read as a year ("1905" is "nineteen oh
+  five"), and ordinals such as "22nd" are spelled as ordinals ("twenty-second");
+- decimals read the fraction digit by digit after "point" in English, or after the Arabic word for
+  "comma";
+- anything else (larger numbers, mixed digit scripts, numbers joined to letters such as `1453م`,
+  `٨٥٧هـ` or `1990s`) is left as digits for the voice to read.
+
+Changing an entry re-voices the scenes it touches. After upgrading to this version, scenes that
+contain numbers are voiced again once, and a paid voice bills them again; scenes without numbers
+are reused. The spend can then differ from an estimate approved before the upgrade.
+
 ### Alignment
 
 Word timings come from the voice when it reports them. The optional `align` extra
@@ -138,7 +184,10 @@ System requirement: `ffmpeg` on `PATH`.
 - `plan` refuses an existing series file; pass `--replace` to re-plan (this discards its approval, attached sketches and recorded spend).
 - `approve` is idempotent.
 - `sketch generate` keeps attached sketches and pays only for the missing ones.
-- `audio build` reuses each cached scene.
+- `audio build` reuses each cached scene. After upgrading to the version with spoken numbers,
+  scenes containing numbers are voiced again once and a paid voice bills them again, so the spend
+  can differ from an estimate approved before the upgrade. Changing a pronunciation entry likewise
+  re-voices the scenes it touches.
 - `render` re-renders the selected parts deterministically at no cost (after an error it prints the finished parts; pass `--part` for the others).
 - `review` shows an estimate and asks before spending, unless `--yes` is given.
 - `publish` is free.

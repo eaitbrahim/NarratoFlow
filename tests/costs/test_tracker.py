@@ -38,6 +38,7 @@ from narratoflow.llm.base import Usage
 from narratoflow.models import Language, Narration, Part, Scene, SceneKind
 from narratoflow.settings import Settings
 from narratoflow.sketching.vision import estimate_check_cost
+from narratoflow.text.spoken import Lexicon
 
 
 class Out(BaseModel):
@@ -450,7 +451,7 @@ def test_voice_chars_excludes_verses() -> None:
             ),
         ],
     )
-    assert voice_chars(part) == 4 + 7
+    assert voice_chars(part, Language.ENGLISH, Lexicon.EMPTY) == 4 + 7
 
 
 def test_tracked_llm_billed_failure_charges_the_estimate_and_reraises(prices: PriceTable) -> None:
@@ -501,3 +502,16 @@ def test_add_spend_accumulates_across_stages() -> None:
     second.charge(Decimal("0.05"), "voice c/d")
     add_spend(ledger, second)
     assert ledger == {"image a/b": Decimal("0.3"), "voice c/d": Decimal("0.55")}
+
+
+def test_voice_chars_counts_spoken_form() -> None:
+    part = Part(
+        index=1,
+        count=1,
+        hook_text="h",
+        recap_text="r",
+        teaser_text="t",
+        scenes=[Scene(id="n1", narration=Narration(source_text="1453"))],
+    )
+    got = voice_chars(part, Language.ENGLISH, Lexicon.EMPTY)
+    assert got == len("fourteen fifty-three")

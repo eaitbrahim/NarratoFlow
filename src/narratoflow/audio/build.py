@@ -50,6 +50,7 @@ from narratoflow.quran.corpus import QuranCorpus, default_corpus
 from narratoflow.quran.reciters import Reciter, ReciterIndex, default_reciters, select_reciter
 from narratoflow.settings import Settings
 from narratoflow.sketching.generate import require_series_channel
+from narratoflow.text.spoken import Lexicon, channel_lexicon
 from narratoflow.text.tashkeel.verify import SkeletonMismatchError, assert_skeleton_preserved
 from narratoflow.tts import VoiceChoice
 from narratoflow.tts.factory import build_voice_chain
@@ -100,6 +101,7 @@ class _Plan:
     strokes: dict[str, StrokeSet]
     reciter: Reciter | None
     corpus: QuranCorpus | None
+    lexicon: Lexicon
 
 
 def _selected(series: Series, parts: Sequence[int] | None) -> list[Part]:
@@ -243,7 +245,7 @@ def _preflight(
     if needs_library and library is None:
         library = default_library(settings)
     strokes = _load_strokes(selected, library)
-    return _Plan(selected, chain, prices, strokes, reciter, corpus)
+    return _Plan(selected, chain, prices, strokes, reciter, corpus, channel_lexicon(channel))
 
 
 def _resolve_aligner(aligner: Aligner | Literal["auto"] | None) -> tuple[Aligner | None, bool]:
@@ -318,7 +320,9 @@ class _Run:
             verse_warnings.extend(warnings)
         primary = plan.chain[0]
         name, model = primary.provider.name, primary.provider.model
-        chars = uncached_chars(part, primary, self.cache)
+        chars = uncached_chars(
+            part, primary, self.cache, language=self.series.language, lexicon=plan.lexicon
+        )
         estimate = estimate_speech_cost(plan.prices, name, model, chars)
         if estimate > 0:  # verse-only, fully cached or free: nothing to refuse
             tracker.ensure_room(estimate, f"voice {name}/{model} part {part.index}")
@@ -330,6 +334,7 @@ class _Run:
             prices=plan.prices,
             cache=self.cache,
             aligner=self.aligner,
+            lexicon=plan.lexicon,
         )
         strokes = {s.id: plan.strokes[s.id] for s in part.scenes if s.id in plan.strokes}
         mix = mix_part(

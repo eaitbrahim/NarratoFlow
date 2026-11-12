@@ -26,6 +26,7 @@ from narratoflow.errors import (
 from narratoflow.library.keys import parse_idea_key
 from narratoflow.llm.base import LLMClient, StructuredResult, Usage
 from narratoflow.models import Language, Part, SceneKind
+from narratoflow.text.spoken import Lexicon, spoken_text
 
 logger = logging.getLogger(__name__)
 
@@ -198,14 +199,16 @@ def require_generation_prices(channel: ChannelConfig, prices: PriceTable, *, vis
         prices.vision(provider, model)
 
 
-def voice_chars(part: Part) -> int:
-    """Characters a voice speaks for `part`: `tts_text or source_text` of NARRATION scenes.
+def voice_chars(part: Part, language: Language, lexicon: Lexicon) -> int:
+    """Characters a voice speaks for `part`: the spoken form of NARRATION scenes.
+
+    That is `tts_text or source_text` with numbers spelled out and the lexicon applied.
 
     Verse scenes are recited, never voiced, so they count zero; hook, recap and
     teaser texts are never spoken.
     """
     return sum(
-        len(s.narration.tts_text or s.narration.source_text)
+        len(spoken_text(s.narration.tts_text or s.narration.source_text, language, lexicon).text)
         for s in part.scenes
         if s.kind is SceneKind.NARRATION
     )
@@ -216,7 +219,7 @@ def estimate_part_cost(
 ) -> Decimal:
     """What sketch generation may spend on `part`, plus voice characters x per-kchar price.
 
-    `voice_chars` is the part's spoken characters (`voice_chars(part)`: NARRATION
+    `voice_chars` is the part's spoken characters (`voice_chars(part, ...)`: NARRATION
     scenes only, never verses).
 
     Mirrors the pre-call budget checks of sketch generation, so the approval

@@ -52,6 +52,10 @@ class ProviderError(NarratoFlowError):
     """A paid or local provider call failed."""
 
 
+class TransientProviderError(ProviderError):
+    """A provider call failed in a way that is safe to retry (nothing was billed)."""
+
+
 class BilledProviderError(ProviderError):
     """The provider accepted (and bills) the call, but its response was unusable."""
 

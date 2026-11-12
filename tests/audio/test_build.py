@@ -1040,3 +1040,18 @@ def test_audio_build_records_voice_spend(
         "image x/y": Decimal("0.50"),
         "voice paid/m1": cost("alpha beta gamma"),
     }
+
+
+def test_channel_pronunciation_reaches_the_voice_and_the_estimate(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    lexed = channel.model_copy(update={"pronunciation": {"NASA": "en ay es ay"}})
+    s = make_series([narr("s1", "NASA rocks")])
+    voice = FakeVoice()
+    _, result = run(s, lexed, settings, tmp_path, voices=[voice], library=library, pack=pack)
+    assert [r.text for r in voice.requests] == ["en ay es ay rocks"]
+    assert result.spent_usd == cost("en ay es ay rocks")

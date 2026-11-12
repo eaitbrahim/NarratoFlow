@@ -11,7 +11,8 @@ Scenes are laid out in order from t = 0:
 
 The first clip's lead silence is trimmed to 0 ms, and the master's first onset is
 checked against ``FIRST_ONSET_MAX_MS``. No SFX lands in a verse slot (buffers
-included). Every float the mix reports is finite.
+included). The SFX bus is ducked under the voice bus before mastering, and
+``SfxHit.gain_db`` stays the pre-duck gain. Every float the mix reports is finite.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from narratoflow.audio import io as aio
+from narratoflow.audio.duck import duck
 from narratoflow.audio.io import Loudness, Samples, master
 from narratoflow.audio.narrate import NarrationResult
 from narratoflow.audio.recitation import AYAH_GAP_MS, VerseClip
@@ -322,7 +324,7 @@ def mix_part(
     voice_bus = np.zeros(total, dtype=np.float32)
     for clip, slot in zip(clips, slots, strict=True):
         _add(voice_bus, clip.samples, slot.speech_start_ms)
-    mixed = (voice_bus + _sfx_bus(hits, pack, total)).astype(np.float32)
+    mixed = (voice_bus + duck(_sfx_bus(hits, pack, total), voice_bus)).astype(np.float32)
 
     mastered, loudness = master(
         mixed, target_lufs=MASTER_TARGET_LUFS, true_peak_dbtp=MASTER_TRUE_PEAK_DBTP

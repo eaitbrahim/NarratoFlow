@@ -28,7 +28,7 @@ from narratoflow.audio.mixer import (
 from narratoflow.audio.narrate import NarrationClip, NarrationResult
 from narratoflow.audio.recitation import AYAH_GAP_MS, VerseClip
 from narratoflow.audio.sfx import SFX_GAIN_DB, SFX_MIN_SPACING_MS, SfxAsset, SfxPack
-from narratoflow.audio.timeline import AyahTiming, PartTimeline, TimelineWord, TimingSource
+from narratoflow.audio.timeline import AyahTiming, PartTimeline, SfxHit, TimelineWord, TimingSource
 from narratoflow.audio.words import estimate_timings
 from narratoflow.errors import AudioError
 from narratoflow.models import Narration, Part, Scene, SceneKind, VerseRef, WordTiming
@@ -471,6 +471,37 @@ def test_sfx_hits_cut_faded_and_gained(pack: SfxPack, monkeypatch: pytest.Monkey
         assert abs(float(seg[-1])) <= 1e-3  # faded out
         after = _slice(res.samples, h.at_ms + h.duration_ms, h.at_ms + h.duration_ms + 5)
         assert float(np.abs(after).max(initial=0.0)) <= 1e-6  # cut to duration_ms
+
+
+def test_mix_ducks_sfx_under_speech(pack: SfxPack, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mixer, "master", _identity_master(ON_TARGET))
+    # Speech opens and closes the slot; the long middle is a gap with no voice.
+    voice = np.concatenate([tone(1500, dbfs=-18), aio.silence(3000), tone(1500, dbfs=-18)])
+
+    def run(strokes: dict[str, StrokeSet]) -> MixResult:
+        return mix_part(
+            _part(_scene("n1", draw_fraction=1.0)),
+            _narr({"n1": _clip(voice)}),
+            {},
+            strokes,
+            pack,
+            video_id=VIDEO,
+        )
+
+    wet = run({"n1": _strokes(40)})
+    dry = run({})
+    sfx = wet.samples - dry.samples
+    hits = wet.sfx
+
+    def peak(h: SfxHit) -> float:
+        return float(np.abs(_slice(sfx, h.at_ms, h.at_ms + h.duration_ms)).max())
+
+    speaking = [h for h in hits if h.at_ms >= 300 and h.at_ms + h.duration_ms <= 1400]
+    gap = [h for h in hits if h.at_ms >= 2200 and h.at_ms + h.duration_ms <= 3800]
+    assert speaking
+    assert gap
+    ratio_db = 20 * math.log10(max(map(peak, speaking)) / max(map(peak, gap)))
+    assert -9.0 <= ratio_db <= -7.0
 
 
 def test_mix_deterministic(pack: SfxPack) -> None:

@@ -8,7 +8,7 @@ API verified 2026-11-11 against the edge-tts 7.3.1 source (``communicate.py``):
 ``stream_sync()`` is not used: in 7.3.1 it runs ``stream()`` in a worker thread whose
 exception is never read, so a failed request blocks the caller forever. The adapter runs
 ``stream()`` with ``asyncio.run`` in a worker thread (as the library's ``save_sync``
-does), so every library error reaches the caller and becomes a ``ProviderError``.
+does), so every library error reaches the caller and becomes a ``TransientProviderError``.
 The service is Microsoft's; tests only ever use a fake module.
 """
 
@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from narratoflow.audio.words import TimedSpan
-from narratoflow.errors import ExtraMissingError, ProviderError
+from narratoflow.errors import ExtraMissingError, ProviderError, TransientProviderError
 from narratoflow.models import Language
 from narratoflow.tts import Speech, SpeechRequest
 
@@ -64,9 +64,9 @@ class EdgeProvider:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 chunks = pool.submit(asyncio.run, collect()).result()
         except TimeoutError as err:
-            raise ProviderError(f"edge-tts timed out after {EDGE_DEADLINE_S:g} s") from err
+            raise TransientProviderError(f"edge-tts timed out after {EDGE_DEADLINE_S:g} s") from err
         except Exception as err:
-            raise ProviderError(f"edge-tts failed: {type(err).__name__}") from err
+            raise TransientProviderError(f"edge-tts failed: {type(err).__name__}") from err
         audio, spans = _parse(chunks)
         return Speech(
             audio=audio, spans=spans, provider=self.name, model=self.model, billed_chars=None

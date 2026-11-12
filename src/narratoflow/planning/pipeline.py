@@ -43,6 +43,7 @@ from narratoflow.quran.corpus import QuranCorpus, default_corpus
 from narratoflow.quran.detect import VerseHit, detect_verses
 from narratoflow.script.source import load_script
 from narratoflow.settings import Settings
+from narratoflow.text.spoken import channel_lexicon
 from narratoflow.text.tashkeel.engines import LlmDiacritizer, MishkalDiacritizer, vocalize_scene
 from narratoflow.visuals.bundled import BundledIcons, default_bundled_icons
 
@@ -182,10 +183,16 @@ def plan_series(
     parts = split_into_parts(
         scenes, channel.language, min_s=channel.part_min_s, max_s=channel.part_max_s
     )
+    lexicon = channel_lexicon(channel)
     parts = [
         p.model_copy(
             update={
-                "est_cost_usd": estimate_part_cost(p, channel, prices, voice_chars=voice_chars(p))
+                "est_cost_usd": estimate_part_cost(
+                    p,
+                    channel,
+                    prices,
+                    voice_chars=voice_chars(p, channel.language, lexicon),
+                )
             }
         )
         for p in parts

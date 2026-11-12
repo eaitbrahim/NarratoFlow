@@ -29,7 +29,8 @@ from narratoflow.text.quality import normalize_input
 
 MSA_LABEL = "MSA"
 INSTALL_HINT = "install with: uv sync --extra arabic && uv run camel_data -i dialectid-model26"
-_SENTENCE_END = re.compile("(?<=[.!?\\u061f\\u06d4])")
+_SENTENCE_END = re.compile("(?<=[.!?\\u061f\\u06d4])(?=\\s|$)")
+_VERSE = re.compile("\\ufd3e[^\\ufd3f]*\\ufd3f")
 _ARABIC_LETTER = re.compile("[\u0621-\u064a]")
 
 
@@ -62,7 +63,8 @@ class DialectReport(BaseModel):
 
 
 def split_sentences(text: str) -> list[tuple[int, str]]:
-    """(1-based line of the sentence start, sentence) split on newlines and . ! ? U+061F U+06D4."""
+    """(1-based line of the sentence start, sentence) split on newlines and . ! ? U+061F U+06D4
+    when followed by whitespace or the end of the line (so 3.5 stays whole)."""
     out: list[tuple[int, str]] = []
     for number, line in enumerate(text.split("\n"), start=1):
         for piece in _SENTENCE_END.split(line):
@@ -70,6 +72,11 @@ def split_sentences(text: str) -> list[tuple[int, str]]:
             if piece:
                 out.append((number, piece))
     return out
+
+
+def _strip_verses(text: str) -> str:
+    """Remove Qur'anic verses (ornate brackets included), keeping their newlines."""
+    return _VERSE.sub(lambda m: "\n" * m.group().count("\n"), text)
 
 
 def check_dialect(
@@ -80,7 +87,7 @@ def check_dialect(
         raise ValueError(f"threshold must satisfy 0 < threshold <= 1, got {threshold}")
     found = [
         (line, sentence)
-        for line, sentence in split_sentences(normalize_input(text))
+        for line, sentence in split_sentences(_strip_verses(normalize_input(text)))
         if _ARABIC_LETTER.search(sentence)
     ]
     predictions = model.predict([sentence for _, sentence in found]) if found else []

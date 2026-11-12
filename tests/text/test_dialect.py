@@ -150,3 +150,24 @@ def test_camel_predict_error_is_provider_error(monkeypatch: pytest.MonkeyPatch) 
         model.predict((AR,))
     assert "RuntimeError" in str(info.value)
     assert "SECRET-detail" not in str(info.value)
+
+
+def test_split_keeps_decimals_and_abbreviations_whole() -> None:
+    text = f"{AR} 3.5 {AR}. U.S.A {AR}!"
+    assert split_sentences(text) == [(1, f"{AR} 3.5 {AR}."), (1, f"U.S.A {AR}!")]
+
+
+def test_split_breaks_at_end_of_text_and_before_whitespace() -> None:
+    assert split_sentences("a.b c. d") == [(1, "a.b c."), (1, "d")]
+
+
+def test_quranic_verses_are_not_sent_to_the_model() -> None:
+    verse = "\ufd3e\u0628\u0633\u0645 \u0627\u0644\u0644\u0647.\n\u0643\u0644\u0645\u0629\ufd3f"
+    text = f"{AR} \u0661.\n{verse} {AR}.\n{AR}."
+    model = FakeModel([("CAI", 0.9), ("MSA", 0.9), ("MSA", 0.9)])
+    report = check_dialect(text, model, threshold=0.5, model_name="m")
+    sent = [s for call in model.calls for s in call]
+    assert not any(
+        c in s for s in sent for c in ("\u0628\u0633\u0645", "\u0643\u0644\u0645\u0629", "\ufd3e")
+    )
+    assert [s.line for s in report.sentences] == [1, 3, 4]

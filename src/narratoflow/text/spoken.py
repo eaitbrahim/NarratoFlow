@@ -17,23 +17,60 @@ from typing import TYPE_CHECKING, ClassVar
 from narratoflow.audio.words import norm_for_timing, tokens
 from narratoflow.models import Language
 from narratoflow.text.numbers import spell_number
+from narratoflow.text.tashkeel.verify import is_diacritic
 
 if TYPE_CHECKING:
     from narratoflow.channels.config import ChannelConfig
 
 
+def _is_edge(ch: str) -> bool:
+    cat = unicodedata.category(ch)
+    return cat[0] in "PS" or cat == "Cf"
+
+
+def _split_edges(token: str) -> tuple[str, str, str]:
+    start = 0
+    end = len(token)
+    while start < end and _is_edge(token[start]):
+        start += 1
+    while end > start and _is_edge(token[end - 1]):
+        end -= 1
+    return token[:start], token[start:end], token[end:]
+
+
+def _exact_core(token: str) -> str:
+    """The token without edge punctuation or diacritics; case is kept."""
+    core = unicodedata.normalize("NFD", _split_edges(token)[1])
+    return "".join(ch for ch in core if not is_diacritic(ch) and unicodedata.category(ch)[0] != "M")
+
+
+def _is_exact_key(core: str) -> bool:
+    """Keys with an uppercase letter or internal punctuation match case-sensitively."""
+    return any(
+        unicodedata.category(ch) in ("Lu", "Lt") or unicodedata.category(ch)[0] == "P"
+        for ch in core
+    )
+
+
 @dataclass(frozen=True)
 class Lexicon:
-    """A frozen pronunciation table: `norm_for_timing(key)` to its replacement phrase."""
+    """A frozen pronunciation table.
+
+    `entries` maps `norm_for_timing(key)` to its phrase for loose keys (no
+    uppercase letter, no internal punctuation). `exact` maps the case-sensitive
+    core of the other keys (for example "U.S." or "WHO") to its phrase.
+    """
 
     entries: Mapping[str, str]
+    exact: Mapping[str, str] = MappingProxyType({})
     EMPTY: ClassVar[Lexicon]
 
     @classmethod
     def from_entries(cls, entries: Mapping[str, str]) -> Lexicon:
         """Validate and freeze `entries`; errors name the key, never the replacement."""
-        table: dict[str, str] = {}
-        seen: dict[str, str] = {}
+        loose: dict[str, str] = {}
+        exact: dict[str, str] = {}
+        seen: dict[tuple[bool, str], str] = {}
         for key, replacement in entries.items():
             if not key.strip():
                 raise ValueError("pronunciation key is empty")
@@ -46,20 +83,26 @@ class Lexicon:
                 raise ValueError(f"pronunciation key {key!r} is empty once punctuation is ignored")
             if not replacement.strip():
                 raise ValueError(f"pronunciation replacement for key {key!r} is empty")
-            if norm in seen:
+            core = _exact_core(key)
+            is_exact = _is_exact_key(core)
+            ident = (is_exact, core if is_exact else norm)
+            if ident in seen:
                 raise ValueError(
-                    f"pronunciation keys {seen[norm]!r} and {key!r} are duplicates"
+                    f"pronunciation keys {seen[ident]!r} and {key!r} are duplicates"
                     " (they compare equal)"
                 )
-            seen[norm] = key
-            table[norm] = " ".join(replacement.split())
-        return cls(MappingProxyType(table))
+            seen[ident] = key
+            (exact if is_exact else loose)[ident[1]] = " ".join(replacement.split())
+        return cls(MappingProxyType(loose), MappingProxyType(exact))
 
     def __hash__(self) -> int:
-        return hash(frozenset(self.entries.items()))
+        return hash((frozenset(self.entries.items()), frozenset(self.exact.items())))
 
     def lookup(self, token: str) -> str | None:
-        """The replacement for `token`, comparing `norm_for_timing` with the keys."""
+        """The replacement for `token`: an exact key first, then a loose one."""
+        core = _exact_core(token)
+        if core in self.exact:
+            return self.exact[core]
         norm = norm_for_timing(token)
         return self.entries.get(norm) if norm else None
 
@@ -79,21 +122,6 @@ class SpokenText:
             raise ValueError("groups must each be at least 1")
         if sum(self.groups) != len(self.text.split()):
             raise ValueError("sum of groups must equal the number of words in text")
-
-
-def _is_edge(ch: str) -> bool:
-    cat = unicodedata.category(ch)
-    return cat[0] in "PS" or cat == "Cf"
-
-
-def _split_edges(token: str) -> tuple[str, str, str]:
-    start = 0
-    end = len(token)
-    while start < end and _is_edge(token[start]):
-        start += 1
-    while end > start and _is_edge(token[end - 1]):
-        end -= 1
-    return token[:start], token[start:end], token[end:]
 
 
 def _attach(words: list[str], prefix: str, suffix: str) -> list[str]:

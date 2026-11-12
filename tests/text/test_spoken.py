@@ -52,9 +52,10 @@ def test_lexicon_matches_ignoring_diacritics() -> None:
     assert lexicon.lookup(word) == "\u0645\u064f\u062d\u064e\u0645\u0651\u064e\u062f"
 
 
-def test_lexicon_lookup_is_case_insensitive_and_misses_return_none() -> None:
+def test_lexicon_lookup_misses_return_none() -> None:
     lexicon = Lexicon.from_entries({"NASA": "nasa"})
-    assert lexicon.lookup("Nasa,") == "nasa"
+    assert lexicon.lookup("NASA,") == "nasa"
+    assert lexicon.lookup("Nasa,") is None
     assert lexicon.lookup("other") is None
     assert lexicon.lookup("...") is None
     assert Lexicon.EMPTY.lookup("x") is None
@@ -91,7 +92,7 @@ def test_lexicon_rejects_bad_entries() -> None:
         Lexicon.from_entries({"NASA": "   "})
     assert "   " not in str(blank.value).replace("NASA", "")
     with pytest.raises(ValueError, match="duplicate") as dup:
-        Lexicon.from_entries({"NASA": "SECRETONE", "nasa": "SECRETTWO"})
+        Lexicon.from_entries({"nasa": "SECRETONE", "nasa.": "SECRETTWO"})
     assert "SECRET" not in str(dup.value)
     with pytest.raises(ValueError, match="empty"):
         Lexicon.from_entries({"--": "x"})
@@ -123,7 +124,7 @@ def test_lexicon_rejects_symbol_keys_but_allows_punctuation() -> None:
     with pytest.raises(ValueError, match=r"C\+\+") as exc:
         Lexicon.from_entries({"C++": "SECRETPHRASE"})
     assert "SECRETPHRASE" not in str(exc.value)
-    assert Lexicon.from_entries({"COVID-19": "covid nineteen"}).lookup("covid19") is not None
+    assert Lexicon.from_entries({"COVID-19": "covid nineteen"}).lookup("COVID-19") is not None
 
 
 def test_unchanged_text_is_identical() -> None:
@@ -134,3 +135,43 @@ def test_unchanged_text_is_identical() -> None:
     changed = spoken_text("In  1453\n\nit fell. ", EN, Lexicon.EMPTY)
     assert changed.text == "In  fourteen fifty-three\n\nit fell. "
     assert changed.groups == (1, 2, 1, 1)
+
+
+def test_acronym_key_does_not_rewrite_common_word() -> None:
+    lexicon = Lexicon.from_entries({"U.S.": "you ess"})
+    result = spoken_text("Tell us about the U.S.", EN, lexicon)
+    assert result.text == "Tell us about the you ess."
+
+
+def test_uppercase_key_is_case_sensitive() -> None:
+    lexicon = Lexicon.from_entries({"WHO": "double you aitch oh"})
+    assert spoken_text("who knew", EN, lexicon).text == "who knew"
+    assert spoken_text("(WHO) knew", EN, lexicon).text == "(double you aitch oh) knew"
+
+
+def test_lowercase_key_stays_loose() -> None:
+    lexicon = Lexicon.from_entries({"nasa": "naa saa"})
+    assert lexicon.lookup("NASA") == "naa saa"
+    assert lexicon.lookup("Nasa.") == "naa saa"
+
+
+def test_arabic_key_stays_loose() -> None:
+    lexicon = Lexicon.from_entries({"\u0645\u062d\u0645\u062f": "x"})
+    assert lexicon.lookup("\u0645\u064f\u062d\u064e\u0645\u0651\u064e\u062f\u060c") == "x"
+
+
+def test_exact_key_ignores_tashkeel_in_token() -> None:
+    lexicon = Lexicon.from_entries({"Cafe": "kaf"})
+    assert lexicon.lookup("Cafe\u0301") == "kaf"
+
+
+def test_loose_and_exact_keys_can_coexist_and_exact_wins() -> None:
+    lexicon = Lexicon.from_entries({"nasa": "loose", "NASA": "exact"})
+    assert lexicon.lookup("NASA") == "exact"
+    assert lexicon.lookup("Nasa") == "loose"
+
+
+def test_exact_duplicates_rejected_without_replacement() -> None:
+    with pytest.raises(ValueError, match="duplicate") as dup:
+        Lexicon.from_entries({"U.S.": "SECRETONE", "U.S": "SECRETTWO"})
+    assert "SECRET" not in str(dup.value)

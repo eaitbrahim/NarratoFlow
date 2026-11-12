@@ -38,6 +38,8 @@ class Lexicon:
                 raise ValueError("pronunciation key is empty")
             if key != key.strip() or len(tokens(key)) != 1:
                 raise ValueError(f"pronunciation key {key!r} must be one word without spaces")
+            if any(unicodedata.category(ch)[0] == "S" for ch in key):
+                raise ValueError(f"pronunciation key {key!r} contains a symbol character")
             norm = norm_for_timing(key)
             if not norm:
                 raise ValueError(f"pronunciation key {key!r} is empty once punctuation is ignored")
@@ -51,6 +53,9 @@ class Lexicon:
             seen[norm] = key
             table[norm] = " ".join(replacement.split())
         return cls(MappingProxyType(table))
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self.entries.items()))
 
     def lookup(self, token: str) -> str | None:
         """The replacement for `token`, comparing `norm_for_timing` with the keys."""
@@ -76,7 +81,8 @@ class SpokenText:
 
 
 def _is_edge(ch: str) -> bool:
-    return unicodedata.category(ch)[0] in "PS"
+    cat = unicodedata.category(ch)
+    return cat[0] in "PS" or cat == "Cf"
 
 
 def _split_edges(token: str) -> tuple[str, str, str]:

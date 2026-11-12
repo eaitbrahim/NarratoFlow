@@ -28,7 +28,11 @@ def test_wrapping_punctuation_and_symbols_stay_on_edges() -> None:
 
 def test_arabic_number_uses_arabic_speller() -> None:
     result = spoken_text("\u0633\u0646\u0629 \u0661\u0664\u0665\u0663.", AR, Lexicon.EMPTY)
-    assert result.text.endswith("\u0648\u062e\u0645\u0633\u0648\u0646.")
+    assert result.text == (
+        "\u0633\u0646\u0629 \u0623\u0644\u0641"
+        " \u0648\u0623\u0631\u0628\u0639\u0645\u0627\u0626\u0629"
+        " \u0648\u062b\u0644\u0627\u062b\u0629 \u0648\u062e\u0645\u0633\u0648\u0646."
+    )
     assert result.groups == (1, 4)
 
 
@@ -94,6 +98,29 @@ def test_lexicon_rejects_bad_entries() -> None:
 
 
 def test_channel_lexicon(channel_file: Path) -> None:
-    channel = load_channel(channel_file)
-    channel.pronunciation = {"NASA": "nasa"}
-    assert channel_lexicon(channel).lookup("NASA") == "nasa"
+    text = channel_file.read_text(encoding="utf-8")
+    channel_file.write_text(text + '\n[pronunciation]\n"NASA" = "nasa"\n', encoding="utf-8")
+    assert channel_lexicon(load_channel(channel_file)).lookup("NASA") == "nasa"
+
+
+def test_format_characters_at_token_edges_are_edges() -> None:
+    rlm = "\u200f"
+    arabic = rlm + "\u0661\u0664\u0665\u0663" + rlm
+    result = spoken_text(arabic, AR, Lexicon.EMPTY)
+    assert result.text.startswith(rlm + "\u0623\u0644\u0641 ")
+    assert result.text.endswith("\u0648\u062e\u0645\u0633\u0648\u0646" + rlm)
+    assert result.groups == (4,)
+    assert spoken_text("5\u200b", EN, Lexicon.EMPTY) == SpokenText("five\u200b", (1,))
+
+
+def test_lexicon_is_hashable() -> None:
+    a = Lexicon.from_entries({"NASA": "nasa"})
+    assert hash(a) == hash(Lexicon.from_entries({"NASA": "nasa"}))
+    assert {a, Lexicon.EMPTY, Lexicon.EMPTY} == {a, Lexicon.EMPTY}
+
+
+def test_lexicon_rejects_symbol_keys_but_allows_punctuation() -> None:
+    with pytest.raises(ValueError, match=r"C\+\+") as exc:
+        Lexicon.from_entries({"C++": "SECRETPHRASE"})
+    assert "SECRETPHRASE" not in str(exc.value)
+    assert Lexicon.from_entries({"COVID-19": "covid nineteen"}).lookup("covid19") is not None

@@ -211,6 +211,11 @@ def _ar_cardinal(n: int) -> str:
             parts.append(dual)
         else:
             tail = count % 100
+            if count > 100 and tail in (1, 2):
+                # MSA: "mi'a alf wa-alf", "mi'a alf wa-alfan"
+                parts.append(f"{_ar_below_1000(count - tail, construct=True)} {single}")
+                parts.append(single if tail == 1 else dual)
+                continue
             noun = plural if 3 <= tail <= 10 else accusative if tail > 10 else single
             parts.append(f"{_ar_below_1000(count, construct=noun == single)} {noun}")
     if n:
@@ -226,6 +231,8 @@ def spell_number(token: str, language: Language) -> str | None:
     Unicode decimal digits, plus English ordinals (`22nd`). English reads a bare
     4-digit integer from 1100 to 1999 as a year.
     """
+    if len({ord(c) - unicodedata.decimal(c) for c in token if c.isdecimal()}) > 1:
+        return None  # mixed digit scripts
     english = language is Language.ENGLISH
     if english and (ordinal := _ORDINAL.fullmatch(token)):
         value = _digits(re.sub(f"[{_THOUSANDS_SEPS}]", "", ordinal["int"]))

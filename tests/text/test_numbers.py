@@ -116,3 +116,46 @@ def test_ordinals_are_english_only() -> None:
 @pytest.mark.parametrize("language", [EN, AR])
 def test_rejected(token: str, language: Language) -> None:
     assert spell_number(token, language) is None
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("1099", "one thousand and ninety-nine"),
+        ("1100", "eleven hundred"),
+        ("1999", "nineteen ninety-nine"),
+        ("2000", "two thousand"),
+    ],
+)
+def test_english_year_boundaries(token: str, expected: str) -> None:
+    assert spell_number(token, EN) == expected
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("101000", "\u0645\u0627\u0626\u0629 \u0623\u0644\u0641 \u0648\u0623\u0644\u0641"),
+        (
+            "102000",
+            "\u0645\u0627\u0626\u0629 \u0623\u0644\u0641 \u0648\u0623\u0644\u0641\u0627\u0646",
+        ),
+        (
+            "101000000",
+            "\u0645\u0627\u0626\u0629 \u0645\u0644\u064a\u0648\u0646"
+            " \u0648\u0645\u0644\u064a\u0648\u0646",
+        ),
+        (
+            "202000000000",
+            "\u0645\u0627\u0626\u062a\u0627 \u0645\u0644\u064a\u0627\u0631"
+            " \u0648\u0645\u0644\u064a\u0627\u0631\u0627\u0646",
+        ),
+    ],
+)
+def test_arabic_count_ending_in_one_or_two_before_scale(token: str, expected: str) -> None:
+    assert spell_number(token, AR) == expected
+
+
+@pytest.mark.parametrize("token", ["1\u0664", "\u0661\u06f4", "1\u066b\u0665\u0664"])
+def test_mixed_digit_scripts_rejected(token: str) -> None:
+    assert spell_number(token, EN) is None
+    assert spell_number(token, AR) is None

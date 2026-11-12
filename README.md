@@ -199,7 +199,7 @@ System requirement: `ffmpeg` on `PATH`.
 - `approve` is idempotent.
 - `sketch generate` keeps attached sketches and pays only for the missing ones.
 - `audio build` reuses each cached scene. After upgrading to the version with spoken numbers,
-  scenes containing numbers are voiced again once and a paid voice bills them again, so the spend
+  scenes containing numbers, signs, currency or percent are voiced again once and a paid voice bills them again, so the spend
   can differ from an estimate approved before the upgrade. Changing a pronunciation entry likewise
   re-voices the scenes it touches.
 - `render` re-renders the selected parts deterministically at no cost (after an error it prints the finished parts; pass `--part` for the others).
@@ -210,10 +210,10 @@ System requirement: `ffmpeg` on `PATH`.
 
 `narratoflow check-dialect` flags Arabic sentences that read as a dialect rather than Modern Standard Arabic, using CAMeL Tools. It is free, separate from `plan`, and it flags, never rejects: it exits 0 even when sentences are flagged.
 
-Install once (NarratoFlow never downloads the 274 MB model data itself):
+Install once (NarratoFlow never downloads the 274 MB model data itself). Add `--extra arabic` to the extras you already sync (for example `uv sync --extra arabic --extra tts-edge`); a plain `uv sync --extra arabic` would drop your other extras.
 
 ```
-uv sync --extra arabic
+uv sync --extra arabic --extra tts-edge   # your usual extras plus arabic
 uv run camel_data -i dialectid-model26
 ```
 
@@ -221,7 +221,7 @@ uv run camel_data -i dialectid-model26
 uv run narratoflow check-dialect script.txt [--threshold 0.5] [--report PATH]
 ```
 
-A sentence is flagged when the model's top label is not `MSA` and its probability is at least `--threshold` (default 0.5). Lines with no Arabic letters are never checked. Each flagged sentence prints as `line N: LABEL 0.87 «excerpt»`, followed by a summary. The full report (every Arabic sentence with its label and confidence) is written to `FILE.dialect.json`, or to `--report PATH`. Without the extra or its data, the command exits 1 with one line naming both install steps.
+A sentence is flagged when the model's top label is not `MSA` and its probability is at least `--threshold` (default 0.5). Lines with no Arabic letters are never checked, and Qur'anic verses in ﴾…﴿ are skipped (they are classical, not dialect). Labels are CAMeL city or variety codes, for example `CAI` Cairo, `RAB` Rabat, `BEI` Beirut, `DOH` Doha, `TUN` Tunis and `MSA` Modern Standard Arabic. Each flagged sentence prints as `line N: LABEL 0.87 «excerpt»`, followed by a summary. The full report (every Arabic sentence with its label and confidence) is written to `FILE.dialect.json`, or to `--report PATH`. Without the extra or its data, the command exits 1 with one line naming both install steps.
 
 ## Where settings live
 

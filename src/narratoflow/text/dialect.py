@@ -28,7 +28,10 @@ from narratoflow.errors import DialectUnavailableError, ProviderError
 from narratoflow.text.quality import normalize_input
 
 MSA_LABEL = "MSA"
-INSTALL_HINT = "install with: uv sync --extra arabic && uv run camel_data -i dialectid-model26"
+INSTALL_HINT = (
+    "install with: uv sync --extra arabic (plus your other extras) "
+    "&& uv run camel_data -i dialectid-model26"
+)
 _SENTENCE_END = re.compile("(?<=[.!?\\u061f\\u06d4])(?=\\s|$)")
 _VERSE = re.compile("\\ufd3e[^\\ufd3f]*\\ufd3f")
 _ARABIC_LETTER = re.compile("[\u0621-\u064a]")

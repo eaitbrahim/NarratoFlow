@@ -39,6 +39,7 @@ from narratoflow.errors import (
 )
 from narratoflow.models import Language, Narration, Part, Scene, SceneKind, VerseRef
 from narratoflow.pipeline.cache import StageCache, cache_key
+from narratoflow.text.spoken import Lexicon
 from narratoflow.tts import Speech, SpeechRequest, VoiceChoice
 from narratoflow.tts.elevenlabs import ElevenLabsProvider
 from narratoflow.tts.piper import PiperProvider
@@ -152,6 +153,7 @@ def run(
     *,
     aligner: FakeAligner | None = None,
     tracker: SpendTracker | None = None,
+    lexicon: Lexicon = Lexicon.EMPTY,
 ) -> tuple[NarrationResult, SpendTracker]:
     tracker = tracker if tracker is not None else SpendTracker(limit_usd=None)
     result = narrate_part(
@@ -162,6 +164,7 @@ def run(
         prices=PRICES,
         cache=cache,
         aligner=aligner,
+        lexicon=lexicon,
     )
     return result, tracker
 
@@ -342,13 +345,17 @@ def test_cache_entry_needs_both_files(cache: StageCache) -> None:
 
     meta.unlink()
     choice = VoiceChoice(voice, "p")
-    assert uncached_chars(part, choice, cache) == len("alpha beta")
+    assert uncached_chars(
+        part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ) == len("alpha beta")
     run(part, [choice], cache)
     assert len(voice.requests) == 2
     assert meta.is_file()
 
     audio.unlink()
-    assert uncached_chars(part, choice, cache) == len("alpha beta")
+    assert uncached_chars(
+        part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ) == len("alpha beta")
     run(part, [choice], cache)
     assert len(voice.requests) == 3
 
@@ -378,7 +385,16 @@ def test_cache_hit_makes_no_call_and_no_charge(cache: StageCache) -> None:
         "0.30"
     )
     assert len(voice.requests) == 3
-    assert uncached_chars(three(), VoiceChoice(voice, "p"), cache) == 0
+    assert (
+        uncached_chars(
+            three(),
+            VoiceChoice(voice, "p"),
+            cache,
+            language=Language.ENGLISH,
+            lexicon=Lexicon.EMPTY,
+        )
+        == 0
+    )
     second, tracker2 = run(three(), [VoiceChoice(voice, "p")], cache)
     assert len(voice.requests) == 3
     assert tracker2.spent == 0
@@ -389,14 +405,20 @@ def test_cache_hit_makes_no_call_and_no_charge(cache: StageCache) -> None:
         assert clip.words == again.words
         assert again.timing_source is TimingSource.PROVIDER
     # A different voice id is a different key.
-    assert uncached_chars(three(), VoiceChoice(voice, "other"), cache) == len(
-        "alpha betagamma delta epsilonzeta eta"
-    )
+    assert uncached_chars(
+        three(),
+        VoiceChoice(voice, "other"),
+        cache,
+        language=Language.ENGLISH,
+        lexicon=Lexicon.EMPTY,
+    ) == len("alpha betagamma delta epsilonzeta eta")
 
 
 def test_uncached_chars_counts_repeated_text_once(cache: StageCache) -> None:
     part = make_part(narration("s1", "same words"), narration("s2", "same words"), verse("v"))
-    assert uncached_chars(part, VoiceChoice(FakeVoice(), "p"), cache) == len("same words")
+    assert uncached_chars(
+        part, VoiceChoice(FakeVoice(), "p"), cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ) == len("same words")
 
 
 def test_provider_spans_used_when_they_map(cache: StageCache) -> None:
@@ -541,7 +563,9 @@ def test_empty_cached_audio_is_a_miss(cache: StageCache) -> None:
     run(part, [choice], cache)
     (audio_path,) = (cache.root / "tts").glob("*.audio")
     audio_path.write_bytes(b"")
-    assert uncached_chars(part, choice, cache) == len("alpha beta")
+    assert uncached_chars(
+        part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ) == len("alpha beta")
 
 
 def test_cache_write_failure_raises_audio_error(
@@ -662,7 +686,9 @@ def test_failed_voice_cached_clips_are_reused_on_rerun(cache: StageCache) -> Non
         run(three(), [VoiceChoice(failing, "p"), VoiceChoice(backup, "b")], cache)
     fixed = FakeVoice()  # same provider/model/voice id, now healthy
     choice = VoiceChoice(fixed, "p")
-    assert uncached_chars(three(), choice, cache) == len("zeta eta")
+    assert uncached_chars(
+        three(), choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ) == len("zeta eta")
     result, tracker = run(three(), [choice], cache)
     assert [r.text for r in fixed.requests] == ["zeta eta"]
     assert tracker.spent == Decimal(len("zeta eta")) / 1000 * Decimal("0.30")
@@ -698,9 +724,11 @@ def test_uncached_chars_is_stat_only(cache: StageCache, monkeypatch: pytest.Monk
         raise AssertionError("uncached_chars must not read the audio")
 
     monkeypatch.setattr(Path, "read_bytes", no_read)
-    assert uncached_chars(part, p, cache) == 0
+    assert uncached_chars(part, p, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY) == 0
     (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.json").write_text("", encoding="utf-8")
-    assert uncached_chars(part, p, cache) == len("alpha beta")
+    assert uncached_chars(part, p, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY) == len(
+        "alpha beta"
+    )
 
 
 class FakePiper(PiperProvider):
@@ -715,28 +743,48 @@ def test_piper_key_tracks_the_model_file(cache: StageCache, tmp_path: Path) -> N
     part = make_part(narration("s1", "alpha beta"))
     choice = VoiceChoice(FakePiper(model), "piper")
     run(part, [choice], cache)
-    assert uncached_chars(part, choice, cache) == 0
+    assert (
+        uncached_chars(part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY) == 0
+    )
 
     model.write_bytes(b"model-v2-longer")  # replaced, different size
-    assert uncached_chars(part, choice, cache) == len("alpha beta")
+    assert uncached_chars(
+        part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ) == len("alpha beta")
     run(part, [choice], cache)
-    assert uncached_chars(part, choice, cache) == 0
+    assert (
+        uncached_chars(part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY) == 0
+    )
 
     st = model.stat()
     model.write_bytes(b"model-v3-longer")  # same size, same name
     os.utime(model, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
-    assert uncached_chars(part, choice, cache) == len("alpha beta")
+    assert uncached_chars(
+        part, choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ) == len("alpha beta")
 
     other = tmp_path / "other"
     other.mkdir()
     twin = other / "voice.onnx"  # same stem, different file
     twin.write_bytes(b"model-v3-longer")
-    assert uncached_chars(part, VoiceChoice(FakePiper(twin), "piper"), cache) == len("alpha beta")
+    assert uncached_chars(
+        part,
+        VoiceChoice(FakePiper(twin), "piper"),
+        cache,
+        language=Language.ENGLISH,
+        lexicon=Lexicon.EMPTY,
+    ) == len("alpha beta")
 
 
 def test_piper_key_without_model_file(cache: StageCache, tmp_path: Path) -> None:
     choice = VoiceChoice(FakePiper(tmp_path / "missing.onnx"), "piper")
-    assert uncached_chars(make_part(narration("s1", "a b")), choice, cache) == len("a b")
+    assert uncached_chars(
+        make_part(narration("s1", "a b")),
+        choice,
+        cache,
+        language=Language.ENGLISH,
+        lexicon=Lexicon.EMPTY,
+    ) == len("a b")
 
 
 def test_unremovable_old_json_raises_audio_error(cache: StageCache) -> None:
@@ -747,3 +795,37 @@ def test_unremovable_old_json_raises_audio_error(cache: StageCache) -> None:
     (tts / f"{key_for(p, 'alpha beta')}.json").mkdir()  # cannot be unlinked as a file
     with pytest.raises(AudioError, match="cannot write tts cache"):
         run(part, [p], cache)
+
+
+def test_numeral_scene_keeps_caption_digits_with_merged_timing(cache: StageCache) -> None:
+    voice = FakeVoice()
+    part = make_part(narration("s1", "In 1453 it fell"))
+    result, _ = run(part, [VoiceChoice(voice, "v")], cache)
+    assert [r.text for r in voice.requests] == ["In fourteen fifty-three it fell"]
+    words = result.clips["s1"].words
+    assert [w.text for w in words] == ["In", "1453", "it", "fell"]
+    spans = word_spans("In fourteen fifty-three it fell")
+    assert words[1].start_ms == spans[1].start_ms
+    assert words[1].end_ms == spans[2].end_ms
+    assert words[2].start_ms == spans[3].start_ms
+
+
+def test_lexicon_change_revoices_only_that_scene(cache: StageCache) -> None:
+    voice = FakeVoice()
+    part = make_part(narration("s1", "alpha beta"), narration("s2", "gamma NASA"))
+    first = Lexicon.from_entries({"NASA": "nasa"})
+    run(part, [VoiceChoice(voice, "v")], cache, lexicon=first)
+    assert len(voice.requests) == 2
+    second = Lexicon.from_entries({"NASA": "n a s a"})
+    run(part, [VoiceChoice(voice, "v")], cache, lexicon=second)
+    assert [r.text for r in voice.requests[2:]] == ["gamma n a s a"]
+
+
+def test_estimated_timings_use_spoken_words(cache: StageCache) -> None:
+    voice = FakeVoice(spans=False)
+    part = make_part(narration("s1", "In 1453 it fell"))
+    result, _ = run(part, [VoiceChoice(voice, "v")], cache)
+    words = result.clips["s1"].words
+    assert result.clips["s1"].timing_source is TimingSource.ESTIMATED
+    assert [w.text for w in words] == ["In", "1453", "it", "fell"]
+    assert words[1].end_ms - words[1].start_ms > words[0].end_ms - words[0].start_ms

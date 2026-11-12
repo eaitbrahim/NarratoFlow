@@ -1,6 +1,8 @@
 """Narration synthesis: one voice per part, cached per project, with word timings.
 
-Only the `tts_text or source_text` of NARRATION scenes is ever spoken. Each voice of
+Only the spoken form of the `tts_text or source_text` of NARRATION scenes is ever
+voiced (numbers spelled out, the channel's pronunciation lexicon applied); captions
+keep the author's tokens and take the merged timings of the words each became. Each voice of
 the chain is tried in order for the *whole* part: a `ProviderError` (including a
 `BilledProviderError`), an `ExtraMissingError`, or audio that does not decode or
 is all silence, on any scene abandons that voice and the next one starts again
@@ -35,6 +37,7 @@ from narratoflow.errors import (
 )
 from narratoflow.models import Language, Part, Scene, SceneKind, WordTiming
 from narratoflow.pipeline.cache import StageCache, cache_key
+from narratoflow.text.spoken import Lexicon, SpokenText, spoken_text
 from narratoflow.tts import SpeechRequest, VoiceChoice
 from narratoflow.tts.factory import TrackedSpeechProvider, voice_terms
 from narratoflow.tts.piper import PiperProvider
@@ -96,8 +99,8 @@ def _narration_scenes(part: Part) -> list[Scene]:
     return [s for s in part.scenes if s.kind is SceneKind.NARRATION]
 
 
-def _spoken(scene: Scene) -> str:
-    return scene.narration.tts_text or scene.narration.source_text
+def _spoken(scene: Scene, language: Language, lexicon: Lexicon) -> SpokenText:
+    return spoken_text(scene.narration.tts_text or scene.narration.source_text, language, lexicon)
 
 
 def _caption(scene: Scene) -> str:
@@ -219,7 +222,14 @@ def _store(cache: StageCache, key: str, voiced: _Voiced, billed_chars: int | Non
     _write_atomic(meta_path, json.dumps(meta).encode("utf-8"))
 
 
-def uncached_chars(part: Part, choice: VoiceChoice, cache: StageCache) -> int:
+def uncached_chars(
+    part: Part,
+    choice: VoiceChoice,
+    cache: StageCache,
+    *,
+    language: Language,
+    lexicon: Lexicon,
+) -> int:
     """Characters of the part's narration whose cache entry misses for `choice`.
 
     A text repeated within the part is counted once: the first call caches it.
@@ -229,7 +239,7 @@ def uncached_chars(part: Part, choice: VoiceChoice, cache: StageCache) -> int:
     seen: set[str] = set()
     total = 0
     for scene in _narration_scenes(part):
-        text = _spoken(scene)
+        text = _spoken(scene, language, lexicon).text
         key = _key(choice, text)
         if key in seen:
             continue
@@ -239,9 +249,10 @@ def uncached_chars(part: Part, choice: VoiceChoice, cache: StageCache) -> int:
     return total
 
 
-def _check_tokens(scenes: list[Scene]) -> None:
+def _check_tokens(scenes: list[Scene], language: Language, lexicon: Lexicon) -> None:
     for scene in scenes:
-        spoken, shown = len(tokens(_spoken(scene))), len(tokens(_caption(scene)))
+        spoken = len(_spoken(scene, language, lexicon).groups)
+        shown = len(tokens(_caption(scene)))
         if spoken != shown:
             raise PlanningError(
                 f"scene {scene.id}: caption has {shown} words but the voiced text has {spoken}"
@@ -254,6 +265,7 @@ def _voice_all(
     tracked: TrackedSpeechProvider,
     cache: StageCache,
     language: Language,
+    lexicon: Lexicon,
 ) -> dict[str, _Clip]:
     """Voice (or reuse) every scene.
 
@@ -262,7 +274,7 @@ def _voice_all(
     """
     out: dict[str, _Clip] = {}
     for scene in scenes:
-        text = _spoken(scene)
+        text = _spoken(scene, language, lexicon).text
         key = _key(choice, text)
         hit = _read(cache, key)
         if hit is not None:
@@ -291,8 +303,9 @@ def _checked_clip(cache: StageCache, key: str, scene: Scene, voiced: _Voiced) ->
     return _Clip(samples, voiced.spans, lead_ms, len(trimmed) * 1000 // SAMPLE_RATE)
 
 
-def _timings(timer: _Timer, scene: Scene, clip: _Clip) -> tuple[list[WordTiming], TimingSource]:
-    text = _spoken(scene)
+def _timings(
+    timer: _Timer, text: str, scene: Scene, clip: _Clip
+) -> tuple[list[WordTiming], TimingSource]:
     words = tokens(text)
     if clip.spans:
         found = timings_from_spans(words, clip.spans)
@@ -318,13 +331,21 @@ def _timings(timer: _Timer, scene: Scene, clip: _Clip) -> tuple[list[WordTiming]
     return estimate_timings(words, speech_start_ms, speech_end_ms), TimingSource.ESTIMATED
 
 
-def _caption_words(scene: Scene, timed: list[WordTiming]) -> list[WordTiming]:
-    """Caption tokens, index-wise; `_check_tokens` guaranteed equal counts up front."""
+def _caption_words(
+    scene: Scene, timed: list[WordTiming], groups: tuple[int, ...]
+) -> list[WordTiming]:
+    """Caption tokens, each spanning the spoken words of its group.
+
+    `_check_tokens` guaranteed one group per caption token up front.
+    """
     shown = tokens(_caption(scene))
-    return [
-        WordTiming(text=t, start_ms=w.start_ms, end_ms=w.end_ms)
-        for t, w in zip(shown, timed, strict=True)
-    ]
+    out: list[WordTiming] = []
+    index = 0
+    for text, size in zip(shown, groups, strict=True):
+        first, last = timed[index], timed[index + size - 1]
+        out.append(WordTiming(text=text, start_ms=first.start_ms, end_ms=last.end_ms))
+        index += size
+    return out
 
 
 def narrate_part(
@@ -336,12 +357,13 @@ def narrate_part(
     prices: PriceTable,
     cache: StageCache,
     aligner: Aligner | None,
+    lexicon: Lexicon = Lexicon.EMPTY,
 ) -> NarrationResult:
     """Voice every narration scene of `part` with the first voice that succeeds."""
     scenes = _narration_scenes(part)
     if not scenes:
         return NarrationResult(clips={}, voice=None, cost_estimated=False, warnings=[])
-    _check_tokens(scenes)
+    _check_tokens(scenes, language, lexicon)
     require_ffmpeg()  # a missing ffmpeg is a setup error, never a voice failure
     reasons: list[str] = []
     wrappers: list[TrackedSpeechProvider] = []
@@ -349,7 +371,7 @@ def narrate_part(
         tracked = TrackedSpeechProvider(choice.provider, tracker, prices)
         wrappers.append(tracked)
         try:
-            voiced = _voice_all(scenes, choice, tracked, cache, language)
+            voiced = _voice_all(scenes, choice, tracked, cache, language, lexicon)
         except (ProviderError, ExtraMissingError, _BadVoiceAudio) as exc:
             reasons.append(f"{_label(choice)}: {exc}")
             continue
@@ -365,8 +387,11 @@ def narrate_part(
         clips: dict[str, NarrationClip] = {}
         for scene in scenes:
             clip = voiced[scene.id]
-            timed, source = _timings(timer, scene, clip)
-            clips[scene.id] = NarrationClip(clip.samples, _caption_words(scene, timed), source)
+            spoken = _spoken(scene, language, lexicon)
+            timed, source = _timings(timer, spoken.text, scene, clip)
+            clips[scene.id] = NarrationClip(
+                clip.samples, _caption_words(scene, timed, spoken.groups), source
+            )
         estimated = any(w.cost_estimated and prices.voice(w.name, w.model) > 0 for w in wrappers)
         return NarrationResult(
             clips=clips,

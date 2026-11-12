@@ -113,6 +113,23 @@ installed (`uv sync --extra tts-edge`), otherwise an outage ends the build with 
 narrate part N". A rejected ElevenLabs key (HTTP 401/403) or an unknown voice (HTTP 404) is a
 configuration error: the build stops (finished parts are kept) instead of falling back.
 
+### Pronunciation
+
+A channel's `[pronunciation]` table tells the voice how to say words it gets wrong; the caption
+keeps the word as written:
+
+```toml
+[pronunciation]
+"NASA" = "nasa"
+"Khadija" = "Khadeeja"
+```
+
+Keys are single words and match ignoring tashkeel, case and punctuation, so an Arabic name matches
+with or without its vowel marks. Numbers are spoken as words ("1453" is voiced "fourteen
+fifty-three") while captions keep the digits. In English a bare four-digit number from 1100 to 1999
+is read as a year (pairs: "nineteen oh five"); any other number is read as a cardinal. Changing an
+entry re-voices only the scenes that use it.
+
 ### Alignment
 
 Word timings come from the voice when it reports them. The optional `align` extra

@@ -197,7 +197,14 @@ def _ar_below_1000(n: int, *, construct: bool = False) -> str:
     return _AR_AND.join(parts)
 
 
-def _ar_cardinal(n: int) -> str:
+def _construct_final_dual(parts: list[str]) -> None:
+    """Put a trailing independent dual into its construct form (drop the nun)."""
+    duals = {_AR_HUNDREDS[2], *(scale[2] for scale in _AR_SCALES)}
+    if parts and parts[-1] in duals:
+        parts[-1] = parts[-1][:-1]
+
+
+def _ar_cardinal(n: int, *, construct_dual: bool = False) -> str:
     if n == 0:
         return _AR_ONES[0]
     parts: list[str] = []
@@ -220,10 +227,14 @@ def _ar_cardinal(n: int) -> str:
             parts.append(f"{_ar_below_1000(count, construct=noun == single)} {noun}")
     if n:
         parts.append(_ar_below_1000(n))
+    if construct_dual:
+        _construct_final_dual(parts)
     return _AR_AND.join(parts)
 
 
-def spell_number(token: str, language: Language, *, years: bool = True) -> str | None:
+def spell_number(
+    token: str, language: Language, *, years: bool = True, construct_dual: bool = False
+) -> str | None:
     """The number core of `token` spelled out, or None when it is not one we handle.
 
     `token` has no surrounding punctuation. Handles integers up to
@@ -256,7 +267,7 @@ def spell_number(token: str, language: Language, *, years: bool = True) -> str |
             else _en_cardinal(value)
         )
     else:
-        spoken = _ar_cardinal(value)
+        spoken = _ar_cardinal(value, construct_dual=construct_dual and match["frac"] is None)
     frac = match["frac"]
     if frac is None:
         return spoken

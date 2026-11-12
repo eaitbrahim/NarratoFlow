@@ -86,3 +86,22 @@ def test_arabic(prefix: str, core: str, suffix: str, expected: str) -> None:
 )
 def test_not_an_amount(prefix: str, core: str, suffix: str) -> None:
     assert spell_amount(prefix, core, suffix, EN) is None
+
+
+@pytest.mark.parametrize(
+    ("core", "expected"),
+    [
+        ("200", "\u0645\u0627\u0626\u062a\u0627 \u062f\u0648\u0644\u0627\u0631"),
+        (
+            "1200",
+            "\u0623\u0644\u0641 \u0648\u0645\u0627\u0626\u062a\u0627 "
+            "\u062f\u0648\u0644\u0627\u0631",
+        ),
+        ("2000", "\u0623\u0644\u0641\u0627 \u062f\u0648\u0644\u0627\u0631"),
+        ("2000000", "\u0645\u0644\u064a\u0648\u0646\u0627 \u062f\u0648\u0644\u0627\u0631"),
+        ("2000000000", "\u0645\u0644\u064a\u0627\u0631\u0627 \u062f\u0648\u0644\u0627\u0631"),
+        ("2", "\u062f\u0648\u0644\u0627\u0631\u0627\u0646"),
+    ],
+)
+def test_arabic_dual_before_noun_uses_construct_form(core: str, expected: str) -> None:
+    assert spell_amount("$", core, "", AR) == ("", expected, "")

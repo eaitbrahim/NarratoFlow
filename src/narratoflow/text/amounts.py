@@ -73,7 +73,7 @@ def _int_value(raw: str) -> int:
     return int("".join(str(unicodedata.decimal(c)) for c in raw if c.isdecimal()))
 
 
-def _arabic_unit(number: str, value: int, has_frac: bool, cur: _Currency) -> str:
+def _arabic_unit(number: str, value: int, has_frac: bool, cur: _Currency, construct: str) -> str:
     single, dual, plural, accusative = cur.ar
     if has_frac:
         return f"{number} {single}"
@@ -86,7 +86,7 @@ def _arabic_unit(number: str, value: int, has_frac: bool, cur: _Currency) -> str
         return f"{number} {plural}"
     if tail > 10:
         return f"{number} {accusative}"
-    return f"{number} {single}"
+    return f"{construct} {single}"  # a trailing dual takes its construct form before the noun
 
 
 def _english_unit(core: str, number: str, value: int, has_frac: bool, cur: _Currency) -> str:
@@ -145,13 +145,14 @@ def spell_amount(
     value = _int_value(match["int"])
     has_frac = match["frac"] is not None
     english = language is Language.ENGLISH
+    construct = spell_number(core, language, years=False, construct_dual=True) or number
     body = number
     if currency is not None:
         cur = _CURRENCIES[currency]
         unit = (
             _english_unit(core, number, value, has_frac, cur)
             if english
-            else _arabic_unit(number, value, has_frac, cur)
+            else _arabic_unit(number, value, has_frac, cur, construct)
         )
         body = unit
     elif percent:

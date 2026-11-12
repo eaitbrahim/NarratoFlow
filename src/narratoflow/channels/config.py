@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from narratoflow.errors import ChannelConfigError
 from narratoflow.llm.base import Effort
 from narratoflow.models import AspectRatio, Language
+from narratoflow.text.spoken import Lexicon
 
 
 class StyleConfig(BaseModel):
@@ -106,6 +107,14 @@ class ChannelConfig(BaseModel):
     reciter: str | None = None
     """An allow-listed reciter id; None means the first allow-listed reciter of `riwaya`."""
     diacritizer: Literal["llm", "mishkal"] = "llm"
+    pronunciation: dict[str, str] = Field(default_factory=dict)
+    """Word to spoken phrase, applied to narration (`text.spoken.Lexicon`)."""
+
+    @field_validator("pronunciation")
+    @classmethod
+    def _valid_pronunciation(cls, value: dict[str, str]) -> dict[str, str]:
+        Lexicon.from_entries(value)  # raises ValueError naming the key, never the phrase
+        return value
 
     @model_validator(mode="after")
     def _part_bounds(self) -> ChannelConfig:

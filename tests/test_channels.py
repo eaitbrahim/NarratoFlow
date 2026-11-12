@@ -248,3 +248,18 @@ def test_unknown_key_holding_a_secret_is_named_but_not_echoed(channel_file: Path
 
 def test_fixture_channel_still_loads(channel_file: Path) -> None:
     assert load_channel(channel_file).riwaya == "hafs"
+
+
+def test_pronunciation_table_loads_and_validates(channel_file: Path) -> None:
+    base = channel_file.read_text(encoding="utf-8")
+    assert load_channel(channel_file).pronunciation == {}
+    channel_file.write_text(base + '\n[pronunciation]\n"NASA" = "nasa"\n', encoding="utf-8")
+    assert load_channel(channel_file).pronunciation == {"NASA": "nasa"}
+    channel_file.write_text(
+        base + '\n[pronunciation]\n"two words" = "SECRETPHRASE"\n"ok" = "OTHERVALUE"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ChannelConfigError, match="two words") as exc:
+        load_channel(channel_file)
+    assert "SECRETPHRASE" not in str(exc.value)
+    assert "OTHERVALUE" not in str(exc.value)

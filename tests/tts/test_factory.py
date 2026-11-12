@@ -292,3 +292,15 @@ def test_piper_model_config_required_up_front(tmp_path: Path) -> None:
     model.write_bytes(b"onnx")
     with pytest.raises(ChannelConfigError, match=r"m\.onnx\.json"):
         build_voice_chain(channel(**eleven(fallback=["piper"], piper_model=str(model))), keyed())
+
+
+def test_built_elevenlabs_voice_closes_its_http_client() -> None:
+    choice = build_voice_chain(channel("en", **eleven(fallback=[])), keyed())[0]
+    assert isinstance(choice.provider, RetryingSpeechProvider)
+    inner = choice.provider.inner
+    assert isinstance(inner, ElevenLabsProvider)
+    close = getattr(choice.provider, "close", None)  # the cleanup audio/build.py registers
+    assert callable(close)
+    assert not inner.http.is_closed
+    close()
+    assert inner.http.is_closed

@@ -17,7 +17,11 @@ class Scripted:
 
     def __init__(self, outcomes: list[Exception | Speech]) -> None:
         self.outcomes = outcomes
+        self.closed = False
         self.calls = 0
+
+    def close(self) -> None:
+        self.closed = True
 
     def synthesize(self, req: SpeechRequest) -> Speech:
         outcome = self.outcomes[min(self.calls, len(self.outcomes) - 1)]
@@ -46,9 +50,15 @@ def test_succeeds_after_transient() -> None:
 
 
 def test_gives_up_after_attempts() -> None:
-    inner = Scripted([TransientProviderError("down")])
+    inner = Scripted(
+        [
+            TransientProviderError("first"),
+            TransientProviderError("second"),
+            TransientProviderError("third"),
+        ]
+    )
     provider, sleeps = wrap(inner)
-    with pytest.raises(TransientProviderError, match="down"):
+    with pytest.raises(TransientProviderError, match="third"):
         provider.synthesize(REQ)
     assert inner.calls == 3
     assert sleeps == [1.0, 4.0]
@@ -77,14 +87,35 @@ def test_transient_is_not_billed() -> None:
 
 
 def test_retry_logged_without_text(caplog: pytest.LogCaptureFixture) -> None:
-    provider, _ = wrap(Scripted([TransientProviderError("down"), SPEECH]))
+    inner = Scripted([TransientProviderError("a"), TransientProviderError("b"), SPEECH])
+    provider, _ = wrap(inner)
     with caplog.at_level(logging.WARNING):
         provider.synthesize(REQ)
     records = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(records) == 1
-    message = records[0].getMessage()
-    assert "fake" in message and "1" in message
+    assert [r.args for r in records] == [("fake", 1, 3, 1.0), ("fake", 2, 3, 4.0)]
+    assert [r.getMessage() for r in records] == [
+        "voice fake failed transiently (attempt 1 of 3); retrying in 1 s",
+        "voice fake failed transiently (attempt 2 of 3); retrying in 4 s",
+    ]
     assert REQ.text not in caplog.text
+
+
+def test_close_closes_inner() -> None:
+    inner = Scripted([SPEECH])
+    provider, _ = wrap(inner)
+    provider.close()
+    assert inner.closed
+
+
+def test_close_without_inner_close_is_a_noop() -> None:
+    class Bare:
+        name = "bare"
+        model = "m"
+
+        def synthesize(self, req: SpeechRequest) -> Speech:
+            return SPEECH
+
+    RetryingSpeechProvider(Bare()).close()
 
 
 def test_name_and_model_mirror_inner() -> None:

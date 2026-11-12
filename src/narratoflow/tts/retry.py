@@ -48,3 +48,9 @@ class RetryingSpeechProvider:
                 )
                 self._sleep(delay)
                 attempt += 1
+
+    def close(self) -> None:
+        """Close the wrapped provider, if it has something to close."""
+        close = getattr(self.inner, "close", None)
+        if callable(close):
+            close()

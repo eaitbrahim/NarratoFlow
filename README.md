@@ -118,7 +118,9 @@ ElevenLabs connection failures, HTTP 429 and HTTP 5xx, are tried up to 3 times i
 and then 4 s. A request that may already have been billed (an ElevenLabs read timeout or an unusable
 200 response) is never retried. Piper is local and is not retried. `edge-tts` drives an unofficial,
 undocumented Microsoft endpoint that may break or be rate-limited without notice; the fallback chain
-(for example ElevenLabs, then Piper) is the mitigation, so keep a second voice configured.
+(for example ElevenLabs, then Piper) is the mitigation, so keep a second voice configured. Worst case before a fallback: a hung edge request can take
+about 9 minutes (3 attempts of up to 180 s plus 5 s of waits); an unreachable ElevenLabs about 6 minutes
+(3 attempts of up to 120 s plus 5 s).
 
 ### Pronunciation
 

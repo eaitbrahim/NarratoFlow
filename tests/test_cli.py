@@ -1815,3 +1815,51 @@ def test_check_dialect_bad_threshold_fails_before_loading(
     result = runner.invoke(cli.app, ["check-dialect", str(script), "--threshold", threshold])
     assert result.exit_code == 2
     assert "Traceback" not in result.output
+
+
+def _never_load() -> object:
+    raise AssertionError("model must not be loaded")
+
+
+def test_check_dialect_refuses_report_equal_to_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _never_load)
+    monkeypatch.setenv("COLUMNS", "300")
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    link = tmp_path / "alias.json"
+    link.symlink_to(script)
+    for report in (script, link):
+        code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(report))
+        err = capsys.readouterr().err
+        assert code == 1
+        assert len(err.strip().splitlines()) == 1
+    assert script.read_text(encoding="utf-8") == "\u0643\u062a\u0628\n"
+
+
+def test_check_dialect_unwritable_report_fails_before_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_camel_model", _never_load)
+    monkeypatch.setenv("COLUMNS", "300")
+    script = tmp_path / "script.txt"
+    script.write_text("\u0643\u062a\u0628\n", encoding="utf-8")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        if os.access(locked, os.W_OK):
+            pytest.skip("chmod does not restrict writes here (root or unsupported filesystem)")
+        report = locked / "r.json"
+        code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(report))
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "--report PATH" in err
+        assert len(err.strip().splitlines()) == 1
+        missing = tmp_path / "nope" / "r.json"
+        code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(missing))
+        assert code == 1
+        assert "--report PATH" in capsys.readouterr().err
+    finally:
+        locked.chmod(0o700)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
@@ -99,6 +100,18 @@ def check_input(file: Path, language: Language = Language.ARABIC) -> None:
     _out.print("[green]OK[/green]")
 
 
+def _require_writable_report(source: Path, target: Path) -> None:
+    """Fail before the slow model load when the report would clobber or miss its target."""
+    if target.resolve() == source.resolve():
+        raise ReportWriteError(f"the report path is the input file {source}; pass --report PATH")
+    parent = target.parent
+    writable = os.access(parent, os.W_OK | os.X_OK) if parent.is_dir() else False
+    if writable and target.exists():
+        writable = os.access(target, os.W_OK)
+    if not writable:
+        raise ReportWriteError(f"cannot write the report to {target}; pass --report PATH")
+
+
 @app.command("check-dialect")
 def check_dialect(
     file: Path,
@@ -116,6 +129,8 @@ def check_dialect(
         text = file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise CorruptInputError(f"cannot read {file}: {exc}") from exc
+    target = report if report is not None else file.with_name(file.name + ".dialect.json")
+    _require_writable_report(file, target)
     result = run_dialect_check(
         text, load_camel_model(), threshold=threshold, model_name="camel-tools dialectid-model26"
     )
@@ -125,7 +140,6 @@ def check_dialect(
             f"line {s.line}: {escape(s.label)} {s.confidence:.2f} \u00ab{excerpt}\u00bb",
             highlight=False,
         )
-    target = report if report is not None else file.with_name(file.name + ".dialect.json")
     try:
         target.write_text(result.model_dump_json(indent=2), encoding="utf-8")
     except OSError as exc:

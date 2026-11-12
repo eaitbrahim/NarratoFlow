@@ -14,6 +14,7 @@ from narratoflow.tts import Speech, SpeechProvider, SpeechRequest, VoiceChoice
 from narratoflow.tts.edge import DEFAULT_EDGE_VOICES, EDGE_VOICE_RE, EdgeProvider
 from narratoflow.tts.elevenlabs import ELEVENLABS_VOICE_ID_RE, ElevenLabsProvider
 from narratoflow.tts.piper import PiperProvider
+from narratoflow.tts.retry import RetryingSpeechProvider
 
 logger = logging.getLogger(__name__)
 KEY_ENV_VAR = "NARRATOFLOW_VOICE_API_KEY"
@@ -87,7 +88,7 @@ def _edge(voice_id: str) -> VoiceChoice:
         raise ChannelConfigError(
             f"edge voice {voice_id!r} is not a voice short name like ar-SA-HamedNeural"
         )
-    return VoiceChoice(EdgeProvider(), voice_id)
+    return VoiceChoice(RetryingSpeechProvider(EdgeProvider()), voice_id)
 
 
 def _primary(channel: ChannelConfig, settings: Settings) -> VoiceChoice:
@@ -101,7 +102,9 @@ def _primary(channel: ChannelConfig, settings: Settings) -> VoiceChoice:
             raise ChannelConfigError(
                 "ElevenLabs voice id must be 8-64 letters and digits (check [voice] voice_id)"
             )
-        return VoiceChoice(ElevenLabsProvider(key, voice.model), voice.voice_id)
+        return VoiceChoice(
+            RetryingSpeechProvider(ElevenLabsProvider(key, voice.model)), voice.voice_id
+        )
     if provider == "edge":
         return _edge(voice.voice_id)
     if provider == "piper":
@@ -114,6 +117,7 @@ def build_voice_chain(channel: ChannelConfig, settings: Settings) -> list[VoiceC
 
     Validates up front (before any spend): the voice key, the ElevenLabs voice id,
     every edge voice name and every Piper model file with its `<model>.json` config.
+    Edge and ElevenLabs voices retry transient failures; Piper stays unwrapped.
     Imports no optional extra. The providers are untracked; callers wrap them in
     `TrackedSpeechProvider` before any call.
     """

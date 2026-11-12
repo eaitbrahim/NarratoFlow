@@ -11,6 +11,7 @@ from narratoflow.errors import (
     ChannelConfigError,
     ProviderAuthError,
     ProviderError,
+    TransientProviderError,
 )
 from narratoflow.models import Language
 from narratoflow.tts import SpeechRequest
@@ -286,3 +287,45 @@ def test_context_manager_closes_own_client() -> None:
     with ElevenLabsProvider(SecretStr(KEY), "eleven_multilingual_v2") as p:
         assert not p.http.is_closed
     assert p.http.is_closed
+
+
+def test_connect_errors_are_transient() -> None:
+    for exc in (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+
+        def h(r: httpx.Request, exc: type[httpx.TransportError] = exc) -> httpx.Response:
+            raise exc("down", request=r)
+
+        with pytest.raises(TransientProviderError):
+            provider(h).synthesize(req())
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_retryable_statuses_are_transient(status: int) -> None:
+    with pytest.raises(TransientProviderError):
+        provider(lambda r: httpx.Response(status, json={})).synthesize(req())
+
+
+@pytest.mark.parametrize("status", [400, 401])
+def test_client_errors_are_not_transient(status: int) -> None:
+    expected = ProviderAuthError if status == 401 else ProviderError
+    with pytest.raises(expected) as info:
+        provider(lambda r: httpx.Response(status, json={})).synthesize(req())
+    assert not isinstance(info.value, TransientProviderError)
+
+
+def test_quota_exceeded_429_is_not_transient() -> None:
+    h: Handler = lambda r: httpx.Response(  # noqa: E731
+        429, json={"detail": {"status": "quota_exceeded"}}
+    )
+    with pytest.raises(ProviderError) as info:
+        provider(h).synthesize(req())
+    assert not isinstance(info.value, TransientProviderError)
+
+
+def test_read_timeout_not_transient() -> None:
+    def h(r: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=r)
+
+    with pytest.raises(ProviderError) as info:
+        provider(h).synthesize(req())
+    assert not isinstance(info.value, TransientProviderError)

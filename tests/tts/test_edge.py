@@ -14,7 +14,12 @@ from typing import Any
 import pytest
 
 from narratoflow.audio.words import TimedSpan
-from narratoflow.errors import ChannelConfigError, ExtraMissingError, ProviderError
+from narratoflow.errors import (
+    ChannelConfigError,
+    ExtraMissingError,
+    ProviderError,
+    TransientProviderError,
+)
 from narratoflow.models import Language
 from narratoflow.tts import SpeechRequest, edge
 from narratoflow.tts.edge import DEFAULT_EDGE_VOICES, EdgeProvider
@@ -97,9 +102,15 @@ def test_edge_library_error_maps_to_provider_error(monkeypatch: pytest.MonkeyPat
         [{"type": "audio", "data": b"x"}],
         fail=NoAudioReceived("secret body text"),
     )
-    with pytest.raises(ProviderError) as info:
+    with pytest.raises(TransientProviderError) as info:
         EdgeProvider().synthesize(REQ)
     assert str(info.value) == "edge-tts failed: NoAudioReceived"
+
+
+def test_edge_oserror_is_transient(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_edge(monkeypatch, [], fail=OSError("connection reset"))
+    with pytest.raises(TransientProviderError):
+        EdgeProvider().synthesize(REQ)
 
 
 def test_edge_no_audio_is_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,8 +131,9 @@ def test_edge_no_audio_is_provider_error(monkeypatch: pytest.MonkeyPatch) -> Non
 )
 def test_edge_malformed_chunk_is_provider_error(monkeypatch: pytest.MonkeyPatch, bad: Any) -> None:
     fake_edge(monkeypatch, [{"type": "audio", "data": b"x"}, bad])
-    with pytest.raises(ProviderError, match="edge-tts"):
+    with pytest.raises(ProviderError, match="edge-tts") as info:
         EdgeProvider().synthesize(REQ)
+    assert not isinstance(info.value, TransientProviderError)
 
 
 def test_edge_overall_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,5 +149,22 @@ def test_edge_overall_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     module.Communicate = Communicate  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "edge_tts", module)
     monkeypatch.setattr(edge, "EDGE_DEADLINE_S", 0.05)
-    with pytest.raises(ProviderError, match="timed out"):
+    with pytest.raises(TransientProviderError, match="timed out"):
         EdgeProvider().synthesize(REQ)
+
+
+def test_edge_arabic_timings_monotonic(monkeypatch: pytest.MonkeyPatch) -> None:
+    words = ["\u0645\u0631\u062d\u0628\u0627", "\u0628\u0643\u0645", "\u0641\u064a"]
+    chunks: list[dict[str, Any]] = [{"type": "audio", "data": b"x" * 100}]
+    for i, word in enumerate(words):
+        chunks.append(
+            {"type": "WordBoundary", "offset": i * 3_000_000, "duration": 2_500_000, "text": word}
+        )
+    fake_edge(monkeypatch, chunks)
+    req = SpeechRequest(
+        text=" ".join(words), voice_id="ar-SA-HamedNeural", language=Language.ARABIC
+    )
+    speech = EdgeProvider().synthesize(req)
+    starts = [s.start_ms for s in speech.spans]
+    assert starts == sorted(starts)
+    assert speech.spans[-1].end_ms == 850

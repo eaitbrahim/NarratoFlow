@@ -113,6 +113,13 @@ installed (`uv sync --extra tts-edge`), otherwise an outage ends the build with 
 narrate part N". A rejected ElevenLabs key (HTTP 401/403) or an unknown voice (HTTP 404) is a
 configuration error: the build stops (finished parts are kept) instead of falling back.
 
+Temporary failures retry inside one voice before any fallback: edge-tts errors and timeouts, and
+ElevenLabs connection failures, HTTP 429 and HTTP 5xx, are tried up to 3 times in all, waiting 1 s
+and then 4 s. A request that may already have been billed (an ElevenLabs read timeout or an unusable
+200 response) is never retried. Piper is local and is not retried. `edge-tts` drives an unofficial,
+undocumented Microsoft endpoint that may break or be rate-limited without notice; the fallback chain
+(for example ElevenLabs, then Piper) is the mitigation, so keep a second voice configured.
+
 ### Pronunciation
 
 A channel's `[pronunciation]` table tells the voice how to say words it gets wrong; the caption

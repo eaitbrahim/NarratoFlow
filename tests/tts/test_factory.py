@@ -24,6 +24,7 @@ from narratoflow.tts.edge import EdgeProvider
 from narratoflow.tts.elevenlabs import ElevenLabsProvider
 from narratoflow.tts.factory import TrackedSpeechProvider, build_voice_chain
 from narratoflow.tts.piper import PiperProvider
+from narratoflow.tts.retry import RetryingSpeechProvider
 
 VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 PRICES = PriceTable({"voice": {"elevenlabs/eleven_multilingual_v2": (Decimal("0.30"),)}})
@@ -70,9 +71,11 @@ def test_chain_paid_then_edge_default_voice_for_language() -> None:
     chain = build_voice_chain(channel("ar", **eleven()), keyed())
     assert len(chain) == 2
     paid, free = chain
-    assert isinstance(paid.provider, ElevenLabsProvider)
+    assert isinstance(paid.provider, RetryingSpeechProvider)
+    assert isinstance(paid.provider.inner, ElevenLabsProvider)
     assert (paid.provider.model, paid.voice_id) == ("eleven_multilingual_v2", VOICE_ID)
-    assert isinstance(free.provider, EdgeProvider)
+    assert isinstance(free.provider, RetryingSpeechProvider)
+    assert isinstance(free.provider.inner, EdgeProvider)
     assert free.voice_id == "ar-SA-HamedNeural"
     english = build_voice_chain(channel("en", **eleven()), keyed())
     assert english[1].voice_id == "en-US-AndrewNeural"
@@ -95,7 +98,8 @@ def test_chain_skips_primary_in_fallback(tmp_path: Path) -> None:
         channel(provider="edge", voice_id="ar-SA-ZariyahNeural", fallback=["edge"]), Settings()
     )
     assert len(chain) == 1
-    assert isinstance(chain[0].provider, EdgeProvider)
+    assert isinstance(chain[0].provider, RetryingSpeechProvider)
+    assert isinstance(chain[0].provider.inner, EdgeProvider)
     assert chain[0].voice_id == "ar-SA-ZariyahNeural"
     model = piper_model(tmp_path / "m.onnx")
     piper = build_voice_chain(
@@ -121,9 +125,11 @@ def test_chain_unknown_provider() -> None:
 
 def test_chain_provider_case_insensitive() -> None:
     chain = build_voice_chain(channel(**eleven(provider=" ElevenLabs ")), keyed())
-    assert isinstance(chain[0].provider, ElevenLabsProvider)
+    assert isinstance(chain[0].provider, RetryingSpeechProvider)
+    assert isinstance(chain[0].provider.inner, ElevenLabsProvider)
     edge = build_voice_chain(channel(provider="EDGE", voice_id="ar-SA-HamedNeural"), Settings())
-    assert isinstance(edge[0].provider, EdgeProvider)
+    assert isinstance(edge[0].provider, RetryingSpeechProvider)
+    assert isinstance(edge[0].provider.inner, EdgeProvider)
 
 
 def test_chain_bad_elevenlabs_voice_id_and_missing_piper_model_fail_up_front(

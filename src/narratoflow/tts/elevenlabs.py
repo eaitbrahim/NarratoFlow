@@ -29,6 +29,7 @@ from narratoflow.errors import (
     ChannelConfigError,
     ProviderAuthError,
     ProviderError,
+    TransientProviderError,
 )
 from narratoflow.tts import Speech, SpeechRequest
 
@@ -37,6 +38,7 @@ QUOTA_EXCEEDED = "quota_exceeded"  # exhausted credits: an outage, not a bad key
 OUTPUT_FORMAT = "mp3_44100_128"
 TIMEOUT_S = 120.0
 MAX_SECONDS = 3600
+_CONNECT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 ELEVENLABS_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
 
 
@@ -99,7 +101,11 @@ class ElevenLabsProvider:
                 json={"text": req.text, "model_id": self.model},
                 timeout=TIMEOUT_S,
             )
+        except _CONNECT_ERRORS as e:
+            # The request never reached the service, so nothing was billed.
+            raise TransientProviderError(f"Cannot reach ElevenLabs: {type(e).__name__}") from e
         except httpx.TimeoutException as e:
+            # A read timeout may follow a billed request: never retried.
             raise ProviderError(f"ElevenLabs request timed out ({type(e).__name__})") from e
         except httpx.HTTPError as e:
             raise ProviderError(f"Cannot reach ElevenLabs: {self._scrub(str(e))}") from e
@@ -109,6 +115,8 @@ class ElevenLabsProvider:
                 # A rejected key or an unknown voice is a configuration error, not an
                 # outage: it must stop the build, never fall back to a free voice.
                 raise ProviderAuthError(self._http_error(response))
+            if not quota and (response.status_code == 429 or response.status_code >= 500):
+                raise TransientProviderError(self._http_error(response))
             raise ProviderError(self._http_error(response))
         try:
             return self._speech(response)

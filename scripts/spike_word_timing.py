@@ -162,6 +162,56 @@ def drift_stats(native: Sequence[WordTiming], reference: Sequence[WordTiming]) -
     )
 
 
+@dataclass(frozen=True)
+class OffsetStats:
+    """Signed start (or end) deltas, native minus reference."""
+
+    mean_ms: float
+    median_ms: float
+    std_ms: float
+    negatives: int
+
+
+def signed_deltas(
+    native: Sequence[WordTiming], reference: Sequence[WordTiming]
+) -> tuple[list[int], list[int]]:
+    """Per-word (start, end) deltas, native minus reference; positive means native is later."""
+    drift_stats(native, reference)
+    starts = [a.start_ms - b.start_ms for a, b in zip(native, reference, strict=True)]
+    ends = [a.end_ms - b.end_ms for a, b in zip(native, reference, strict=True)]
+    return starts, ends
+
+
+def offset_stats(deltas: Sequence[int]) -> OffsetStats:
+    if not deltas:
+        raise ValueError("no words to compare")
+    return OffsetStats(
+        mean_ms=statistics.fmean(deltas),
+        median_ms=float(statistics.median(deltas)),
+        std_ms=statistics.pstdev(deltas),
+        negatives=sum(1 for d in deltas if d < 0),
+    )
+
+
+def residual(deltas: Sequence[int], offset_ms: float) -> tuple[float, float]:
+    """Median and p95 of the absolute deltas left after subtracting `offset_ms`."""
+    if not deltas:
+        raise ValueError("no words to compare")
+    left = sorted(abs(d - offset_ms) for d in deltas)
+    pos = (len(left) - 1) * 0.95
+    low = math.floor(pos)
+    high = math.ceil(pos)
+    return float(statistics.median(left)), left[low] + (left[high] - left[low]) * (pos - low)
+
+
+def worst_end_gap(end_deltas: Sequence[int]) -> tuple[int, int]:
+    """Index and signed value of the end delta with the largest magnitude."""
+    if not end_deltas:
+        raise ValueError("no words to compare")
+    index = max(range(len(end_deltas)), key=lambda i: abs(end_deltas[i]))
+    return index, end_deltas[index]
+
+
 def _first_difference(words: list[str], spans_text: list[str]) -> str:
     from narratoflow.audio.words import norm_for_timing
 
@@ -193,45 +243,93 @@ def main() -> int:
 
     provider = EdgeProvider()
     aligner = CtcAligner()
-    all_native: list[WordTiming] = []
-    all_ref: list[WordTiming] = []
-    failures: list[str] = []
-    print("| # | words | spans | native mapped | start median/p95/max ms | end median/max ms |")
+    pairs: list[tuple[int, list[WordTiming], list[WordTiming]]] = []
+    native_failures: list[str] = []
+    ctc_failures: list[str] = []
+    print("| # | words | spans | native mapped | ctc mapped | abs start median/p95/max ms |")
     print("|---|---|---|---|---|---|")
     for n, sentence in enumerate(SENTENCES, 1):
+        # The raw sentence is its spoken form here (no digits, empty lexicon), as in production.
         words = tokens(sentence)
         speech = provider.synthesize(SpeechRequest(sentence, VOICE, Language.ARABIC))
         native = timings_from_spans(words, speech.spans) if speech.spans else None
-        samples = decode(speech.audio)
-        reference = timings_from_spans(
-            words, aligner.align(samples, SAMPLE_RATE, sentence, Language.ARABIC)
-        )
+        aligned = aligner.align(decode(speech.audio), SAMPLE_RATE, sentence, Language.ARABIC)
+        reference = timings_from_spans(words, aligned)
         if native is None:
             why = _first_difference(words, [s.text for s in speech.spans])
-            failures.append(f"- sentence {n}: {why}")
+            native_failures.append(f"- sentence {n}: {why}")
+        if reference is None:
+            why = _first_difference(words, [s.text for s in aligned])
+            ctc_failures.append(f"- sentence {n}: {why}")
         cells = [str(len(words)), str(len(speech.spans)), "yes" if native else "NO"]
+        cells.append("yes" if reference else "NO")
         if native is not None and reference is not None:
             d = drift_stats(native, reference)
-            all_native += native
-            all_ref += reference
-            cells += [
-                f"{d.median_start_ms:.0f} / {d.p95_start_ms:.0f} / {d.max_start_ms}",
-                f"{d.median_end_ms:.0f} / {d.max_end_ms}",
-            ]
+            pairs.append((n, native, reference))
+            cells.append(f"{d.median_start_ms:.0f} / {d.p95_start_ms:.0f} / {d.max_start_ms}")
         else:
-            cells += ["n/a", "n/a"]
+            cells.append("n/a")
         print(_row(n, cells))
-    if all_native:
-        t = drift_stats(all_native, all_ref)
-        print(
-            f"\nTotals over {t.words} words: start median {t.median_start_ms:.0f} ms, "
-            f"p95 {t.p95_start_ms:.0f} ms, max {t.max_start_ms} ms; "
-            f"end median {t.median_end_ms:.0f} ms, max {t.max_end_ms} ms."
-        )
-    print("\nNative mapping failures:" if failures else "\nNative mapping failures: none")
-    for line in failures:
-        print(line)
+    _report(pairs)
+    for title, items in (("Native", native_failures), ("CTC", ctc_failures)):
+        print(f"\n{title} mapping failures:" if items else f"\n{title} mapping failures: none")
+        for line in items:
+            print(line)
     return 0
+
+
+def _report(pairs: list[tuple[int, list[WordTiming], list[WordTiming]]]) -> None:
+    if not pairs:
+        return
+    all_native = [w for _, nat, _ in pairs for w in nat]
+    all_ref = [w for _, _, ref in pairs for w in ref]
+    t = drift_stats(all_native, all_ref)
+    print(
+        f"\nAbsolute totals over {t.words} words: start median {t.median_start_ms:.0f} ms, "
+        f"p95 {t.p95_start_ms:.0f} ms, max {t.max_start_ms} ms; "
+        f"end median {t.median_end_ms:.0f} ms, max {t.max_end_ms} ms."
+    )
+    pooled_start, pooled_end = signed_deltas(all_native, all_ref)
+    pooled = offset_stats(pooled_start)
+    print("\nSigned start delta (native minus CTC, positive = edge later), residual after")
+    print("subtracting the sentence's own median and the single pooled median.\n")
+    print(
+        "| # | mean | median | std | negatives | own-median resid med/p95 | pooled resid med/p95 |"
+    )
+    print("|---|---|---|---|---|---|---|")
+    medians: list[float] = []
+    for n, nat, ref in pairs:
+        starts, _ = signed_deltas(nat, ref)
+        s = offset_stats(starts)
+        medians.append(s.median_ms)
+        own = residual(starts, s.median_ms)
+        glob = residual(starts, pooled.median_ms)
+        print(
+            f"| {n} | {s.mean_ms:.0f} | {s.median_ms:.0f} | {s.std_ms:.0f} | {s.negatives} "
+            f"| {own[0]:.0f} / {own[1]:.0f} | {glob[0]:.0f} / {glob[1]:.0f} |"
+        )
+    own_all = [
+        d - m
+        for (_, nat, ref), m in zip(pairs, medians, strict=True)
+        for d in signed_deltas(nat, ref)[0]
+    ]
+    own_res = residual(own_all, 0.0)
+    pooled_res = residual(pooled_start, pooled.median_ms)
+    print(
+        f"\nPooled signed start: mean {pooled.mean_ms:.0f}, median {pooled.median_ms:.0f}, "
+        f"std {pooled.std_ms:.0f}, negatives {pooled.negatives} of {len(pooled_start)}."
+    )
+    print(f"Residual after per-sentence medians: median {own_res[0]:.0f}, p95 {own_res[1]:.0f}.")
+    print(f"Residual after the pooled median: median {pooled_res[0]:.0f}, p95 {pooled_res[1]:.0f}.")
+    consistent = all(m > 0 for m in medians) or all(m < 0 for m in medians)
+    print(f"Sign of per-sentence median consistent: {'yes' if consistent else 'no'}.")
+    print("\nLargest signed end delta per sentence (native minus CTC):\n")
+    print("| # | word index | last word | signed end delta ms |")
+    print("|---|---|---|---|")
+    for n, nat, ref in pairs:
+        index, value = worst_end_gap(signed_deltas(nat, ref)[1])
+        print(f"| {n} | {index} | {'yes' if index == len(nat) - 1 else 'no'} | {value} |")
+    print(f"\nPooled signed end median: {offset_stats(pooled_end).median_ms:.0f} ms.")
 
 
 if __name__ == "__main__":

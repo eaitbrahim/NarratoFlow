@@ -12,27 +12,75 @@ CTC is a reference, not ground truth. It has its own error (frame stride, model 
 
 ## Results
 
-| # | words | spans | native mapped | start median/p95/max ms | end median/max ms |
+Second run (script now also reports signed deltas), same setup. Native minus CTC: positive means the edge word starts later than CTC.
+
+| # | words | spans | native mapped | ctc mapped | abs start median/p95/max ms |
 |---|---|---|---|---|---|
-| 1 | 5 | 5 | yes | 125 / 190 / 205 | 62 / 883 |
-| 2 | 8 | 8 | yes | 115 / 172 / 185 | 61 / 870 |
-| 3 | 7 | 7 | yes | 128 / 147 / 150 | 27 / 860 |
-| 4 | 6 | 6 | yes | 125 / 192 / 210 | 26 / 873 |
-| 5 | 6 | 6 | yes | 100 / 129 / 130 | 62 / 870 |
-| 6 | 6 | 6 | yes | 92 / 117 / 120 | 86 / 858 |
-| 7 | 6 | 6 | yes | 95 / 184 / 203 | 71 / 848 |
-| 8 | 7 | 7 | yes | 113 / 221 / 238 | 95 / 868 |
-| 9 | 6 | 6 | yes | 110 / 292 / 343 | 138 / 868 |
-| 10 | 26 | 26 | yes | 120 / 207 / 223 | 25 / 863 |
-| 11 | 9 | 9 | yes | 120 / 174 / 193 | 152 / 873 |
+| 1 | 5 | 5 | yes | yes | 125 / 190 / 205 |
+| 2 | 8 | 8 | yes | yes | 115 / 172 / 185 |
+| 3 | 7 | 7 | yes | yes | 128 / 147 / 150 |
+| 4 | 6 | 6 | yes | yes | 125 / 192 / 210 |
+| 5 | 6 | 6 | yes | yes | 100 / 129 / 130 |
+| 6 | 6 | 6 | yes | yes | 92 / 117 / 120 |
+| 7 | 6 | 6 | yes | yes | 95 / 184 / 203 |
+| 8 | 7 | 7 | yes | yes | 113 / 221 / 238 |
+| 9 | 6 | 6 | yes | yes | 110 / 292 / 343 |
+| 10 | 26 | 26 | yes | yes | 118 / 207 / 223 |
+| 11 | 9 | 9 | yes | yes | 120 / 174 / 193 |
 
-Totals over 92 words: start median 116 ms, p95 206 ms, max 343 ms; end median 61 ms, max 883 ms.
+Absolute totals over 92 words: start median 115 ms, p95 206 ms, max 343 ms; end median 61 ms, max 883 ms.
 
-Native mapping failures: none. All 11 sentences produced exactly one span per word and `timings_from_spans` returned timings for every one.
+Signed start delta (native minus CTC, positive = edge later), residual after
+subtracting the sentence's own median and the single pooled median.
 
-Observations:
-- Start drift is steady at roughly 90 to 130 ms in every sentence, which looks like a systematic offset between the two methods rather than random noise. Its sign was not recorded.
-- The end drift has a median of 61 ms but a maximum of 848 to 883 ms in every sentence. That is one word per sentence, most likely the last word, where the two methods disagree about where trailing audio ends. This was not isolated per word in this run.
+| # | mean | median | std | negatives | own-median resid med/p95 | pooled resid med/p95 |
+|---|---|---|---|---|---|---|
+| 1 | -137 | -125 | 35 | 5 | 5 / 67 | 10 / 75 |
+| 2 | -119 | -115 | 33 | 8 | 23 / 59 | 23 / 59 |
+| 3 | -118 | -128 | 23 | 7 | 22 / 41 | 22 / 34 |
+| 4 | -124 | -125 | 47 | 6 | 28 / 79 | 28 / 84 |
+| 5 | -100 | -100 | 24 | 6 | 22 / 34 | 22 / 46 |
+| 6 | -96 | -92 | 14 | 6 | 10 / 26 | 24 / 34 |
+| 7 | -112 | -95 | 44 | 6 | 18 / 88 | 31 / 76 |
+| 8 | -130 | -113 | 56 | 7 | 25 / 108 | 27 / 106 |
+| 9 | -147 | -110 | 89 | 6 | 20 / 182 | 24 / 178 |
+| 10 | -120 | -118 | 44 | 26 | 32 / 89 | 31 / 92 |
+| 11 | -127 | -120 | 29 | 9 | 22 / 54 | 17 / 59 |
+
+Pooled signed start: mean -121, median -115, std 45, negatives 92 of 92.
+Residual after per-sentence medians: median 19, p95 88.
+Residual after the pooled median: median 24, p95 91.
+Sign of per-sentence median consistent: yes.
+
+Largest signed end delta per sentence (native minus CTC):
+
+| # | word index | last word | signed end delta ms |
+|---|---|---|---|
+| 1 | 4 | yes | -883 |
+| 2 | 7 | yes | -870 |
+| 3 | 6 | yes | -860 |
+| 4 | 5 | yes | -873 |
+| 5 | 5 | yes | -870 |
+| 6 | 5 | yes | -858 |
+| 7 | 5 | yes | -848 |
+| 8 | 6 | yes | -868 |
+| 9 | 5 | yes | -868 |
+| 10 | 25 | yes | -863 |
+| 11 | 8 | yes | -873 |
+
+Pooled signed end median: 25 ms.
+
+Native mapping failures: none
+
+CTC mapping failures: none
+
+
+Reading:
+- Absolute drift (binding rule as written): median 115 ms (limit 80), p95 206 ms (limit 200). The rule on absolute drift fails.
+- The drift is a constant offset, not disagreement: all 92 of 92 word starts are earlier in edge than in CTC, the sign is the same in every sentence (per-sentence medians -92 to -128 ms), pooled median -115 ms (mean -121, std 45).
+- After subtracting the single pooled median (a fixed global offset), start drift is median 24 ms, p95 91 ms, which meets the rule (80 / 200). Per-sentence medians do slightly better (median 19, p95 88). Worst residual is sentence 9 (p95 178 ms).
+- End gap: in every sentence the largest end disagreement is the last word, and it is negative: edge ends that word 848 to 883 ms before CTC does. So CTC runs long on the last word (the pooled end median over all words is only +25 ms, so this is specific to the final word). Likely cause, not verified here: CTC stretches the final word over trailing audio, while the edge boundary ends at the spoken end. Which end is right needs a listen or waveform check.
+- CTC is a reference, not ground truth; this shows the two methods differ by a stable amount, not which one is closer to the audio.
 
 ## Mapping edge cases
 
@@ -44,10 +92,12 @@ Observations:
 
 ## Recommendation
 
-Rule: keep native edge boundaries first with CTC as fallback only if native mapping succeeds on every sentence, the median start drift against CTC is at most 80 ms, and the p95 is at most 200 ms.
+Rule as written (absolute drift): native mapping 11 of 11, median start drift 115 ms (limit 80), p95 206 ms (limit 200). The absolute rule is not met.
 
-Measured: mapping succeeded on 11 of 11, but median start drift is 116 ms (limit 80) and p95 is 206 ms (limit 200). The rule is not met.
+Because the drift is signed and constant, the decision uses the residual after the pooled offset: the sign is consistent across all sentences and the residual after the pooled signed median is median 24 ms, p95 91 ms, which is within 80 / 200.
 
-Recommendation: use CTC first for Arabic, with native edge boundaries as the fallback. File a follow-up issue for that change (controller files it).
+Recommendation: keep native edge boundaries first, apply a fixed offset of +115 ms to edge word starts (shifting them later, to match CTC), and handle the last-word end (edge ends it about 860 ms before CTC; decide by ear or waveform which is right, and clamp or keep the native end accordingly). CTC stays the fallback.
 
-Caveat: CTC is a reference, not ground truth. The rule is binding as written, so the recommendation follows it, but the near-constant offset suggests the follow-up should first check by ear or waveform which method is closer to the audio before the order is switched.
+Follow-up issue (controller files it):
+- Title: Shift edge-tts Arabic word starts by a fixed offset and fix the last-word end
+- Body: Spike #13 (docs/spikes/2026-11-12-arabic-word-timing.md) measured edge-tts ar-SA-HamedNeural word starts against CTC on 92 words: edge is earlier by a constant 115 ms (all 92 negative, same sign in all 11 sentences, std 45 ms); after subtracting it the start drift is median 24 ms, p95 91 ms. Apply a fixed +115 ms shift to native edge word starts in the Arabic path (keep native first, CTC as fallback). Also, the last word's end differs by about 860 ms (edge ends earlier than CTC) in every sentence: verify by listening or waveform which end is right and handle it. CTC is a reference, not ground truth, so confirm the offset on a few more voices and sentences, and on digits, before hard-coding it.

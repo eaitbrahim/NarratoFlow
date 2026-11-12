@@ -61,15 +61,15 @@ class Lexicon:
     core of the other keys (for example "U.S." or "WHO") to its phrase.
     """
 
-    entries: Mapping[str, str]
-    exact: Mapping[str, str] = MappingProxyType({})
+    entries: Mapping[str, tuple[str, str]]
+    exact: Mapping[str, tuple[str, str]] = MappingProxyType({})
     EMPTY: ClassVar[Lexicon]
 
     @classmethod
     def from_entries(cls, entries: Mapping[str, str]) -> Lexicon:
         """Validate and freeze `entries`; errors name the key, never the replacement."""
-        loose: dict[str, str] = {}
-        exact: dict[str, str] = {}
+        loose: dict[str, tuple[str, str]] = {}
+        exact: dict[str, tuple[str, str]] = {}
         seen: dict[tuple[bool, str], str] = {}
         for key, replacement in entries.items():
             if not key.strip():
@@ -92,19 +92,29 @@ class Lexicon:
                     " (they compare equal)"
                 )
             seen[ident] = key
-            (exact if is_exact else loose)[ident[1]] = " ".join(replacement.split())
+            phrase = " ".join(replacement.split())
+            (exact if is_exact else loose)[ident[1]] = (phrase, _split_edges(key)[2])
         return cls(MappingProxyType(loose), MappingProxyType(exact))
 
     def __hash__(self) -> int:
         return hash((frozenset(self.entries.items()), frozenset(self.exact.items())))
 
-    def lookup(self, token: str) -> str | None:
-        """The replacement for `token`: an exact key first, then a loose one."""
+    def match(self, token: str) -> tuple[str, str] | None:
+        """`(phrase, key_tail)` for `token`: an exact key first, then a loose one.
+
+        `key_tail` is the key's own trailing punctuation (the "." of "U.S."), which
+        belongs to the key, not to the sentence.
+        """
         core = _exact_core(token)
         if core in self.exact:
             return self.exact[core]
         norm = norm_for_timing(token)
         return self.entries.get(norm) if norm else None
+
+    def lookup(self, token: str) -> str | None:
+        """The replacement phrase for `token`, or None."""
+        hit = self.match(token)
+        return None if hit is None else hit[0]
 
 
 Lexicon.EMPTY = Lexicon(MappingProxyType({}))
@@ -132,20 +142,30 @@ def _attach(words: list[str], prefix: str, suffix: str) -> list[str]:
     )
 
 
+def _continues(match: re.Match[str]) -> bool:
+    """The sentence goes on after this token: the next word starts lowercase."""
+    rest = match.string[match.end() :].lstrip()
+    return bool(rest) and rest[0].islower()
+
+
 def spoken_text(text: str, language: Language, lexicon: Lexicon) -> SpokenText:
     """`text` as the voice should say it.
 
     Per whitespace token: a lexicon entry wins (its phrase replaces the token's
     core, edge punctuation and symbols stay attached to the first and last
-    word); otherwise a number the speller handles is spelled out; otherwise the
-    token is unchanged.
+    word, except the key's own trailing punctuation when a lowercase word
+    follows, as in "the U.S. economy"); otherwise a number the speller
+    handles is spelled out; otherwise the token is unchanged.
     """
     groups: list[int] = []
 
     def rewrite(match: re.Match[str]) -> str:
         token = match.group()
         prefix, core, suffix = _split_edges(token)
-        replacement = lexicon.lookup(token)
+        hit = lexicon.match(token)
+        replacement = None if hit is None else hit[0]
+        if hit is not None and hit[1] and suffix.startswith(hit[1]) and _continues(match):
+            suffix = suffix[len(hit[1]) :]  # "the U.S. economy": the key's "." ends no sentence
         if replacement is None and core:
             replacement = spell_number(core, language)
         if replacement is None:

@@ -79,3 +79,11 @@ def test_float64_sfx_keeps_dtype_on_both_paths() -> None:
     sfx: Any = _noise(len(voice)).astype(np.float64)
     assert duck(sfx, voice).dtype == np.float64
     assert duck(sfx, np.zeros(len(voice), dtype=np.float32)).dtype == np.float64
+
+
+def test_empty_buses_give_empty_output() -> None:
+    empty = np.zeros(0, dtype=np.float32)
+    assert duck_gain_db(empty).shape == (0,)
+    out = duck(empty, empty)
+    assert out.shape == (0,)
+    assert out.dtype == np.float32

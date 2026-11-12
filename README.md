@@ -134,7 +134,7 @@ keeps the word as written:
 ```toml
 [pronunciation]
 "NASA" = "nasa"
-"خديجة" = "خديجه"
+"سقراط" = "سُقْراط"
 ```
 
 Keys are single words. A key with no uppercase letter and no punctuation inside it (`"nasa"`, an
@@ -142,7 +142,9 @@ Arabic name) matches ignoring case, tashkeel and edge punctuation, so an Arabic 
 or without its vowel marks. A key with an uppercase letter or punctuation inside it (`"NASA"`,
 `"WHO"`, `"U.S."`) matches only a word spelled exactly like it (case counts; tashkeel and
 punctuation around the word are ignored), so `"WHO"` leaves "who" alone and `"U.S." = "you ess"`
-leaves "us" alone. If both kinds collide, the exact key wins; two keys that are the same after
+leaves "us" alone. A key's own final period is dropped when a lowercase word follows ("the U.S.
+economy" is voiced "the you ess economy") and kept before a capital or at the end, where it may
+end the sentence. If both kinds collide, the exact key wins; two keys that are the same after
 this reduction are rejected. Numbers are spoken as words while captions keep the digits:
 
 - plain integers up to 999,999,999,999 (thousands separators allowed) are spelled as cardinals;

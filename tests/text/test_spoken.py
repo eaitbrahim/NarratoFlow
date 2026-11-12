@@ -175,3 +175,16 @@ def test_exact_duplicates_rejected_without_replacement() -> None:
     with pytest.raises(ValueError, match="duplicate") as dup:
         Lexicon.from_entries({"U.S.": "SECRETONE", "U.S": "SECRETTWO"})
     assert "SECRET" not in str(dup.value)
+
+
+def test_key_own_trailing_period_is_not_a_sentence_end() -> None:
+    lexicon = Lexicon.from_entries({"U.S.": "you ess", "e.g.": "for example"})
+    assert spoken_text("the U.S. economy", EN, lexicon).text == "the you ess economy"
+    assert spoken_text("e.g. this", EN, lexicon).text == "for example this"
+    # Before a capital or at the end, the period may end the sentence: it stays.
+    assert spoken_text("in the U.S. Then", EN, lexicon).text == "in the you ess. Then"
+    assert spoken_text("in the U.S.", EN, lexicon).text == "in the you ess."
+    # A key without a trailing period keeps the token's punctuation.
+    assert spoken_text("NASA, then", EN, Lexicon.from_entries({"NASA": "nasa"})).text == (
+        "nasa, then"
+    )

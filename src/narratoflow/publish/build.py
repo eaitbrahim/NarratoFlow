@@ -67,6 +67,7 @@ from narratoflow.render.ffmpeg import RenderTools, find_render_tools
 from narratoflow.render.report import RenderReport
 from narratoflow.settings import Settings
 from narratoflow.sketching.generate import require_series_channel
+from narratoflow.text.spoken import channel_lexicon
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,13 @@ class _Run:
             *sketch_checks(inputs),
             *verse_checks(inputs, self.get_corpus),
             *disclosure_checks(inputs, text),
-            *content_checks(inputs.part, self.rules, series_title=self.series.title),
+            *content_checks(
+                inputs.part,
+                self.rules,
+                series_title=self.series.title,
+                language=self.series.language,
+                lexicon=channel_lexicon(self.channel),
+            ),
         ]
         if unreadable is not None:
             checks.append(unreadable)

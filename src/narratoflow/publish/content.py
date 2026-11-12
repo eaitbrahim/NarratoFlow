@@ -12,11 +12,12 @@ import hashlib
 import re
 import unicodedata
 
-from narratoflow.models import ContentFinding, ContentReview, Part, SceneKind
+from narratoflow.models import ContentFinding, ContentReview, Language, Part, SceneKind
 from narratoflow.planning.approval import verse_label
 from narratoflow.planning.prompts import CONTENT_REVIEW_SYSTEM
 from narratoflow.publish.checks import CheckId, CheckResult, Severity
 from narratoflow.publish.rules import Rules, normalize_category
+from narratoflow.text.spoken import Lexicon, spoken_text
 
 WARN_ONLY_CATEGORIES = frozenset({"religious_discussion", "other"})
 NOT_CHECKED = "content rules not checked; run narratoflow review"
@@ -26,13 +27,15 @@ MAX_SCENE_ID_CHARS = 64
 MAX_REASON_CHARS = 300
 
 
-def review_text(part: Part, *, series_title: str) -> str:
+def review_text(part: Part, *, series_title: str, language: Language, lexicon: Lexicon) -> str:
     """Everything a viewer sees or hears, one labelled line each; verses are not sent.
 
     Lines: the series title (burned on screen in headline gaps), hook, recap, teaser,
-    then per scene its title, narration (or a verse marker), the spoken and caption
-    texts where they differ from the narration, and the card text. Editing any of
-    them makes a stored review stale.
+    then per scene its title, narration (or a verse marker), the spoken form where it
+    differs from the narration, the caption text where it differs, and the card text.
+    The spoken form is exactly what the voice says: `spoken_text` of the voiced text
+    (numbers, signs, currency and lexicon entries applied). Editing any of them makes
+    a stored review stale.
     """
     lines = [f"[series title] {series_title}", f"[hook] {part.hook_text}"]
     if part.recap_text:
@@ -48,8 +51,11 @@ def review_text(part: Part, *, series_title: str) -> str:
         else:
             narration = scene.narration
             lines.append(f"[{scene.id}] {narration.source_text}")
-            if narration.tts_text is not None and narration.tts_text != narration.source_text:
-                lines.append(f"[{scene.id} spoken] {narration.tts_text}")
+            spoken = spoken_text(
+                narration.tts_text or narration.source_text, language, lexicon
+            ).text
+            if spoken != narration.source_text:
+                lines.append(f"[{scene.id} spoken] {spoken}")
             if (
                 narration.caption_text is not None
                 and narration.caption_text != narration.source_text
@@ -60,8 +66,9 @@ def review_text(part: Part, *, series_title: str) -> str:
     return "\n".join(lines)
 
 
-def review_sha256(part: Part, *, series_title: str) -> str:
-    return hashlib.sha256(review_text(part, series_title=series_title).encode("utf-8")).hexdigest()
+def review_sha256(part: Part, *, series_title: str, language: Language, lexicon: Lexicon) -> str:
+    text = review_text(part, series_title=series_title, language=language, lexicon=lexicon)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _strip_format(text: str) -> str:
@@ -76,7 +83,9 @@ def _clean(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "\u2026"
 
 
-def review_prompt(part: Part, rules: Rules, *, series_title: str) -> tuple[str, str]:
+def review_prompt(
+    part: Part, rules: Rules, *, series_title: str, language: Language, lexicon: Lexicon
+) -> tuple[str, str]:
     """`(system, user)` of the review call. The script is untrusted data: it is
     wrapped in <script> tags; format characters are removed from it and any script
     tag inside it (any case, any spacing) is defused."""
@@ -84,15 +93,22 @@ def review_prompt(part: Part, rules: Rules, *, series_title: str) -> tuple[str, 
         f"- {name}: {category.description}" for name, category in rules.file.content.items()
     )
     system = CONTENT_REVIEW_SYSTEM.format(categories=categories)
-    body = _SCRIPT_TAG.sub(
-        r"&lt;\1script", _strip_format(review_text(part, series_title=series_title))
-    )
+    text = review_text(part, series_title=series_title, language=language, lexicon=lexicon)
+    body = _SCRIPT_TAG.sub(r"&lt;\1script", _strip_format(text))
     return system, f"<script>\n{body}\n</script>"
 
 
-def _stale(part: Part, review: ContentReview, rules: Rules, series_title: str) -> bool:
+def _stale(
+    part: Part,
+    review: ContentReview,
+    rules: Rules,
+    series_title: str,
+    language: Language,
+    lexicon: Lexicon,
+) -> bool:
     return (
-        review.text_sha256 != review_sha256(part, series_title=series_title)
+        review.text_sha256
+        != review_sha256(part, series_title=series_title, language=language, lexicon=lexicon)
         or review.rules_version != rules.file.version
     )
 
@@ -135,7 +151,9 @@ def _findings(part: Part, review: ContentReview, rules: Rules) -> list[CheckResu
     return results
 
 
-def content_checks(part: Part, rules: Rules, *, series_title: str) -> list[CheckResult]:
+def content_checks(
+    part: Part, rules: Rules, *, series_title: str, language: Language, lexicon: Lexicon
+) -> list[CheckResult]:
     """`CONTENT_RULES` results for `part` from its stored review. A stale review is a
     WARN, except that a clear violation it found stays a FAIL: editing the text never
     turns a FAIL into a WARN; only a fresh review can clear it."""
@@ -145,7 +163,7 @@ def content_checks(part: Part, rules: Rules, *, series_title: str) -> list[Check
             CheckResult(check=CheckId.CONTENT_RULES, severity=Severity.WARN, reason=NOT_CHECKED)
         ]
     results = _findings(part, review, rules)
-    if _stale(part, review, rules, series_title):
+    if _stale(part, review, rules, series_title, language, lexicon):
         fails = [
             r.model_copy(
                 update={

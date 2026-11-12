@@ -24,12 +24,13 @@ from narratoflow.costs.tracker import SpendTracker, TrackedLLM, add_spend, estim
 from narratoflow.errors import NarratoFlowError, PlanningError
 from narratoflow.llm.base import LLMClient
 from narratoflow.llm.factory import build_llm_client
-from narratoflow.models import ContentFinding, ContentReview, Part, Series
+from narratoflow.models import ContentFinding, ContentReview, Language, Part, Series
 from narratoflow.publish.checks import Severity
 from narratoflow.publish.content import content_checks, review_prompt, review_sha256
 from narratoflow.publish.rules import Rules, default_rules
 from narratoflow.settings import Settings
 from narratoflow.sketching.generate import require_series_channel
+from narratoflow.text.spoken import Lexicon, channel_lexicon
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +92,18 @@ def _selected(series: Series, parts: Sequence[int] | None) -> list[Part]:
 
 
 def _part_estimate(
-    part: Part, prices: PriceTable, rules: Rules, provider: str, model: str, series_title: str
+    part: Part,
+    prices: PriceTable,
+    rules: Rules,
+    provider: str,
+    model: str,
+    series_title: str,
+    language: Language,
+    lexicon: Lexicon,
 ) -> Decimal:
-    system, user = review_prompt(part, rules, series_title=series_title)
+    system, user = review_prompt(
+        part, rules, series_title=series_title, language=language, lexicon=lexicon
+    )
     return estimate_llm_call(prices, provider, model, system + user)
 
 
@@ -107,9 +117,12 @@ def estimate_review(
     """The pre-call estimate of reviewing the selected parts: exactly what
     `TrackedLLM` checks before each call."""
     provider, model = _ident(channel)
+    lexicon = channel_lexicon(channel)
     return sum(
         (
-            _part_estimate(p, prices, rules, provider, model, series.title)
+            _part_estimate(
+                p, prices, rules, provider, model, series.title, series.language, lexicon
+            )
             for p in _selected(series, parts)
         ),
         Decimal(0),
@@ -122,6 +135,8 @@ def review_part(
     llm: LLMClient,
     *,
     series_title: str,
+    language: Language,
+    lexicon: Lexicon,
     provider: str,
     model: str,
     now: datetime,
@@ -130,20 +145,29 @@ def review_part(
     `content_checks`). `llm` is the tracked client."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise PlanningError("the review clock must be timezone-aware")
-    system, user = review_prompt(part, rules, series_title=series_title)
+    system, user = review_prompt(
+        part, rules, series_title=series_title, language=language, lexicon=lexicon
+    )
     result = llm.complete_structured(system=system, user=user, output=_ReviewOutput)
     return ContentReview(
         rules_version=rules.file.version,
         provider=provider,
         model=model,
         reviewed_at=now,
-        text_sha256=review_sha256(part, series_title=series_title),
+        text_sha256=review_sha256(
+            part, series_title=series_title, language=language, lexicon=lexicon
+        ),
         findings=list(result.value.findings),
     )
 
 
-def _counts(part: Part, rules: Rules, series_title: str) -> tuple[int, int]:
-    severities = [r.severity for r in content_checks(part, rules, series_title=series_title)]
+def _counts(
+    part: Part, rules: Rules, series_title: str, language: Language, lexicon: Lexicon
+) -> tuple[int, int]:
+    checks = content_checks(
+        part, rules, series_title=series_title, language=language, lexicon=lexicon
+    )
+    severities = [r.severity for r in checks]
     return severities.count(Severity.FAIL), severities.count(Severity.WARN)
 
 
@@ -177,8 +201,11 @@ def review_series(
     rules = rules if rules is not None else default_rules(settings)
     clock = now if now is not None else (lambda: datetime.now(UTC))
     what = f"llm {provider}/{model}"
+    lexicon = channel_lexicon(channel)
     for part in selected:
-        estimate = _part_estimate(part, prices, rules, provider, model, series.title)
+        estimate = _part_estimate(
+            part, prices, rules, provider, model, series.title, series.language, lexicon
+        )
         SpendTracker(channel.spending_limit_usd, spent=part.spent_usd).ensure_room(estimate, what)
 
     out = series.model_copy(deep=True)
@@ -195,6 +222,8 @@ def review_series(
                 rules,
                 tracked,
                 series_title=series.title,
+                language=series.language,
+                lexicon=lexicon,
                 provider=provider,
                 model=model,
                 now=clock(),
@@ -217,7 +246,7 @@ def review_series(
         part.spent_usd = tracker.spent
         add_spend(part.spend, tracker)
         spent = tracker.spent - start
-        fails, warns = _counts(part, rules, series.title)
+        fails, warns = _counts(part, rules, series.title, series.language, lexicon)
         result.reviewed.append(part.index)
         result.findings += len(review.findings)
         result.spent_usd += spent

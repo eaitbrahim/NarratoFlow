@@ -96,6 +96,9 @@ network; it does not change `series.json`.
 text, shows the estimated cost and asks before spending (`--yes` skips the question), and counts the
 spend against the part's limit. Without it `publish` only notes that no content review was run;
 a part edited after its review gets a "stale" warning. Run `review` again after editing.
+The review sees the `[spoken]` line, which is exactly what the voice says: numbers, signs,
+currency and pronunciation entries already applied. After upgrading, parts with numbers or
+pronunciation entries show the stale-review WARN once, until `narratoflow review` is run again.
 
 The platform rules live in `src/narratoflow/data/platform_rules.toml` (copy it to
 `$NARRATOFLOW_DATA_DIR/platform_rules.toml` to override). Updating it is a manual task: every value

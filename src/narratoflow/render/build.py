@@ -587,9 +587,39 @@ class _Run:
             shutil.rmtree(work, ignore_errors=True)
         return PartVideo(n, video, report_path, report)
 
+    def render_all(
+        self, plans: list[_PartPlan], on_part: Callable[[PartVideo], None] | None
+    ) -> RenderResult:
+        result = RenderResult()
+        for plan in plans:
+            built, kept = self.part(plan)
+            result.parts.append(built)
+            if kept:
+                result.skipped.append(built.index)
+            note = " (kept)" if kept else ""
+            logger.info("render part %d: %d frames%s", built.index, built.report.frames, note)
+            if on_part is not None:
+                on_part(built)
+        return result
+
     def _part_warnings(self, plan: _PartPlan) -> list[str]:
         landscape = [LANDSCAPE_WARNING] if AspectRatio.LANDSCAPE in self.channel.outputs else []
         return [*landscape, *plan.ass_warnings]
+
+
+def _check_shaping(
+    series: Series, plans: list[_PartPlan], tools: RenderTools, fonts: FontPack
+) -> None:
+    if series.language is Language.ARABIC or any(p.verses for p in plans):
+        with tempfile.TemporaryDirectory(prefix="narratoflow-shaping-") as tmp:
+            check_arabic_shaping(tools, fonts, Path(tmp))
+
+
+def _make_out_dir(out_dir: Path) -> None:
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RenderError(f"cannot create output directory {out_dir}: {exc}") from exc
 
 
 def build_render(
@@ -638,14 +668,8 @@ def build_render(
         )
         for p in selected
     ]
-    if series.language is Language.ARABIC or any(p.verses for p in plans):
-        with tempfile.TemporaryDirectory(prefix="narratoflow-shaping-") as tmp:
-            check_arabic_shaping(tools, fonts, Path(tmp))
-
-    try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise RenderError(f"cannot create output directory {out_dir}: {exc}") from exc
+    _check_shaping(series, plans, tools, fonts)
+    _make_out_dir(out_dir)
     run = _Run(
         series=series,
         channel=channel,
@@ -658,18 +682,4 @@ def build_render(
         workers=workers,
         force=force,
     )
-    result = RenderResult()
-    for plan in plans:
-        built, kept = run.part(plan)
-        result.parts.append(built)
-        if kept:
-            result.skipped.append(built.index)
-        logger.info(
-            "render part %d: %d frames%s",
-            built.index,
-            built.report.frames,
-            " (kept)" if kept else "",
-        )
-        if on_part is not None:
-            on_part(built)
-    return result
+    return run.render_all(plans, on_part)

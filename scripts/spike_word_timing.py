@@ -543,7 +543,11 @@ def _label_entry(raw: object, known: int) -> tuple[int, int, int]:
 def load_labels(path: Path, *, known: int = len(SENTENCES)) -> dict[int, list[tuple[int, int]]]:
     """Sentence number to [(word index, onset_ms)] from `labels.json`."""
     body = _read_json(path)
-    if not isinstance(body, dict) or body.get("version") != CAPTURE_VERSION:
+    if (
+        not isinstance(body, dict)
+        or type(body.get("version")) is not int
+        or body["version"] != CAPTURE_VERSION
+    ):
         raise ValueError(f"labels: {path.name} must have version {CAPTURE_VERSION}")
     out: dict[int, list[tuple[int, int]]] = {}
     entries = body.get("labels", [])

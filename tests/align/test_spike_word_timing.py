@@ -616,6 +616,17 @@ def test_label_entries_reject_json_booleans(tmp_path: Path, field: str, flag: bo
         spike.load_labels(path)
 
 
+@pytest.mark.parametrize("version", ["missing", 2, "1", True])
+def test_labels_version_must_be_the_integer_one(tmp_path: Path, version: object) -> None:
+    body: dict[str, object] = {"labels": [{"sentence": 1, "word": 1, "onset_ms": 1}]}
+    if version != "missing":
+        body["version"] = version
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps(body))
+    with pytest.raises(ValueError, match=r"labels.*version"):
+        spike.load_labels(path)
+
+
 @pytest.mark.parametrize("labels", [5, "x", {"sentence": 1}, None])
 def test_labels_must_be_a_list(tmp_path: Path, labels: object) -> None:
     path = tmp_path / "labels.json"
@@ -648,6 +659,17 @@ def test_save_refuses_a_non_empty_directory(
     assert spike.main(["--save", str(target)]) == 2
     assert "not empty" in capsys.readouterr().err
     assert [p.name for p in target.iterdir()] == ["02.ctc.json"]
+
+
+def test_save_refuses_an_existing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mp3: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_services(monkeypatch, mp3, ctc=False)
+    target = tmp_path / "cap"
+    target.write_text("keep me")
+    assert spike.main(["--save", str(target)]) == 2
+    assert "not empty" in capsys.readouterr().err
+    assert target.read_text() == "keep me"
 
 
 def test_save_accepts_an_existing_empty_directory(

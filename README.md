@@ -4,6 +4,8 @@ Open-source pipeline that turns Classical Arabic (الفصحى) or English text 
 
 > Status: early scaffold (M0). See [`docs/`](docs/) for the PRD, SRD and the technical review.
 
+Stroke data format: [`docs/strokes-schema.md`](docs/strokes-schema.md).
+
 ## Quick start
 
 ```bash

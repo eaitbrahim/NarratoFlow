@@ -157,6 +157,25 @@ def test_project_load_rejects_other_or_missing_schema(
         Project.load(path)
 
 
+def test_project_load_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(PlanningError, match="cannot read project file"):
+        Project.load(tmp_path / "missing.json")
+
+
+def test_project_load_invalid_json(tmp_path: Path) -> None:
+    path = tmp_path / "p.json"
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(PlanningError, match=r"project file .* is not valid JSON"):
+        Project.load(path)
+
+
+def test_project_load_fails_model_validation(tmp_path: Path) -> None:
+    path = tmp_path / "p.json"
+    path.write_text('{"schema_version": 1, "language": "ar"}', encoding="utf-8")
+    with pytest.raises(PlanningError, match=r"project file .* is invalid:"):
+        Project.load(path)
+
+
 def test_budget_error_message_has_values() -> None:
     e = BudgetExceededError(Decimal("1.20"), Decimal("1.00"))
     assert "$1.20" in str(e) and "$1.00" in str(e)

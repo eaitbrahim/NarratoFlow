@@ -1,6 +1,7 @@
 """Overlays: part label, topic badges, the hook/recap/teaser headline and text cards."""
 
 from decimal import Decimal
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -79,13 +80,14 @@ def _series(language: Language, part: Part, title: str = "The Series") -> Series
 
 
 def _part(index: int, count: int, *, hook: str = "Hook", recap: str = "", teaser: str = "",
-          scenes: list[Scene] | None = None) -> Part:  # fmt: skip
+          end_card: str = "", scenes: list[Scene] | None = None) -> Part:  # fmt: skip
     return Part(
         index=index,
         count=count,
         hook_text=hook,
         recap_text=recap,
         teaser_text=teaser,
+        end_card_text=end_card,
         scenes=scenes or [_scene("s1")],
     )
 
@@ -194,6 +196,39 @@ def test_hook_at_zero_and_teaser_at_end() -> None:
     # Under MIN_OVERLAY_MS after the hook: no teaser flash.
     assert _windows(_headlines(part, 2_600)) == [(0, 2_500, "Hook")]
     assert _windows(_headlines(part, 3_500))[-1] == (2_500, 3_500, "Next: What comes")
+
+
+def test_end_card_headline_at_end_of_final_part() -> None:
+    final = _part(2, 2, end_card="Bye")
+    assert _windows(_headlines(final, 10_000)) == [
+        (0, 2_500, "Hook"),
+        (2_500, 7_000, "The Series"),
+        (7_000, 10_000, "Bye"),
+    ]
+    # A non-final part keeps the teaser and never shows the end card.
+    first = _part(1, 2, teaser="What comes", end_card="Bye")
+    assert _windows(_headlines(first, 10_000))[-1] == (7_000, 10_000, "Next: What comes")
+
+
+def test_end_card_skipped_when_part_too_short() -> None:
+    final = _part(2, 2, end_card="Bye")
+    assert _windows(_headlines(final, 3_000)) == [(0, 2_500, "Hook")]
+
+
+def test_end_card_disabled() -> None:
+    final = _part(2, 2, end_card="")
+    assert _windows(_headlines(final, 10_000)) == [
+        (0, 2_500, "Hook"),
+        (2_500, 10_000, "The Series"),
+    ]
+
+
+def test_end_card_clips_recap_on_short_final_part() -> None:
+    final = _part(2, 2, recap="Before", end_card="Bye")
+    events = _windows(_headlines(final, 6_000))
+    assert (3_000, 6_000, "Bye") in events
+    for (_, a_end, _), (b_start, _, _) in pairwise(events):
+        assert a_end <= b_start
 
 
 def test_recap_only_from_part_two_and_dropped_when_no_room() -> None:

@@ -5,7 +5,12 @@ from conftest import FIXTURES
 
 from narratoflow.models import Language, Narration, Scene, SceneKind
 from narratoflow.planning import series as series_module
-from narratoflow.planning.series import estimate_scene_seconds, split_into_parts
+from narratoflow.planning.series import (
+    END_CARD_DEFAULTS,
+    end_card_text,
+    estimate_scene_seconds,
+    split_into_parts,
+)
 
 
 def narr(
@@ -95,6 +100,25 @@ def test_hook_recap_teaser_chain() -> None:
     assert parts[1].teaser_text == parts[2].hook_text
     assert parts[2].teaser_text == ""
     assert parts[0].teaser_text == parts[1].hook_text
+
+
+def test_end_card_on_final_part_only() -> None:
+    scenes = [narr(words(100), title=f"title{i}", sid=f"s{i}") for i in range(6)]
+    parts = split_into_parts(scenes, Language.ENGLISH, min_s=60, max_s=90, end_card="X")
+    assert [p.end_card_text for p in parts] == ["", "", "X"]
+    single = split_into_parts(scenes[:1], Language.ENGLISH, min_s=60, max_s=90, end_card="X")
+    assert [p.end_card_text for p in single] == ["X"]
+
+
+def test_end_card_defaults() -> None:
+    for language in Language:
+        assert end_card_text(None, language) == END_CARD_DEFAULTS[language]
+        assert end_card_text("", language) == ""
+        assert end_card_text("  Thanks ", language) == "Thanks"
+    assert END_CARD_DEFAULTS[Language.ENGLISH] == "Follow for more"
+    assert END_CARD_DEFAULTS[Language.ARABIC] == (
+        "\u062a\u0627\u0628\u0639\u0648\u0646\u0627 \u0644\u0644\u0645\u0632\u064a\u062f"
+    )
 
 
 def test_single_part_has_no_recap_or_teaser() -> None:

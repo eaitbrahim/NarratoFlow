@@ -103,6 +103,8 @@ class ChannelConfig(BaseModel):
     background_music: bool = False
     part_min_s: int = 60
     part_max_s: int = 90
+    end_card: str | None = None
+    """Closing text on the final part; None means the language default, "" turns it off."""
     riwaya: str = "hafs"
     reciter: str | None = None
     """An allow-listed reciter id; None means the first allow-listed reciter of `riwaya`."""

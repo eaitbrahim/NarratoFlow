@@ -38,7 +38,7 @@ from narratoflow.models import Language, Scene, SceneKind, Series
 from narratoflow.planning.ideas import assign_ideas, render_candidates
 from narratoflow.planning.prompts import IDEAS_SYSTEM, SEGMENT_SYSTEM, TASHKEEL_SYSTEM
 from narratoflow.planning.segment import segment_script
-from narratoflow.planning.series import split_into_parts
+from narratoflow.planning.series import end_card_text, split_into_parts
 from narratoflow.quran.corpus import QuranCorpus, default_corpus
 from narratoflow.quran.detect import VerseHit, detect_verses
 from narratoflow.script.source import load_script
@@ -181,7 +181,11 @@ def plan_series(
         scenes = [vocalize_scene(s, diacritizer) for s in scenes]
 
     parts = split_into_parts(
-        scenes, channel.language, min_s=channel.part_min_s, max_s=channel.part_max_s
+        scenes,
+        channel.language,
+        min_s=channel.part_min_s,
+        max_s=channel.part_max_s,
+        end_card=end_card_text(channel.end_card, channel.language),
     )
     lexicon = channel_lexicon(channel)
     parts = [

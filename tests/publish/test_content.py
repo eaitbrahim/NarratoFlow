@@ -910,6 +910,27 @@ def test_review_hash_unchanged_without_spoken_changes() -> None:
     assert digest == "390596dce22374775192a13aa2a271537c8f3733443db707daede220845938d1"
 
 
+def test_end_card_in_review_text() -> None:
+    part = make_series([narr("s1", "First words.")], language=Language.ENGLISH).parts[0]
+    part = part.model_copy(update={"teaser_text": "After", "end_card_text": "Bye"})
+    lines = review_text(
+        part, series_title=TITLE, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    ).splitlines()
+    assert lines.index("[end card] Bye") == lines.index("[teaser] After") + 1
+
+
+def test_review_hash_unchanged_without_end_card() -> None:
+    part = make_series(
+        [narr("s1", "First words."), narr("s2", "Plain words here.")], language=Language.ENGLISH
+    ).parts[0]
+    part = part.model_copy(update={"recap_text": "Before", "teaser_text": "After"})
+    digest = review_sha256(
+        part, series_title=TITLE, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+    )
+    # taken from review_sha256 at commit 7e283e1, before the end card existed
+    assert digest == "5476c9f9f0a28aeeaf7acb74722ee80c5431548803d7c5459cefc831c422f5ef"
+
+
 def _stored_review(part: Part, lexicon: Lexicon) -> ContentReview:
     return ContentReview(
         rules_version=_rules().file.version,

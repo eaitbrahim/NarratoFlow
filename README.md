@@ -229,12 +229,22 @@ uv run narratoflow check-dialect script.txt [--threshold 0.5] [--report PATH]
 
 A sentence is flagged when the model's top label is not `MSA` and its probability is at least `--threshold` (default 0.5). Lines with no Arabic letters are never checked, and Qur'anic verses in ﴿…﴾ are skipped (they are classical, not dialect). Labels are CAMeL city or variety codes, for example `CAI` Cairo, `RAB` Rabat, `BEI` Beirut, `DOH` Doha, `TUN` Tunis and `MSA` Modern Standard Arabic. Each flagged sentence prints as `line N: LABEL 0.87 «excerpt»`, followed by a summary. The full report (every Arabic sentence with its label and confidence) is written to `FILE.dialect.json`, or to `--report PATH`. Without the extra or its data, the command exits 1 with one line naming both install steps.
 
+## End card
+
+The final part of a series closes with a 3 second on-screen end card (never spoken), set by the
+channel's `end_card` key. Left out, it is "Follow for more" for an English channel and
+"تابعونا للمزيد" for an Arabic one;
+`end_card = ""` turns it off. A single-part series gets it too. A final part too short to show it after the hook
+shows none. It applies to newly planned series: a series already planned keeps the text it was
+planned with. The end card shows in the `review` text, so a part gets a fresh review only when
+it has one.
+
 ## Where settings live
 
 | Kind | Lives in | Examples |
 |---|---|---|
 | Secrets, machine paths, log level | environment or `.env` (`Settings`, `NARRATOFLOW_*`) | `*_API_KEY`, `DATA_DIR`, `FFMPEG`, `LOG_LEVEL`, `OLLAMA_URL` |
-| Channel choices | channel TOML (`ChannelConfig`; defaults in code) | style, voice, llm, embed, vision, `spending_limit_usd`, `approval_list`, part lengths, `riwaya`, `diacritizer` |
+| Channel choices | channel TOML (`ChannelConfig`; defaults in code) | style, voice, llm, embed, vision, `spending_limit_usd`, `approval_list`, part lengths, `end_card`, `riwaya`, `diacritizer` |
 | Per-run choices | CLI options | `--part`, `--out`, `--workers`, `--yes`, `--replace`, `--threshold` (dialect check) |
 | Prices / platform rules | `data/prices.toml` / `data/platform_rules.toml`, each overridable in `NARRATOFLOW_DATA_DIR` | |
 | Output contract | code constants pinned by Plans 4-6 | 1080x1920, 30 fps, -14 LUFS |

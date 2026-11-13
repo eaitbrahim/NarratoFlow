@@ -1,6 +1,6 @@
 """Series splitting: pack scenes into short-video parts with on-screen text.
 
-Hook, recap and teaser are on-screen text only; they are never spoken and never
+Hook, recap, teaser and end card are on-screen text only; they are never spoken and never
 alter the author's narration. A scene is never split across parts.
 """
 
@@ -10,6 +10,12 @@ import string
 
 from narratoflow.models import Language, Part, Scene, SceneKind
 
+END_CARD_DEFAULTS = {
+    Language.ENGLISH: "Follow for more",
+    Language.ARABIC: (
+        "\u062a\u0627\u0628\u0639\u0648\u0646\u0627 \u0644\u0644\u0645\u0632\u064a\u062f"
+    ),
+}
 NARRATION_WPM = {Language.ARABIC: 120, Language.ENGLISH: 150}
 NARRATION_PAUSE_S = 0.4
 VERSE_WPM = 80
@@ -47,6 +53,13 @@ def _is_unfinished(text: str) -> bool:
     return not stripped.endswith(_CLOSED_ENDINGS)
 
 
+def end_card_text(channel_end_card: str | None, language: Language) -> str:
+    """The channel's end card; None means the language default, "" turns it off."""
+    if channel_end_card is None:
+        return END_CARD_DEFAULTS[language]
+    return channel_end_card.strip()
+
+
 def _hook(scenes: list[Scene]) -> str:
     for scene in scenes:
         if scene.title:
@@ -62,7 +75,7 @@ def _hook(scenes: list[Scene]) -> str:
 
 
 def split_into_parts(
-    scenes: list[Scene], language: Language, *, min_s: int, max_s: int
+    scenes: list[Scene], language: Language, *, min_s: int, max_s: int, end_card: str = ""
 ) -> list[Part]:
     if not scenes:
         return []
@@ -112,6 +125,7 @@ def split_into_parts(
                 hook_text=hooks[i],
                 recap_text=hooks[i - 1] if i > 0 else "",
                 teaser_text=hooks[i + 1] if i < count - 1 else "",
+                end_card_text=end_card if i == count - 1 else "",
                 scenes=group,
                 flags=flags,
             )

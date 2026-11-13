@@ -31,7 +31,7 @@ def review_text(part: Part, *, series_title: str, language: Language, lexicon: L
     """Everything a viewer sees or hears, one labelled line each; verses are not sent.
 
     Lines: the series title (burned on screen in headline gaps), hook, recap, teaser,
-    then per scene its title, narration (or a verse marker), the spoken form where it
+    end card, then per scene its title, narration (or a verse marker), the spoken form where it
     differs from the narration, the caption text where it differs, and the card text.
     The spoken form is exactly what the voice says: `spoken_text` of the voiced text
     (numbers, signs, currency and lexicon entries applied). Editing any of them makes
@@ -42,6 +42,8 @@ def review_text(part: Part, *, series_title: str, language: Language, lexicon: L
         lines.append(f"[recap] {part.recap_text}")
     if part.teaser_text:
         lines.append(f"[teaser] {part.teaser_text}")
+    if part.end_card_text:
+        lines.append(f"[end card] {part.end_card_text}")
     for scene in part.scenes:
         if scene.title:
             lines.append(f"[{scene.id} title] {scene.title}")

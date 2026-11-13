@@ -263,3 +263,10 @@ def test_pronunciation_table_loads_and_validates(channel_file: Path) -> None:
         load_channel(channel_file)
     assert "SECRETPHRASE" not in str(exc.value)
     assert "OTHERVALUE" not in str(exc.value)
+
+
+def test_end_card_config(channel_file: Path) -> None:
+    base = channel_file.read_text(encoding="utf-8")
+    assert load_channel(channel_file).end_card is None
+    channel_file.write_text('end_card = ""\n' + base, encoding="utf-8")
+    assert load_channel(channel_file).end_card == ""

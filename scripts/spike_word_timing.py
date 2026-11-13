@@ -17,7 +17,7 @@ import json
 import math
 import statistics
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import metadata
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from narratoflow.audio.io import SAMPLE_RATE, Samples, decode
-from narratoflow.audio.mp3info import read_mp3_info
+from narratoflow.audio.mp3info import DECODER_DELAY_SAMPLES, read_mp3_info
 from narratoflow.audio.onsets import voiced_regions
 from narratoflow.audio.words import TimedSpan, timings_from_spans, tokens
 from narratoflow.models import WordTiming
@@ -34,6 +34,8 @@ VOICE = "ar-SA-HamedNeural"
 EXTRAS_HINT = "uv sync --extra tts-edge --extra align"
 EDGE_HINT = "uv sync --extra tts-edge"
 CAPTURE_VERSION = 1
+ENCODER_DELAY_SAMPLES = 576  # libmp3lame, as measured in docs/spikes/2026-11-13-*
+PRIMING_RATE = 24000  # Hz, the edge voice's MP3 sample rate
 SIGN_RULE = "estimate minus waveform (positive = the estimate is later)"
 
 SENTENCES: tuple[str, ...] = (
@@ -436,7 +438,13 @@ def _load_one(directory: Path, index: int, sentence: str) -> Capture:
 def load_captures(directory: Path) -> list[Capture]:
     """Every sentence saved in `directory`; ValueError names the offending file."""
     manifest = _read_json(directory / "manifest.json")
-    sentences = manifest.get("sentences") if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict) or type(manifest.get("version")) is not int:
+        raise ValueError("manifest.json: expected an object with an integer version")
+    if manifest["version"] != CAPTURE_VERSION:
+        raise ValueError(
+            f"manifest.json: version {manifest['version']}, expected {CAPTURE_VERSION}"
+        )
+    sentences = manifest.get("sentences")
     if not isinstance(sentences, list) or not all(isinstance(s, str) for s in sentences):
         raise ValueError("manifest.json: expected a list of sentences")
     return [_load_one(directory, n, s) for n, s in enumerate(sentences, 1)]
@@ -470,22 +478,46 @@ class WaveDeltas:
     pause_starts_ms: list[tuple[int, float]]
 
 
-def _nearest_word(timings: Sequence[WordTiming], onset: float, window_ms: int) -> int | None:
-    best = min(range(1, len(timings)), key=lambda i: abs(timings[i].start_ms - onset), default=None)
-    if best is None or abs(timings[best].start_ms - onset) > window_ms:
-        return None
-    return best
+def match_pause_words(
+    estimates: Mapping[str, Sequence[WordTiming]], onsets: Sequence[float], window_ms: int
+) -> list[int | None]:
+    """The word each pause onset belongs to, chosen once for every estimator.
+
+    Rule: among words 1.. (word 0 is the sentence start), take the one whose start
+    has the smallest summed distance to the onset over all estimators, provided
+    every estimator has it within `window_ms`; None when no word qualifies. An
+    estimator that runs early cannot pull the match to the next word on its own.
+    """
+    count = min((len(t) for t in estimates.values()), default=0)
+    out: list[int | None] = []
+    for onset in onsets:
+        distance = {
+            i: [abs(t[i].start_ms - onset) for t in estimates.values()] for i in range(1, count)
+        }
+        ok = {i: sum(d) for i, d in distance.items() if max(d) <= window_ms}
+        out.append(min(ok, key=lambda i: ok[i]) if ok else None)
+    return out
 
 
 def wave_deltas(
-    timings: Sequence[WordTiming], truth: WaveTruth, *, window_ms: int = 300
+    timings: Sequence[WordTiming],
+    truth: WaveTruth,
+    *,
+    window_ms: int = 300,
+    words: Sequence[int | None] | None = None,
 ) -> WaveDeltas:
-    """Estimate minus waveform at the sentence start, each post-pause word and the end."""
-    pauses: list[tuple[int, float]] = []
-    for onset in truth.pause_onsets_ms:
-        word = _nearest_word(timings, onset, window_ms)
-        if word is not None:
-            pauses.append((word, timings[word].start_ms - onset))
+    """Estimate minus waveform at the sentence start, each post-pause word and the end.
+
+    `words` is the matched word per pause onset (see `match_pause_words`); when
+    omitted it is matched against these timings alone.
+    """
+    if words is None:
+        words = match_pause_words({"": timings}, truth.pause_onsets_ms, window_ms)
+    pauses = [
+        (word, timings[word].start_ms - onset)
+        for word, onset in zip(words, truth.pause_onsets_ms, strict=True)
+        if word is not None
+    ]
     return WaveDeltas(
         first_start_ms=timings[0].start_ms - truth.first_onset_ms,
         last_end_ms=timings[-1].end_ms - truth.last_offset_ms,
@@ -497,7 +529,7 @@ def _label_entry(raw: object, known: int) -> tuple[int, int, int]:
     if not isinstance(raw, dict):
         raise ValueError("labels: each entry must be an object")
     sentence, word, onset = raw.get("sentence"), raw.get("word"), raw.get("onset_ms")
-    if not all(isinstance(v, int) for v in (sentence, word, onset)):
+    if not all(type(v) is int for v in (sentence, word, onset)):  # bool is an int subclass
         raise ValueError(f"labels: sentence, word and onset_ms must be integers: {raw}")
     if not 1 <= sentence <= known:
         raise ValueError(f"labels: unknown sentence {sentence}")
@@ -512,7 +544,10 @@ def load_labels(path: Path, *, known: int = len(SENTENCES)) -> dict[int, list[tu
     if not isinstance(body, dict) or body.get("version") != CAPTURE_VERSION:
         raise ValueError(f"labels: {path.name} must have version {CAPTURE_VERSION}")
     out: dict[int, list[tuple[int, int]]] = {}
-    for raw in body.get("labels", []):
+    entries = body.get("labels", [])
+    if not isinstance(entries, list):
+        raise ValueError("labels: 'labels' must be a list")
+    for raw in entries:
         sentence, word, onset = _label_entry(raw, known)
         out.setdefault(sentence, []).append((word, onset))
     return out
@@ -559,7 +594,10 @@ def _score(capture: Capture, ctc: list[TimedSpan] | None) -> _Scored:
         if mapped:
             timings[name] = mapped
     truth = wave_truth(decode(capture.audio), SAMPLE_RATE)
-    deltas = {n: wave_deltas(t, truth) for n, t in timings.items()} if truth else {}
+    deltas: dict[str, WaveDeltas] = {}
+    if truth:
+        words = match_pause_words(timings, truth.pause_onsets_ms, 300)
+        deltas = {n: wave_deltas(t, truth, words=words) for n, t in timings.items()}
     return _Scored(capture.index, timings, deltas)
 
 
@@ -571,10 +609,13 @@ def _print_mp3(captures: Sequence[Capture], out: TextIO) -> None:
         info = read_mp3_info(c.audio)
         cells = [info.tag, info.encoder, info.encoder_delay, info.encoder_padding]
         print(f"| {c.index} | " + " | ".join(str(x) for x in cells) + " |", file=out)
+    late_ms = (ENCODER_DELAY_SAMPLES + DECODER_DELAY_SAMPLES) * 1000 / PRIMING_RATE
     print(
         "\nWith an Info tag declaring the delay, ffmpeg trims the priming: a burst authored at "
-        "200 ms decodes at 200.02 ms. With no tag the decoded audio is (576 + 529) / 24000 s = "
-        "46.04 ms late (burst at 246.06 ms). Measured on ffmpeg 9.0.2, libmp3lame, 24 kHz mono.\n",
+        "200 ms decodes at 200.02 ms. With no tag the decoded audio is "
+        f"({ENCODER_DELAY_SAMPLES} + {DECODER_DELAY_SAMPLES}) / {PRIMING_RATE} s = "
+        f"{late_ms:.2f} ms late (burst at {200 + late_ms:.2f} ms). "
+        "Measured on ffmpeg 9.0.2, libmp3lame, 24 kHz mono.\n",
         file=out,
     )
 
@@ -684,6 +725,10 @@ def _aligner() -> Any:
 
 
 def _save(directory: Path) -> int:
+    if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+        # Stale NN.ctc.json files would otherwise mix with the new audio.
+        print(f"error: {directory} exists and is not empty; use a new directory", file=sys.stderr)
+        return 2
     if importlib.util.find_spec("edge_tts") is None:
         print(f"missing extra: run {EDGE_HINT}", file=sys.stderr)
         return 2

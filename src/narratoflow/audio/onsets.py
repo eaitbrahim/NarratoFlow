@@ -62,11 +62,8 @@ def voiced_regions(
         else:
             merged.append((start, end))
     clip_ms = len(samples) * 1000 / sample_rate
-    return [
-        VoicedRegion(start * win_ms, min(end * win_ms, clip_ms))
-        for start, end in merged
-        if (end - start) * win_ms >= min_voiced_ms
-    ]
+    capped = [VoicedRegion(start * win_ms, min(end * win_ms, clip_ms)) for start, end in merged]
+    return [r for r in capped if r.end_ms - r.start_ms >= min_voiced_ms]
 
 
 def first_onset_ms(

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from llm.fakes import FakeLLM
+from fakes.llm import FakeLLM
 
 from narratoflow.errors import PlanningError
 from narratoflow.models import Narration, Scene, SceneKind

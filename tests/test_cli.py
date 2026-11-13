@@ -824,7 +824,7 @@ def test_sketch_resolve_regenerate_estimate_includes_the_vision_check_when_on(
 def test_sketch_generate_real_run_without_vision_warns_unchecked(
     channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data_dir: Path
 ) -> None:
-    from sketching.support import FakeImages
+    from fakes.images import FakeImages
 
     from narratoflow.sketching import generate as generate_module
     from narratoflow.visuals.bundled import BundledIcons

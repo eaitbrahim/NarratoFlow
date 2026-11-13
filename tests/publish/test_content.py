@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from fakes.llm import FakeLLM
 from fixtures.parts import make_series, narr, verse
 from fixtures.publish import PACKAGED_RULES
-from llm.fakes import FakeLLM
 from pydantic import BaseModel
 
 from narratoflow.channels.config import ChannelConfig, LlmConfig

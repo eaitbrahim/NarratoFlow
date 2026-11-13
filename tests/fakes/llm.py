@@ -1,4 +1,4 @@
-"""Test doubles for the structured-output LLM client protocol."""
+"""A fake for the structured-output LLM client protocol."""
 
 from __future__ import annotations
 

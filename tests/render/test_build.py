@@ -18,12 +18,12 @@ from typing import Any, ClassVar
 import cv2
 import httpx
 import pytest
+from fakes.voice import FakeVoice
 from fixtures import images as img
 from fixtures.audio import speechlike, to_wav_bytes, tone
 from fixtures.parts import (
     CORPUS,
     SLOT_MS,
-    FakeVoice,
     _strokes,
     add_sketch,
     make_series,

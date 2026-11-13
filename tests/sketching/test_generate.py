@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from fakes.images import FakeImages
+from fakes.llm import FakeLLM
 from fixtures import images as img
-from llm.fakes import FakeLLM
 from PIL import Image
 from pydantic import SecretStr
 
@@ -47,7 +48,6 @@ from narratoflow.visuals.marker import video_id as marker_video_id
 from sketching.support import (
     PER_SKETCH,
     PRICES,
-    FakeImages,
     clean,
     run,
     scene,

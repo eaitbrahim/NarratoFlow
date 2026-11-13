@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fixtures import images as img
-from llm.fakes import FakeLLM
+from fakes.images import FakeImages
+from fakes.llm import FakeLLM
 from pydantic import BaseModel
 
 from narratoflow.channels.config import ChannelConfig, VisionConfig
 from narratoflow.costs.prices import PriceTable
-from narratoflow.images import GeneratedImage, ImageRequest
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.models import (
     Language,
@@ -40,20 +39,6 @@ per_image_check = "0.01"
 )
 PAID_VISION = VisionConfig(provider="anthropic", model="claude-opus-5-5")
 PER_SKETCH = Decimal("0.04") + 2 * Decimal("0.01")  # image + candidate and reference checks
-
-
-class FakeImages:
-    name = "openai"
-    model = "gpt-image-1"
-
-    def __init__(self, pngs: list[bytes] | None = None) -> None:
-        self.pngs = list(pngs or [])
-        self.requests: list[ImageRequest] = []
-
-    def generate(self, req: ImageRequest) -> GeneratedImage:
-        self.requests.append(req)
-        png = self.pngs.pop(0) if self.pngs else img.line_drawing_scroll()
-        return GeneratedImage(png, "openai", "gpt-image-1", None)
 
 
 def verdict(**over: object) -> VisionVerdict:

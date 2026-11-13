@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from narratoflow.audio.io import SAMPLE_RATE, Samples, decode
-from narratoflow.audio.mp3info import read_mp3_info
+from narratoflow.audio.mp3info import DECODER_DELAY_SAMPLES, read_mp3_info
 from narratoflow.audio.onsets import voiced_regions
 from narratoflow.audio.words import TimedSpan, timings_from_spans, tokens
 from narratoflow.models import WordTiming
@@ -34,6 +34,8 @@ VOICE = "ar-SA-HamedNeural"
 EXTRAS_HINT = "uv sync --extra tts-edge --extra align"
 EDGE_HINT = "uv sync --extra tts-edge"
 CAPTURE_VERSION = 1
+ENCODER_DELAY_SAMPLES = 576  # libmp3lame, as measured in docs/spikes/2026-11-13-*
+PRIMING_RATE = 24000  # Hz, the edge voice's MP3 sample rate
 SIGN_RULE = "estimate minus waveform (positive = the estimate is later)"
 
 SENTENCES: tuple[str, ...] = (
@@ -607,10 +609,13 @@ def _print_mp3(captures: Sequence[Capture], out: TextIO) -> None:
         info = read_mp3_info(c.audio)
         cells = [info.tag, info.encoder, info.encoder_delay, info.encoder_padding]
         print(f"| {c.index} | " + " | ".join(str(x) for x in cells) + " |", file=out)
+    late_ms = (ENCODER_DELAY_SAMPLES + DECODER_DELAY_SAMPLES) * 1000 / PRIMING_RATE
     print(
         "\nWith an Info tag declaring the delay, ffmpeg trims the priming: a burst authored at "
-        "200 ms decodes at 200.02 ms. With no tag the decoded audio is (576 + 529) / 24000 s = "
-        "46.04 ms late (burst at 246.06 ms). Measured on ffmpeg 9.0.2, libmp3lame, 24 kHz mono.\n",
+        "200 ms decodes at 200.02 ms. With no tag the decoded audio is "
+        f"({ENCODER_DELAY_SAMPLES} + {DECODER_DELAY_SAMPLES}) / {PRIMING_RATE} s = "
+        f"{late_ms:.2f} ms late (burst at {200 + late_ms:.2f} ms). "
+        "Measured on ffmpeg 9.0.2, libmp3lame, 24 kHz mono.\n",
         file=out,
     )
 

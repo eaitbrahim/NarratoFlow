@@ -653,3 +653,13 @@ def test_save_accepts_an_existing_empty_directory(
     target = tmp_path / "cap"
     target.mkdir()
     assert spike.main(["--save", str(target)]) == 0
+
+
+def test_priming_note_burst_time_is_authored_time_plus_computed_delay(
+    tmp_path: Path, ffmpeg_bin: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    assert spike.main(["--from", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    # (576 + 529) / 24000 s = 46.04 ms, so a burst authored at 200 ms lands at 246.04 ms.
+    assert "46.04 ms late (burst at 246.04 ms)" in out

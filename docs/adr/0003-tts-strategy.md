@@ -40,9 +40,11 @@ Captions also need per-word timings, which not every engine provides.
 ## Consequences
 
 - Edge has no explicit commercial licence. The `edge-tts-terms` rule warns on it, and
-  `piper-model-license` warns that the verdict depends on the licence of the chosen voice model.
-  The code records which terms apply but does not record a Piper model's licence; that is checked
-  by the operator.
+  `piper-model-license` warns until the channel declares the model's licence. A declared
+  `voice.piper_model_license` (which needs `voice.piper_model_source`, in
+  `src/narratoflow/channels/config.py`) is recorded in `VoiceUsed.model_license` (`_voice_used` in `narrate.py`) and checked by
+  `_voice_records` and `_licence_table` in `src/narratoflow/publish/provenance.py` against the
+  platform licence tables in place of the terms id.
 - The size of the edge-versus-CTC word-start offset on Arabic is not settled. Measured
   disagreement is about 115 ms in `docs/spikes/2026-11-12-arabic-word-timing.md`; attributing it to
   one side is step 1 of #133, with tooling and decoder-priming findings in

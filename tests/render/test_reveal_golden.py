@@ -88,6 +88,38 @@ def test_close_enough_accepts_small_drift() -> None:
     assert close_enough(Image.fromarray(pixels), want) is None
 
 
+def _flip_ink_pixels(want: Image.Image, fraction: float) -> Image.Image:
+    """Change `fraction` of all pixels by 100 levels while keeping each one ink."""
+    pixels = np.asarray(want).copy()
+    ys, xs = np.nonzero(pixels.sum(axis=2) < 3 * 255)
+    n = round(fraction * pixels.shape[0] * pixels.shape[1])
+    assert len(ys) > n
+    old = pixels[ys[:n], xs[:n]].astype(int)
+    pixels[ys[:n], xs[:n]] = np.where(old >= 128, old - 100, old + 100)
+    return Image.fromarray(pixels)
+
+
+def test_close_enough_rejects_a_same_ink_shift() -> None:
+    want = _golden("100")
+    shifted = Image.fromarray(np.roll(np.asarray(want), 6, axis=1))
+    assert _ink(shifted) == _ink(want)
+    assert close_enough(shifted, want) is not None
+
+
+def test_close_enough_accepts_sparse_large_changes() -> None:
+    want = _golden("050")
+    got = _flip_ink_pixels(want, 0.004)
+    assert _ink(got) == _ink(want)
+    assert close_enough(got, want) is None
+
+
+def test_close_enough_rejects_too_many_large_changes() -> None:
+    want = _golden("050")
+    got = _flip_ink_pixels(want, 0.006)
+    assert _ink(got) == _ink(want)
+    assert close_enough(got, want) is not None
+
+
 def test_zero_percent_is_nearly_blank() -> None:
     assert _ink(_golden("000")) <= 2 * 4 * 4
 

@@ -11,6 +11,7 @@ from narratoflow.captions.ass import AssEvent
 from narratoflow.captions.overlays import (
     LABELS,
     OVERLAY_MAX_CHARS,
+    _gaps,
     card_events,
     card_text,
     overlay_events,
@@ -458,3 +459,13 @@ def test_unbroken_strings_stay_inside_their_zones(
             card = card_events(_scene("s1", card_text=text), _slot("s1", 0, 3_000), language)
             frame = still(render_tools, work / "card", language, card, 1_500)
             assert_in_zone(bbox(ink(frame)), STAGE, f"{language.value} {name} card")
+
+
+def test_gaps_are_only_the_uncovered_spans() -> None:
+    touching = [(0, 100, "a"), (100, 200, "b")]
+    assert _gaps(touching, 200) == []
+    assert _gaps([(50, 100, "a"), (100, 150, "b"), (120, 130, "c")], 300) == [
+        (0, 50),
+        (150, 300),
+    ]
+    assert _gaps([], 80) == [(0, 80)]

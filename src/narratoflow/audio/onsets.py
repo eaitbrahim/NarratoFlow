@@ -44,6 +44,7 @@ def voiced_regions(
         raise ValueError(f"window_ms {window_ms} is under one sample at {sample_rate} Hz")
     if len(samples) == 0:
         return []
+    win_ms = win * 1000 / sample_rate  # the real window length, not window_ms
     count = math.ceil(len(samples) / win)
     padded = np.zeros(count * win, dtype=np.float64)
     padded[: len(samples)] = samples
@@ -56,15 +57,15 @@ def voiced_regions(
     runs = [(int(a), int(b)) for a, b in zip(edges[::2], edges[1::2], strict=True)]
     merged: list[tuple[int, int]] = []
     for start, end in runs:
-        if merged and (start - merged[-1][1]) * window_ms < min_gap_ms:
+        if merged and (start - merged[-1][1]) * win_ms < min_gap_ms:
             merged[-1] = (merged[-1][0], end)
         else:
             merged.append((start, end))
     clip_ms = len(samples) * 1000 / sample_rate
     return [
-        VoicedRegion(float(start * window_ms), min(float(end * window_ms), clip_ms))
+        VoicedRegion(start * win_ms, min(end * win_ms, clip_ms))
         for start, end in merged
-        if (end - start) * window_ms >= min_voiced_ms
+        if (end - start) * win_ms >= min_voiced_ms
     ]
 
 

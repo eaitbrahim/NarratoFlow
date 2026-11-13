@@ -144,6 +144,7 @@ def test_id3_footer_is_skipped() -> None:
         (_frame_header("2", 3, True) + bytes(50), "reserved sample rate"),
         (_mp3(tag="Info", flags=15, lame=None)[: 4 + 9 + 8], "Info frames"),
         (_mp3(tag="Info", flags=15, lame=None)[: 4 + 9 + 6], "Info flags"),
+        (_mp3(tag="Info", flags=15, lame=None)[: 4 + 9 + 12 + 50], "Info TOC"),
         (_mp3(tag="Info", lame=(576, 960))[:-5], "LAME extension"),
         (_mp3(tag="VBRI")[: 36 + 10], "VBRI"),
     ],

@@ -141,3 +141,16 @@ def test_window_of_exactly_one_sample_is_allowed() -> None:
     samples = np.concatenate([np.zeros(10), np.full(30, 0.5), np.zeros(10)]).astype(np.float32)
     regions = voiced_regions(samples, 1000, window_ms=1, min_voiced_ms=20, min_gap_ms=5)
     assert [(r.start_ms, r.end_ms) for r in regions] == [(10.0, 40.0)]
+
+
+def test_regions_are_exact_at_rates_where_window_is_not_whole_samples() -> None:
+    for rate in (44100, 22050):
+        t = np.arange(rate * 300 // 1000) / rate
+        burst = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        clip = np.concatenate(
+            [np.zeros(rate * 10, dtype=np.float32), burst, np.zeros(rate, dtype=np.float32)]
+        )
+        regions = voiced_regions(clip, rate)
+        assert len(regions) == 1
+        _close(regions[0].start_ms, 10000)
+        _close(regions[0].end_ms, 10300)

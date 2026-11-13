@@ -96,7 +96,10 @@ def _xing(data: bytes, pos: int, name: Literal["Xing", "Info"]) -> _Tag:
     if flags & 1:
         frames = _uint(data, pos, 4, f"{name} frames")
         pos += 4
-    pos += 4 * bool(flags & 2) + 100 * bool(flags & 4) + 4 * bool(flags & 8)
+    for bit, size, field in ((2, 4, "bytes"), (4, 100, "TOC"), (8, 4, "quality")):
+        if flags & bit:
+            _take(data, pos, size, f"{name} {field}")
+            pos += size
     return _lame(data, pos, name, frames)
 
 

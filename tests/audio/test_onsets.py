@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from fixtures.audio import SR, tone
@@ -82,3 +84,60 @@ def test_bad_arguments() -> None:
         voiced_regions(tone(100), 0)
     with pytest.raises(ValueError, match="window_ms"):
         voiced_regions(tone(100), 100, window_ms=1)
+
+
+_WIN = SR * 5 // 1000
+
+
+def _windows(levels: list[float]) -> Samples:
+    """Constant-level 5 ms windows, so each window's RMS is exactly its level."""
+    return np.concatenate([np.full(_WIN, level, dtype=np.float32) for level in levels])
+
+
+def _spans(
+    samples: Samples, *, min_gap_ms: int = 60, min_voiced_ms: int = 20, dbfs: float = -45.0
+) -> list[tuple[float, float]]:
+    regions = voiced_regions(
+        samples, SR, threshold_dbfs=dbfs, min_gap_ms=min_gap_ms, min_voiced_ms=min_voiced_ms
+    )
+    return [(r.start_ms, r.end_ms) for r in regions]
+
+
+def test_window_exactly_at_threshold_is_not_voiced() -> None:
+    half = 20 * math.log10(0.5)
+    assert _spans(_windows([0.0, 0.5, 0.5, 0.5, 0.5, 0.0]), dbfs=half) == []
+    assert _spans(_windows([0.0, 0.51, 0.51, 0.51, 0.51, 0.0]), dbfs=half) == [(5.0, 25.0)]
+
+
+def test_run_exactly_min_voiced_is_kept() -> None:
+    assert _spans(_windows([0.0] + [0.5] * 4 + [0.0])) == [(5.0, 25.0)]
+    assert _spans(_windows([0.0] + [0.5] * 3 + [0.0])) == []
+
+
+def test_gap_exactly_min_gap_is_not_merged() -> None:
+    gap = [0.0] * 12  # 60 ms
+    assert _spans(_windows([0.5] * 4 + gap + [0.5] * 4)) == [(0.0, 20.0), (80.0, 100.0)]
+    assert _spans(_windows([0.5] * 4 + [0.0] * 11 + [0.5] * 4)) == [(0.0, 95.0)]
+
+
+def test_merge_extends_the_latest_region_only() -> None:
+    far = [0.0] * 40
+    near = [0.0] * 2
+    levels = [0.5] * 4 + far + [0.5] * 4 + near + [0.5] * 4
+    assert _spans(_windows(levels)) == [(0.0, 20.0), (220.0, 270.0)]
+
+
+def test_partial_last_window_uses_its_real_size() -> None:
+    # 10 loud samples at -40 dBFS in a 240-sample window: only the real size clears -45.
+    tail = np.full(10, 0.01, dtype=np.float32)
+    samples = np.concatenate([np.zeros(2 * _WIN, dtype=np.float32), tail])
+    regions = voiced_regions(samples, SR, min_voiced_ms=1)
+    assert len(regions) == 1
+    assert regions[0].start_ms == 10.0
+    assert regions[0].end_ms == pytest.approx(len(samples) * 1000 / SR)
+
+
+def test_window_of_exactly_one_sample_is_allowed() -> None:
+    samples = np.concatenate([np.zeros(10), np.full(30, 0.5), np.zeros(10)]).astype(np.float32)
+    regions = voiced_regions(samples, 1000, window_ms=1, min_voiced_ms=20, min_gap_ms=5)
+    assert [(r.start_ms, r.end_ms) for r in regions] == [(10.0, 40.0)]

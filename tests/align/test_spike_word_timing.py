@@ -1,3 +1,4 @@
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -504,3 +505,61 @@ def test_from_skips_estimators_without_labelled_words(
 def test_from_reports_a_bad_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert spike.main(["--from", str(tmp_path / "missing")]) == 1
     assert "error: manifest.json" in capsys.readouterr().err
+
+
+def test_wave_deltas_accepts_a_word_exactly_at_the_window_edge() -> None:
+    timings = _timings([0, 700, 2000])
+    truth = spike.WaveTruth(0.0, 1500.0, [1000.0])
+    assert spike.wave_deltas(timings, truth, window_ms=300).pause_starts_ms == [(1, -300.0)]
+    assert spike.wave_deltas(timings, truth, window_ms=299).pause_starts_ms == []
+
+
+def test_label_entry_bounds(tmp_path: Path) -> None:
+    path = tmp_path / "labels.json"
+
+    def write(sentence: int, word: int, onset: int) -> None:
+        entry = {"sentence": sentence, "word": word, "onset_ms": onset}
+        path.write_text(json.dumps({"version": 1, "labels": [entry]}))
+
+    write(sentence=1, word=0, onset=0)
+    assert spike.load_labels(path, known=1) == {1: [(0, 0)]}
+    write(sentence=2, word=0, onset=0)
+    assert spike.load_labels(path, known=2) == {2: [(0, 0)]}
+    write(sentence=0, word=0, onset=0)
+    with pytest.raises(ValueError, match="unknown sentence 0"):
+        spike.load_labels(path, known=2)
+    write(sentence=1, word=-1, onset=0)
+    with pytest.raises(ValueError, match="negative"):
+        spike.load_labels(path, known=2)
+    write(sentence=1, word=0, onset=-1)
+    with pytest.raises(ValueError, match="negative"):
+        spike.load_labels(path, known=2)
+
+
+def test_pooled_selects_the_kind_and_skips_missing_estimators() -> None:
+    first = spike.WaveDeltas(10.0, 20.0, [(1, 30.0), (2, 31.0)])
+    second = spike.WaveDeltas(11.0, 21.0, [(1, 32.0)])
+    scored = [spike._Scored(1, {}, {"edge": first}), spike._Scored(2, {}, {"edge": second})]
+    scored.append(spike._Scored(3, {}, {}))
+    assert spike._pooled(scored, "edge", "first") == [10.0, 11.0]
+    assert spike._pooled(scored, "edge", "last") == [20.0, 21.0]
+    assert spike._pooled(scored, "edge", "pause") == [30.0, 31.0, 32.0]
+
+
+def test_capture_is_immutable() -> None:
+    capture = spike.Capture(1, "aa", b"", ["aa"], [], None)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        capture.index = 2
+
+
+def test_json_files_are_indented_and_rewritable(tmp_path: Path) -> None:
+    capture = spike.Capture(1, "aa", b"x", ["aa"], [TimedSpan("aa", 1, 2)], None)
+    for _ in range(2):
+        spike.save_capture(tmp_path, capture)
+        spike.write_manifest(tmp_path, voice="v", edge_tts_version="1", captured_at="t")
+    assert (tmp_path / "01.words.json").read_text() == '[\n "aa"\n]'
+    assert (tmp_path / "01.edge.json").read_text() == json.dumps([["aa", 1, 2]], indent=1)
+
+
+def test_parser_description_is_the_docstring_title() -> None:
+    assert spike._parser().description == (spike.__doc__ or "").splitlines()[0]

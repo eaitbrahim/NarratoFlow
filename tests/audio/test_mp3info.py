@@ -194,3 +194,15 @@ def test_ffmpeg_without_tag_keeps_priming(ffmpeg_bin: str, tmp_path: Path) -> No
     assert read_mp3_info(data).tag is None
     expected = (576 + DECODER_DELAY_SAMPLES) * 1000 / 24000
     assert abs(_onset(data) - 200 - expected) <= 3
+
+
+def test_id3_body_and_footer_are_never_searched_for_a_frame() -> None:
+    decoy = _frame_header("1", 0, False)  # MPEG 1 stereo 44.1 kHz; the real frame is MPEG 2
+    real = _mp3(tag="Info", lame=(576, 960))
+    header = bytearray(b"ID3\x04\x00\x10" + bytes([0, 0, 0, 40]))
+    body = bytearray(40)
+    body[10:14] = decoy
+    footer = bytearray(10)
+    footer[2:6] = decoy
+    info = read_mp3_info(bytes(header + body + footer + real))
+    assert (info.mpeg_version, info.sample_rate, info.tag) == ("2", 24000, "Info")

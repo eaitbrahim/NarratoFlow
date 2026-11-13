@@ -9,8 +9,10 @@ from fractions import Fraction
 from pathlib import Path
 from types import ModuleType
 
+import numpy as np
 import pytest
 
+from narratoflow.audio import io as aio
 from narratoflow.audio.timeline import PartTimeline
 from narratoflow.render.ffmpeg import RenderTools
 from narratoflow.render.layout import Canvas
@@ -140,3 +142,53 @@ def test_main_rejects_too_few_minutes(fake_bench: dict[str, object]) -> None:
         bench.main(["--minutes", "0.01"])
     assert excinfo.value.code == 2
     assert "root" not in fake_bench
+
+
+def test_prepare_numbers_scenes_from_s01(tmp_path: Path) -> None:
+    inputs = bench.prepare(tmp_path, duration_ms=30_000, scene_ms=10_000)
+    timeline = PartTimeline.load(inputs.audio_dir / "part-01.timeline.json")
+    assert [s.scene_id for s in timeline.scenes] == ["s01", "s02", "s03"]
+    assert [s.id for s in inputs.series.parts[0].scenes] == ["s01", "s02", "s03"]
+
+
+@pytest.mark.parametrize(
+    ("duration_ms", "scene_ms"), [(20_000, 0), (20_000, -10_000), (25_000, 10_000)]
+)
+def test_prepare_refuses_bad_scene_lengths(tmp_path: Path, duration_ms: int, scene_ms: int) -> None:
+    with pytest.raises(ValueError, match="positive multiple"):
+        bench.prepare(tmp_path, duration_ms=duration_ms, scene_ms=scene_ms)
+
+
+def test_prepare_twice_into_the_same_root(tmp_path: Path) -> None:
+    bench.prepare(tmp_path, duration_ms=10_000, scene_ms=10_000)
+    again = bench.prepare(tmp_path, duration_ms=10_000, scene_ms=10_000)
+    assert (again.audio_dir / "part-01.timeline.json").is_file()
+
+
+def test_prepare_writes_flac_of_exactly_the_duration(ffmpeg_bin: str, tmp_path: Path) -> None:
+    inputs = bench.prepare(tmp_path, duration_ms=3000, scene_ms=1500)
+    samples = aio.decode((inputs.audio_dir / "part-01.flac").read_bytes())
+    assert abs(samples.size - aio.SAMPLE_RATE * 3) <= 1
+    peak_hz = np.argmax(np.abs(np.fft.rfft(samples))) * aio.SAMPLE_RATE / samples.size
+    assert peak_hz == pytest.approx(440, abs=2)
+
+
+def test_prepare_creates_missing_parent_directories(tmp_path: Path) -> None:
+    inputs = bench.prepare(tmp_path / "a" / "b", duration_ms=10_000, scene_ms=10_000)
+    assert (inputs.audio_dir / "part-01.flac").is_file()
+    assert bench._mkdir(tmp_path / "x" / "y").is_dir()
+    assert bench._mkdir(tmp_path / "x" / "y").is_dir()
+
+
+def test_row_version_is_the_third_token_only_when_there_is_one() -> None:
+    three = RenderTools(Path("f"), Path("p"), "ffmpeg version 9.0.2")
+    assert bench.row(_result(1.0), three).split("|")[3].strip() == "9.0.2"
+    two = RenderTools(Path("f"), Path("p"), "ffmpeg 9.0")
+    assert bench.row(_result(1.0), two).split("|")[3].strip() == "ffmpeg 9.0"
+
+
+@pytest.mark.parametrize("minutes", ["0", "-1"])
+def test_main_rejects_non_positive_minutes(fake_bench: dict[str, object], minutes: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        bench.main(["--minutes", minutes])
+    assert excinfo.value.code == 2

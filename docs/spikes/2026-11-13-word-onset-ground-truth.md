@@ -63,7 +63,53 @@ Energy onsets are reliable at the sentence start, after pauses and at the final 
 
 ## Results
 
-not yet run: needs one networked `--save`
+Captured 2026-11-13 02:56 UTC with edge-tts 7.3.1, voice `ar-SA-HamedNeural`, the 11 fixed sentences, CTC from the `align` extra saved as `NN.ctc.json`. Analysed offline with `--from` on ffmpeg 9.0.2. No `labels.json` yet, so the mid-sentence (labelled) number of D6 is still open. The capture directory is not committed. The `--from` output, verbatim:
+
+### MP3 header (decoder priming)
+
+| # | tag | encoder | encoder_delay | encoder_padding |
+|---|---|---|---|---|
+| 1 | None | None | None | None |
+| 2 | None | None | None | None |
+| 3 | None | None | None | None |
+| 4 | None | None | None | None |
+| 5 | None | None | None | None |
+| 6 | None | None | None | None |
+| 7 | None | None | None | None |
+| 8 | None | None | None | None |
+| 9 | None | None | None | None |
+| 10 | None | None | None | None |
+| 11 | None | None | None | None |
+
+With an Info tag declaring the delay, ffmpeg trims the priming: a burst authored at 200 ms decodes at 200.02 ms. With no tag the decoded audio is (576 + 529) / 24000 s = 46.04 ms late (burst at 246.06 ms). Measured on ffmpeg 9.0.2, libmp3lame, 24 kHz mono.
+
+### edge and CTC vs waveform
+
+All deltas in ms, estimate minus waveform (positive = the estimate is later).
+
+| # | edge first - onset | ctc first - onset | edge last end - offset | ctc last end - offset | edge post-pause starts - onset | ctc post-pause starts - onset |
+|---|---|---|---|---|---|---|
+| 1 | -100 | +20 | +62 | +945 | - | - |
+| 2 | -105 | +15 | +50 | +920 | w4:-128 | w4:+20 |
+| 3 | -100 | +40 | -5 | +855 | w4:-110 | w4:+40 |
+| 4 | -100 | +40 | +157 | +1030 | - | - |
+| 5 | -105 | -25 | +60 | +930 | - | - |
+| 6 | -100 | -20 | +37 | +895 | - | - |
+| 7 | -105 | -5 | +37 | +885 | w2:-108 | w2:+95 |
+| 8 | -110 | +70 | +27 | +895 | - | - |
+| 9 | -100 | +40 | +7 | +875 | - | - |
+| 10 | -125 | -5 | +67 | +930 | - | - |
+| 11 | -100 | +20 | +22 | +895 | w2:+92, w4:-110, w6:+67, w8:-110 | w1:-25, w4:+20, w5:+85, w8:+35 |
+| median | -100 | +20 | +37 | +895 | -110 | +35 |
+
+Reading (sign rule: estimate minus waveform, positive = the estimate is later):
+
+- **Decoder priming.** No edge MP3 carries a Xing/Info or VBRI tag (24 kHz mono, 48 kbit/s), so `decode()` cannot trim the priming. If edge's encoder primes like libmp3lame (576 samples), the decoded waveform sits about 46 ms after the edge clock (D7's no-tag case). That makes every "minus waveform" number about 46 ms more negative than the true edge or CTC error. The encoder delay itself cannot be read from these files.
+- **First word (n = 11).** Edge starts a median 100 ms before the energy onset (range -125 to -100). CTC starts a median 20 ms after it (range -25 to +70). The ~115 ms edge-minus-CTC offset of the earlier spike is therefore mostly on the edge side: edge is early against the waveform. CTC is within about one 20 ms frame of energy.
+- **Post-pause words (edge n = 8, CTC n = 8).** Edge median -110 ms, CTC median +35 ms: the same picture as the first word.
+- **Last word's end (n = 11).** Edge ends a median 37 ms after the energy offset. CTC ends a median 895 ms after it, because CTC stretches the last word over the trailing silence to the end of the clip (sentence 1: CTC's last span ends at 3620 ms in a 3624 ms file). The ~860 ms last-word gap of the earlier spike is a CTC artefact, not an edge one.
+- **#25, first number (D6: CTC minus energy at the boundaries energy can see).** First-word start median +20 ms, post-pause starts median +35 ms, last-word end median +895 ms (a CTC artefact).
+- **#25, second number (CTC minus labels for mid-sentence words).** Not yet measured: needs a hand-made `labels.json` (see Manual labelling), then a re-run of `--from`.
 
 ## Next steps
 

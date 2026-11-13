@@ -1,1 +1,1 @@
-"""Gradio review station (extra: ui). Edits storyboard.json; holds no state."""
+"""Gradio review station (extra: ui). Not built yet; it will edit series.json and hold no state."""

@@ -3,8 +3,8 @@
 `Series` (schema v2) is the IR every stage reads and writes; `Project` (v1) remains only
 for `validate`. See docs/adr/0004.
 Bump `SCHEMA_VERSION` on a breaking change (a removed, renamed or re-typed field);
-`Series.load` refuses any other version and there are no migrations. `Project.load` does not
-check `schema_version` (legacy, `validate` only).
+`Series.load` and `Project.load` each refuse any other (or a missing) version and there are
+no migrations.
 """
 
 from __future__ import annotations
@@ -186,7 +186,23 @@ class Project(BaseModel):
 
     @classmethod
     def load(cls, path: Path) -> Project:
-        return cls.model_validate_json(path.read_text(encoding="utf-8"))
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise PlanningError(f"cannot read project file {path}: {exc}") from exc
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise PlanningError(f"project file {path} is not valid JSON: {exc}") from exc
+        found = raw.get("schema_version") if isinstance(raw, dict) else None
+        if found != PROJECT_SCHEMA_VERSION:
+            raise PlanningError(
+                f"unsupported project schema_version {found}; expected {PROJECT_SCHEMA_VERSION}"
+            )
+        try:
+            return cls.model_validate_json(text)
+        except ValidationError as exc:
+            raise PlanningError(f"project file {path} is invalid:\n{exc}") from exc
 
 
 MAX_FINDING_REASON = 200

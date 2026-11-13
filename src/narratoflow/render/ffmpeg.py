@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -28,6 +29,9 @@ class RenderTools:
     ffmpeg: Path
     ffprobe: Path
     version: str
+    """First line of `ffmpeg -version`, for display."""
+    fingerprint: str = ""
+    """sha256 of the full `ffmpeg -version` output: tells builds of one version apart."""
 
 
 @dataclass(frozen=True)
@@ -119,7 +123,8 @@ def find_render_tools(settings: Settings) -> RenderTools:
 
     out = run_tool(ffmpeg, ["-version"]).decode("utf-8", errors="replace")
     version = out.splitlines()[0] if out else ""
-    return RenderTools(ffmpeg=ffmpeg, ffprobe=ffprobe, version=version)
+    fingerprint = hashlib.sha256(out.encode("utf-8")).hexdigest()
+    return RenderTools(ffmpeg=ffmpeg, ffprobe=ffprobe, version=version, fingerprint=fingerprint)
 
 
 def _ms(value: object) -> int | None:

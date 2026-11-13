@@ -141,6 +141,22 @@ def test_project_still_loads_v1(tmp_path: Path) -> None:
     assert Project.load(path).schema_version == 1
 
 
+@pytest.mark.parametrize(
+    ("body", "found"),
+    [
+        ('{"schema_version": 99, "title": "T", "language": "ar"}', "99"),
+        ('{"title": "T", "language": "ar"}', "None"),
+    ],
+)
+def test_project_load_rejects_other_or_missing_schema(
+    tmp_path: Path, body: str, found: str
+) -> None:
+    path = tmp_path / "p.json"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(PlanningError, match=f"unsupported project schema_version {found}"):
+        Project.load(path)
+
+
 def test_budget_error_message_has_values() -> None:
     e = BudgetExceededError(Decimal("1.20"), Decimal("1.00"))
     assert "$1.20" in str(e) and "$1.00" in str(e)

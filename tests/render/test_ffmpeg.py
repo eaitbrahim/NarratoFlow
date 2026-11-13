@@ -43,6 +43,29 @@ def test_missing_ass_filter_message_names_ffmpeg_full(
     assert "NARRATOFLOW_FFMPEG" in str(ei.value)
 
 
+def test_tools_fingerprint_tells_same_version_builds_apart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ff = _fake_tool(tmp_path / "ffmpeg", "true\n")
+    _fake_tool(tmp_path / "ffprobe", "true\n")
+    banner = {"text": b""}
+
+    def fake_run(tool: Path, args: list[str], **_: object) -> bytes:
+        if "-filters" in args:
+            return b" ... ass V->V\n"
+        if "-encoders" in args:
+            return b" V....D libx264\n V....D ffv1\n A....D aac\n"
+        return banner["text"]
+
+    monkeypatch.setattr(F, "run_tool", fake_run)
+    banner["text"] = b"ffmpeg version 8.0\nconfiguration: --enable-libass\n"
+    plain = find_render_tools(Settings(ffmpeg=ff))
+    banner["text"] = b"ffmpeg version 8.0\nconfiguration: --enable-libass --enable-libfdk-aac\n"
+    full = find_render_tools(Settings(ffmpeg=ff))
+    assert plain.version == full.version == "ffmpeg version 8.0"
+    assert plain.fingerprint != full.fingerprint
+
+
 def test_missing_encoder_named(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ff = _fake_tool(tmp_path / "ffmpeg", "true\n")
     _fake_tool(tmp_path / "ffprobe", "true\n")

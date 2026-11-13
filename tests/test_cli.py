@@ -159,6 +159,16 @@ def test_validate(tmp_path: Path) -> None:
     assert "0 scenes" in result.output
 
 
+def test_validate_refuses_other_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "storyboard.json"
+    path.write_text('{"schema_version": 99, "title": "T", "language": "en"}', encoding="utf-8")
+    code = run_main(monkeypatch, "validate", str(path))
+    assert code == 1
+    assert "unsupported project schema_version 99" in capsys.readouterr().err
+
+
 def test_callback_sets_up_logging(
     channel_file: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

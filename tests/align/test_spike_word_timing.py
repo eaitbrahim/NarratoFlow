@@ -594,6 +594,10 @@ def test_every_estimator_is_scored_on_the_same_post_pause_word(
     assert scored.deltas["ctc"].pause_starts_ms == [(1, pytest.approx(10, abs=10))]
 
 
+def test_match_pause_words_without_estimators_matches_nothing() -> None:
+    assert spike.match_pause_words({}, [100.0, 200.0], 300) == [None, None]
+
+
 def test_match_pause_words_picks_one_word_for_all_estimators() -> None:
     late = _timings([0, 1010, 1200])
     early = _timings([0, 890, 1080])

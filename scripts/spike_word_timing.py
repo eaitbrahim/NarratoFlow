@@ -488,7 +488,9 @@ def match_pause_words(
     every estimator has it within `window_ms`; None when no word qualifies. An
     estimator that runs early cannot pull the match to the next word on its own.
     """
-    count = min((len(t) for t in estimates.values()), default=0)
+    if not estimates:
+        return [None] * len(onsets)
+    count = min(len(t) for t in estimates.values())
     out: list[int | None] = []
     for onset in onsets:
         distance = {

@@ -491,17 +491,30 @@ def audio_build(
     _print_audio(result, series)
 
 
+def _print_rendered(built: PartVideo) -> None:
+    rep = built.report
+    _out.print(
+        f"part {rep.part_index}/{rep.part_count}: {rep.duration_ms / 1000:.1f} s, "
+        f"{rep.frames} frames, {rep.width}x{rep.height} @ {rep.fps} fps -> "
+        f"{escape(str(built.video_path))}",
+        highlight=False,
+        soft_wrap=True,
+    )
+    _out.print(f"  report: {escape(str(built.report_path))}", highlight=False, soft_wrap=True)
+
+
 def _print_render(result: RenderResult) -> None:
     for built in result.parts:
         rep = built.report
-        _out.print(
-            f"part {rep.part_index}/{rep.part_count}: {rep.duration_ms / 1000:.1f} s, "
-            f"{rep.frames} frames, {rep.width}x{rep.height} @ {rep.fps} fps -> "
-            f"{escape(str(built.video_path))}",
-            highlight=False,
-            soft_wrap=True,
-        )
-        _out.print(f"  report: {escape(str(built.report_path))}", highlight=False, soft_wrap=True)
+        if built.index in result.skipped:
+            _out.print(
+                f"part {rep.part_index}/{rep.part_count}: unchanged, kept "
+                f"{escape(str(built.video_path))}",
+                highlight=False,
+                soft_wrap=True,
+            )
+        else:
+            _print_rendered(built)
         for warning in rep.warnings:
             _out.print(
                 f"[yellow]warning:[/yellow] part {rep.part_index}: {escape(warning)}",
@@ -539,6 +552,9 @@ def render(
         int | None,
         typer.Option("--workers", min=1, help="Render processes (default: one per CPU core)."),
     ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Re-render even when the inputs are unchanged.")
+    ] = False,
 ) -> None:
     """Render every part of an approved series to a 1080x1920 MP4 plus a render report."""
     channel = load_channel(channel_toml)
@@ -555,6 +571,7 @@ def render(
             parts=part or None,
             workers=workers,
             on_part=done.append,
+            force=force,
         )
     except KeyboardInterrupt:
         _err.print("[red]interrupted: render stopped; finished parts are kept[/red]")

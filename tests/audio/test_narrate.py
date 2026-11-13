@@ -10,6 +10,8 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pytest
+from fakes.align import FakeAligner
+from fakes.voice import GAP_MS, TIMED_LEAD_MS, WORD_MS, FakeVoice, word_spans
 from fixtures.audio import speechlike, to_wav_bytes
 from pydantic import SecretStr
 
@@ -48,21 +50,11 @@ from narratoflow.tts.piper import PiperProvider
 pytestmark = pytest.mark.usefixtures("ffmpeg_bin")
 
 PRICES = PriceTable({"voice": {"paid/m1": (Decimal("0.30"),), "other/m2": (Decimal("0.10"),)}})
-WORD_MS = 300
-GAP_MS = 80
-LEAD_MS = 200
 
 
-def word_spans(text: str, lead_ms: int = LEAD_MS) -> tuple[TimedSpan, ...]:
-    out = []
-    t = lead_ms
-    for w in text.split():
-        out.append(TimedSpan(w, t, t + WORD_MS))
-        t += WORD_MS + GAP_MS
-    return tuple(out)
+class TimedVoice(FakeVoice):
+    """The plain fake voice, with the word spans and 200 ms lead these tests assert on."""
 
-
-class FakeVoice:
     def __init__(
         self,
         name: str = "paid",
@@ -73,41 +65,15 @@ class FakeVoice:
         error: Exception | None = None,
         billed: bool = True,
     ) -> None:
-        self.name = name
-        self.model = model
-        self.spans = spans
-        self.fail_on = fail_on
-        self.error = error if error is not None else ProviderError("HTTP 500")
-        self.billed = billed
-        self.requests: list[SpeechRequest] = []
-
-    def synthesize(self, req: SpeechRequest) -> Speech:
-        self.requests.append(req)
-        if self.fail_on is not None and self.fail_on in req.text:
-            raise self.error
-        n = len(req.text.split())
-        audio = to_wav_bytes(speechlike(n, WORD_MS, GAP_MS, lead_ms=LEAD_MS))
-        return Speech(
-            audio=audio,
-            spans=word_spans(req.text) if self.spans else (),
-            provider=self.name,
-            model=self.model,
-            billed_chars=len(req.text) if self.billed else None,
+        super().__init__(
+            name,
+            model,
+            spans=spans,
+            fail_on=fail_on,
+            error=error,
+            billed=billed,
+            lead_ms=TIMED_LEAD_MS,
         )
-
-
-class FakeAligner:
-    def __init__(self, error: Exception | None = None) -> None:
-        self.error = error
-        self.calls: list[tuple[int, int, str, Language]] = []
-
-    def align(
-        self, samples: Samples, sample_rate: int, text: str, language: Language
-    ) -> list[TimedSpan]:
-        self.calls.append((len(samples), sample_rate, text, language))
-        if self.error is not None:
-            raise self.error
-        return list(word_spans(text, lead_ms=LEAD_MS + 10))
 
 
 def narration(sid: str, text: str, tts: str | None = None, caption: str | None = None) -> Scene:
@@ -176,7 +142,7 @@ def voice_of(result: NarrationResult) -> VoiceUsed:
 
 
 def test_only_scene_text_is_spoken(cache: StageCache) -> None:
-    voice = FakeVoice()
+    voice = TimedVoice()
     part = make_part(
         narration("s1", "plain words", tts="plain wordz"),
         verse("v1"),
@@ -192,7 +158,7 @@ def test_only_scene_text_is_spoken(cache: StageCache) -> None:
 
 
 def test_verse_only_part_has_no_voice(cache: StageCache) -> None:
-    voice = FakeVoice()
+    voice = TimedVoice()
     result, _ = run(make_part(verse("v1")), [VoiceChoice(voice, "v")], cache)
     assert result.clips == {}
     assert result.voice is None
@@ -200,8 +166,8 @@ def test_verse_only_part_has_no_voice(cache: StageCache) -> None:
 
 
 def test_primary_failure_revoices_whole_part_and_records_fallback(cache: StageCache) -> None:
-    primary = FakeVoice(fail_on="zeta")
-    backup = FakeVoice("edge", "edge-tts")
+    primary = TimedVoice(fail_on="zeta")
+    backup = TimedVoice("edge", "edge-tts")
     result, _ = run(three(), [VoiceChoice(primary, "p"), VoiceChoice(backup, "b")], cache)
     assert [r.text for r in primary.requests] == ["alpha beta", "gamma delta epsilon", "zeta eta"]
     assert [r.text for r in backup.requests] == ["alpha beta", "gamma delta epsilon", "zeta eta"]
@@ -212,7 +178,7 @@ def test_primary_failure_revoices_whole_part_and_records_fallback(cache: StageCa
 
 
 def test_no_fallback_records_primary(cache: StageCache) -> None:
-    result, _ = run(three(), [VoiceChoice(FakeVoice(), "p")], cache)
+    result, _ = run(three(), [VoiceChoice(TimedVoice(), "p")], cache)
     voice = voice_of(result)
     assert (voice.provider, voice.model, voice.voice_id) == ("paid", "m1", "p")
     assert voice.fallback_from is None
@@ -220,8 +186,8 @@ def test_no_fallback_records_primary(cache: StageCache) -> None:
 
 
 def test_billed_provider_error_falls_back(cache: StageCache) -> None:
-    primary = FakeVoice(fail_on="alpha", error=BilledProviderError("bad body"))
-    backup = FakeVoice("edge", "edge-tts")
+    primary = TimedVoice(fail_on="alpha", error=BilledProviderError("bad body"))
+    backup = TimedVoice("edge", "edge-tts")
     result, tracker = run(three(), [VoiceChoice(primary, "p"), VoiceChoice(backup, "b")], cache)
     assert voice_of(result).fallback_reasons == ["paid/p: bad body"]
     assert tracker.spent > 0  # the billed failure was charged
@@ -236,16 +202,16 @@ def test_billed_provider_error_falls_back(cache: StageCache) -> None:
     ],
 )
 def test_budget_error_does_not_fall_back(cache: StageCache, error: Exception) -> None:
-    primary = FakeVoice(fail_on="gamma", error=error)
-    backup = FakeVoice("edge", "edge-tts")
+    primary = TimedVoice(fail_on="gamma", error=error)
+    backup = TimedVoice("edge", "edge-tts")
     with pytest.raises(type(error)):
         run(three(), [VoiceChoice(primary, "p"), VoiceChoice(backup, "b")], cache)
     assert backup.requests == []
 
 
 def test_tracker_budget_exceeded_does_not_fall_back(cache: StageCache) -> None:
-    primary = FakeVoice()
-    backup = FakeVoice("edge", "edge-tts")
+    primary = TimedVoice()
+    backup = TimedVoice("edge", "edge-tts")
     tracker = SpendTracker(limit_usd=Decimal("0.001"))
     with pytest.raises(BudgetExceededError):
         run(three(), [VoiceChoice(primary, "p"), VoiceChoice(backup, "b")], cache, tracker=tracker)
@@ -253,8 +219,8 @@ def test_tracker_budget_exceeded_does_not_fall_back(cache: StageCache) -> None:
 
 
 def test_all_voices_fail_raises_audio_error(cache: StageCache) -> None:
-    a = FakeVoice(fail_on="alpha", error=ProviderError("down"))
-    b = FakeVoice("edge", "edge-tts", fail_on="gamma", error=ProviderError("offline"))
+    a = TimedVoice(fail_on="alpha", error=ProviderError("down"))
+    b = TimedVoice("edge", "edge-tts", fail_on="gamma", error=ProviderError("offline"))
     with pytest.raises(AudioError) as info:
         run(three(), [VoiceChoice(a, "a"), VoiceChoice(b, "b")], cache)
     assert str(info.value) == "no voice could narrate part 2: paid/a: down; edge/b: offline"
@@ -262,8 +228,8 @@ def test_all_voices_fail_raises_audio_error(cache: StageCache) -> None:
 
 def test_missing_extra_counts_as_failed_voice(cache: StageCache) -> None:
     hint = "install the 'tts-edge' extra: uv sync --extra tts-edge"
-    a = FakeVoice("edge", "edge-tts", fail_on="alpha", error=ExtraMissingError(hint))
-    b = FakeVoice("piper", "model")
+    a = TimedVoice("edge", "edge-tts", fail_on="alpha", error=ExtraMissingError(hint))
+    b = TimedVoice("piper", "model")
     result, _ = run(three(), [VoiceChoice(a, "a"), VoiceChoice(b, "piper")], cache)
     voice = voice_of(result)
     assert voice.provider == "piper"
@@ -274,8 +240,8 @@ def test_missing_extra_counts_as_failed_voice(cache: StageCache) -> None:
 def test_other_channel_config_error_propagates_without_fallback(cache: StageCache) -> None:
     # Same message prefix as a missing extra, but the type decides.
     error = ChannelConfigError("install the 'x' extra -- but really a config error")
-    a = FakeVoice(fail_on="alpha", error=error)
-    b = FakeVoice("edge", "edge-tts")
+    a = TimedVoice(fail_on="alpha", error=error)
+    b = TimedVoice("edge", "edge-tts")
     with pytest.raises(ChannelConfigError) as info:
         run(three(), [VoiceChoice(a, "a"), VoiceChoice(b, "b")], cache)
     assert info.value is error
@@ -295,7 +261,7 @@ def test_rejected_elevenlabs_key_or_voice_never_falls_back(cache: StageCache, st
         "m1",
         http=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    backup = FakeVoice("edge", "edge-tts")
+    backup = TimedVoice("edge", "edge-tts")
     prices = PriceTable({"voice": {"elevenlabs/m1": (Decimal("0.30"),)}})
     with pytest.raises(ProviderAuthError, match=f"HTTP {status}"):
         narrate_part(
@@ -312,8 +278,8 @@ def test_rejected_elevenlabs_key_or_voice_never_falls_back(cache: StageCache, st
 
 
 def test_aligner_provider_error_estimates_and_keeps_voice(cache: StageCache) -> None:
-    voice = FakeVoice(spans=False)
-    backup = FakeVoice("edge", "edge-tts")
+    voice = TimedVoice(spans=False)
+    backup = TimedVoice("edge", "edge-tts")
     aligner = FakeAligner(error=ProviderError("ctc crashed"))
     result, _ = run(
         three(), [VoiceChoice(voice, "p"), VoiceChoice(backup, "b")], cache, aligner=aligner
@@ -331,7 +297,7 @@ def test_aligner_provider_error_estimates_and_keeps_voice(cache: StageCache) -> 
 
 def test_cache_entry_needs_both_files(cache: StageCache) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    voice = FakeVoice()
+    voice = TimedVoice()
     run(part, [VoiceChoice(voice, "p")], cache)
     key = cache_key(
         "tts",
@@ -368,19 +334,19 @@ def test_cache_entry_needs_both_files(cache: StageCache) -> None:
 
 
 def test_cost_estimated_read_from_wrapper(cache: StageCache) -> None:
-    billed, _ = run(three(), [VoiceChoice(FakeVoice(billed=True), "p")], cache)
+    billed, _ = run(three(), [VoiceChoice(TimedVoice(billed=True), "p")], cache)
     assert billed.cost_estimated is False
-    unbilled, _ = run(three(), [VoiceChoice(FakeVoice("other", "m2", billed=False), "p")], cache)
+    unbilled, _ = run(three(), [VoiceChoice(TimedVoice("other", "m2", billed=False), "p")], cache)
     assert unbilled.cost_estimated is True
     free, tracker = run(
-        three(), [VoiceChoice(FakeVoice("edge", "edge-tts", billed=False), "e")], cache
+        three(), [VoiceChoice(TimedVoice("edge", "edge-tts", billed=False), "e")], cache
     )
     assert free.cost_estimated is False
     assert tracker.spent == 0
 
 
 def test_cache_hit_makes_no_call_and_no_charge(cache: StageCache) -> None:
-    voice = FakeVoice()
+    voice = TimedVoice()
     first, tracker1 = run(three(), [VoiceChoice(voice, "p")], cache)
     assert tracker1.spent == Decimal(len("alpha betagamma delta epsilonzeta eta")) / 1000 * Decimal(
         "0.30"
@@ -418,13 +384,17 @@ def test_cache_hit_makes_no_call_and_no_charge(cache: StageCache) -> None:
 def test_uncached_chars_counts_repeated_text_once(cache: StageCache) -> None:
     part = make_part(narration("s1", "same words"), narration("s2", "same words"), verse("v"))
     assert uncached_chars(
-        part, VoiceChoice(FakeVoice(), "p"), cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
+        part,
+        VoiceChoice(TimedVoice(), "p"),
+        cache,
+        language=Language.ENGLISH,
+        lexicon=Lexicon.EMPTY,
     ) == len("same words")
 
 
 def test_provider_spans_used_when_they_map(cache: StageCache) -> None:
     aligner = FakeAligner()
-    result, _ = run(three(), [VoiceChoice(FakeVoice(), "p")], cache, aligner=aligner)
+    result, _ = run(three(), [VoiceChoice(TimedVoice(), "p")], cache, aligner=aligner)
     clip = result.clips["s2"]
     assert clip.timing_source is TimingSource.PROVIDER
     assert [(w.text, w.start_ms, w.end_ms) for w in clip.words] == [
@@ -436,11 +406,11 @@ def test_provider_spans_used_when_they_map(cache: StageCache) -> None:
 
 def test_aligner_used_when_no_spans(cache: StageCache) -> None:
     aligner = FakeAligner()
-    result, _ = run(three(), [VoiceChoice(FakeVoice(spans=False), "p")], cache, aligner=aligner)
+    result, _ = run(three(), [VoiceChoice(TimedVoice(spans=False), "p")], cache, aligner=aligner)
     clip = result.clips["s1"]
     assert clip.timing_source is TimingSource.ALIGNED
     assert [(w.start_ms, w.end_ms) for w in clip.words] == [
-        (s.start_ms, s.end_ms) for s in word_spans("alpha beta", lead_ms=LEAD_MS + 10)
+        (s.start_ms, s.end_ms) for s in word_spans("alpha beta", lead_ms=TIMED_LEAD_MS + 10)
     ]
     n, rate, text, language = aligner.calls[0]
     assert (n, rate, text, language) == (
@@ -453,7 +423,7 @@ def test_aligner_used_when_no_spans(cache: StageCache) -> None:
 
 
 def test_aligner_used_when_provider_spans_do_not_map(cache: StageCache) -> None:
-    class Mismatch(FakeVoice):
+    class Mismatch(TimedVoice):
         def synthesize(self, req: SpeechRequest) -> Speech:
             speech = super().synthesize(req)
             return Speech(
@@ -466,7 +436,7 @@ def test_aligner_used_when_provider_spans_do_not_map(cache: StageCache) -> None:
 
 
 def test_estimated_when_no_aligner_with_warnings(cache: StageCache) -> None:
-    result, _ = run(three(), [VoiceChoice(FakeVoice(spans=False), "p")], cache)
+    result, _ = run(three(), [VoiceChoice(TimedVoice(spans=False), "p")], cache)
     assert result.warnings == [f"{sid}: word timings estimated" for sid in ("s1", "s2", "s3")]
     assert result.aligner_unavailable is False
     clip = result.clips["s2"]
@@ -487,7 +457,7 @@ def test_estimated_when_aligner_output_does_not_map(cache: StageCache) -> None:
 
     result, _ = run(
         make_part(narration("s1", "alpha beta")),
-        [VoiceChoice(FakeVoice(spans=False), "p")],
+        [VoiceChoice(TimedVoice(spans=False), "p")],
         cache,
         aligner=Wrong(),
     )
@@ -497,7 +467,7 @@ def test_estimated_when_aligner_output_does_not_map(cache: StageCache) -> None:
 
 def test_aligner_unavailable_warns_once(cache: StageCache) -> None:
     aligner = FakeAligner(error=AlignerUnavailableError(ALIGN_EXTRA_WARNING))
-    result, _ = run(three(), [VoiceChoice(FakeVoice(spans=False), "p")], cache, aligner=aligner)
+    result, _ = run(three(), [VoiceChoice(TimedVoice(spans=False), "p")], cache, aligner=aligner)
     assert len(aligner.calls) == 1  # dropped for the rest of the part
     assert result.aligner_unavailable is True
     assert ALIGN_EXTRA_WARNING == "install the 'align' extra for word timings"
@@ -510,7 +480,7 @@ def test_word_texts_are_caption_tokens(cache: StageCache) -> None:
     tts = "\u0642\u064e\u0627\u0644\u064e \u0627\u0644\u0644\u0651\u064e\u0647\u064f"
     cap = "\u0642\u0627\u0644\u064e \u0627\u0644\u0644\u0647"
     part = make_part(narration("s1", src, tts=tts, caption=cap), narration("s2", src))
-    voice = FakeVoice("edge", "edge-tts")
+    voice = TimedVoice("edge", "edge-tts")
     result, _ = run(part, [VoiceChoice(voice, "v")], cache)
     assert voice.requests[0].text == tts
     assert [w.text for w in result.clips["s1"].words] == cap.split()
@@ -519,15 +489,15 @@ def test_word_texts_are_caption_tokens(cache: StageCache) -> None:
 
 def test_caption_token_mismatch_raises_before_spend(cache: StageCache) -> None:
     part = make_part(narration("s7", "one two", caption="one two three"))
-    voice = FakeVoice()
+    voice = TimedVoice()
     with pytest.raises(PlanningError, match="s7"):
         run(part, [VoiceChoice(voice, "p")], cache)
     assert voice.requests == []
 
 
 def test_one_wrapper_per_voice_per_part(cache: StageCache) -> None:
-    primary = FakeVoice(fail_on="zeta", billed=False)
-    backup = FakeVoice("edge", "edge-tts", billed=False)
+    primary = TimedVoice(fail_on="zeta", billed=False)
+    backup = TimedVoice("edge", "edge-tts", billed=False)
     result, tracker = run(three(), [VoiceChoice(primary, "p"), VoiceChoice(backup, "b")], cache)
     # The failed paid primary charged unbilled estimates for two scenes.
     assert tracker.spent > 0
@@ -549,7 +519,7 @@ def test_one_wrapper_per_voice_per_part(cache: StageCache) -> None:
 )
 def test_malformed_cache_meta_is_a_miss(cache: StageCache, meta: str) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    voice = FakeVoice()
+    voice = TimedVoice()
     choice = VoiceChoice(voice, "p")
     run(part, [choice], cache)
     (meta_path,) = (cache.root / "tts").glob("*.json")
@@ -560,7 +530,7 @@ def test_malformed_cache_meta_is_a_miss(cache: StageCache, meta: str) -> None:
 
 def test_empty_cached_audio_is_a_miss(cache: StageCache) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    choice = VoiceChoice(FakeVoice(), "p")
+    choice = VoiceChoice(TimedVoice(), "p")
     run(part, [choice], cache)
     (audio_path,) = (cache.root / "tts").glob("*.audio")
     audio_path.write_bytes(b"")
@@ -577,11 +547,11 @@ def test_cache_write_failure_raises_audio_error(
 
     monkeypatch.setattr("narratoflow.audio.narrate.os.replace", refuse)
     with pytest.raises(AudioError, match="cannot write tts cache"):
-        run(make_part(narration("s1", "alpha beta")), [VoiceChoice(FakeVoice(), "p")], cache)
+        run(make_part(narration("s1", "alpha beta")), [VoiceChoice(TimedVoice(), "p")], cache)
     assert not list((cache.root / "tts").iterdir())  # temp files cleaned up
 
 
-class BadAudioVoice(FakeVoice):
+class BadAudioVoice(TimedVoice):
     def __init__(self, audio: bytes, bad_on: str, **kw: object) -> None:
         super().__init__(**kw)  # type: ignore[arg-type]
         self.audio = audio
@@ -616,7 +586,7 @@ def key_for(choice: VoiceChoice, text: str) -> str:
 )
 def test_bad_voice_audio_fails_the_voice(cache: StageCache, audio: bytes, why: str) -> None:
     primary = BadAudioVoice(audio, "gamma", billed=False)
-    backup = FakeVoice("edge", "edge-tts")
+    backup = TimedVoice("edge", "edge-tts")
     p, b = VoiceChoice(primary, "p"), VoiceChoice(backup, "b")
     result, tracker = run(three(), [p, b], cache)
     voice = voice_of(result)
@@ -640,12 +610,12 @@ def test_bad_voice_audio_fails_the_voice(cache: StageCache, audio: bytes, why: s
 )
 def test_bad_cached_audio_is_revoiced_with_the_same_voice(cache: StageCache, bad: bytes) -> None:
     part = make_part(narration("s1", "alpha beta"), narration("s2", "gamma delta epsilon"))
-    voice = FakeVoice()
+    voice = TimedVoice()
     p = VoiceChoice(voice, "p")
     run(part, [p], cache)
     audio_path = cache.root / "tts" / f"{key_for(p, 'alpha beta')}.audio"
     audio_path.write_bytes(bad)
-    backup = FakeVoice("edge", "edge-tts")
+    backup = TimedVoice("edge", "edge-tts")
     result, tracker = run(part, [p, VoiceChoice(backup, "b")], cache)
     v = voice_of(result)
     assert (v.provider, v.fallback_from, v.fallback_reasons) == ("paid", None, [])
@@ -658,7 +628,7 @@ def test_bad_cached_audio_is_revoiced_with_the_same_voice(cache: StageCache, bad
 
 def test_bad_cached_audio_revoice_respects_budget(cache: StageCache) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    voice = FakeVoice()
+    voice = TimedVoice()
     p = VoiceChoice(voice, "p")
     run(part, [p], cache)
     (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.audio").write_bytes(b"junk")
@@ -669,11 +639,11 @@ def test_bad_cached_audio_revoice_respects_budget(cache: StageCache) -> None:
 
 def test_fresh_bad_audio_after_bad_cache_fails_the_voice(cache: StageCache) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    p = VoiceChoice(FakeVoice(), "p")
+    p = VoiceChoice(TimedVoice(), "p")
     run(part, [p], cache)
     (cache.root / "tts" / f"{key_for(p, 'alpha beta')}.audio").write_bytes(b"junk")
     still_bad = VoiceChoice(BadAudioVoice(b"junk", "alpha"), "p")
-    backup = FakeVoice("edge", "edge-tts")
+    backup = TimedVoice("edge", "edge-tts")
     result, _ = run(part, [still_bad, VoiceChoice(backup, "b")], cache)
     assert voice_of(result).provider == "edge"
     assert voice_of(result).fallback_reasons[0].startswith("paid/p: scene s1: audio does not")
@@ -681,11 +651,11 @@ def test_fresh_bad_audio_after_bad_cache_fails_the_voice(cache: StageCache) -> N
 
 
 def test_failed_voice_cached_clips_are_reused_on_rerun(cache: StageCache) -> None:
-    failing = FakeVoice(fail_on="zeta")
-    backup = FakeVoice("edge", "edge-tts", fail_on="alpha", error=ProviderError("off"))
+    failing = TimedVoice(fail_on="zeta")
+    backup = TimedVoice("edge", "edge-tts", fail_on="alpha", error=ProviderError("off"))
     with pytest.raises(AudioError):
         run(three(), [VoiceChoice(failing, "p"), VoiceChoice(backup, "b")], cache)
-    fixed = FakeVoice()  # same provider/model/voice id, now healthy
+    fixed = TimedVoice()  # same provider/model/voice id, now healthy
     choice = VoiceChoice(fixed, "p")
     assert uncached_chars(
         three(), choice, cache, language=Language.ENGLISH, lexicon=Lexicon.EMPTY
@@ -700,7 +670,7 @@ def test_store_drops_old_json_before_writing_new_audio(
     cache: StageCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    p = VoiceChoice(FakeVoice(), "p")
+    p = VoiceChoice(TimedVoice(), "p")
     run(part, [p], cache)
     tts = cache.root / "tts"
     key = key_for(p, "alpha beta")
@@ -718,7 +688,7 @@ def test_store_drops_old_json_before_writing_new_audio(
 
 def test_uncached_chars_is_stat_only(cache: StageCache, monkeypatch: pytest.MonkeyPatch) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    p = VoiceChoice(FakeVoice(), "p")
+    p = VoiceChoice(TimedVoice(), "p")
     run(part, [p], cache)
 
     def no_read(self: Path) -> bytes:
@@ -734,7 +704,9 @@ def test_uncached_chars_is_stat_only(cache: StageCache, monkeypatch: pytest.Monk
 
 class FakePiper(PiperProvider):
     def synthesize(self, req: SpeechRequest) -> Speech:
-        audio = to_wav_bytes(speechlike(len(req.text.split()), WORD_MS, GAP_MS, lead_ms=LEAD_MS))
+        audio = to_wav_bytes(
+            speechlike(len(req.text.split()), WORD_MS, GAP_MS, lead_ms=TIMED_LEAD_MS)
+        )
         return Speech(audio, (), self.name, self.model, None)
 
 
@@ -790,7 +762,7 @@ def test_piper_key_without_model_file(cache: StageCache, tmp_path: Path) -> None
 
 def test_unremovable_old_json_raises_audio_error(cache: StageCache) -> None:
     part = make_part(narration("s1", "alpha beta"))
-    p = VoiceChoice(FakeVoice(), "p")
+    p = VoiceChoice(TimedVoice(), "p")
     tts = cache.root / "tts"
     tts.mkdir(parents=True)
     (tts / f"{key_for(p, 'alpha beta')}.json").mkdir()  # cannot be unlinked as a file
@@ -799,7 +771,7 @@ def test_unremovable_old_json_raises_audio_error(cache: StageCache) -> None:
 
 
 def test_numeral_scene_keeps_caption_digits_with_merged_timing(cache: StageCache) -> None:
-    voice = FakeVoice()
+    voice = TimedVoice()
     part = make_part(narration("s1", "In 1453 it fell"))
     result, _ = run(part, [VoiceChoice(voice, "v")], cache)
     assert [r.text for r in voice.requests] == ["In fourteen fifty-three it fell"]
@@ -812,7 +784,7 @@ def test_numeral_scene_keeps_caption_digits_with_merged_timing(cache: StageCache
 
 
 def test_lexicon_change_revoices_only_that_scene(cache: StageCache) -> None:
-    voice = FakeVoice()
+    voice = TimedVoice()
     part = make_part(narration("s1", "alpha beta"), narration("s2", "gamma NASA"))
     first = Lexicon.from_entries({"NASA": "nasa"})
     run(part, [VoiceChoice(voice, "v")], cache, lexicon=first)
@@ -823,7 +795,7 @@ def test_lexicon_change_revoices_only_that_scene(cache: StageCache) -> None:
 
 
 def test_estimated_timings_use_spoken_words(cache: StageCache) -> None:
-    voice = FakeVoice(spans=False)
+    voice = TimedVoice(spans=False)
     part = make_part(narration("s1", "In 1453 it fell"))
     result, _ = run(part, [VoiceChoice(voice, "v")], cache)
     words = result.clips["s1"].words
@@ -834,7 +806,7 @@ def test_estimated_timings_use_spoken_words(cache: StageCache) -> None:
 
 def test_cache_key_unchanged_without_numbers(cache: StageCache) -> None:
     raw = "The city fell that spring. \n\n"
-    voice = FakeVoice()
+    voice = TimedVoice()
     part = make_part(narration("s1", raw))
     choice = VoiceChoice(voice, "v")
     run(part, [choice], cache)

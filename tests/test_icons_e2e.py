@@ -4,11 +4,12 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+from fakes.images import FakeImages
+from fakes.llm import FakeLLM
+from fakes.planning import ScriptedLLM
 from fixtures.publish import make_inputs
-from llm.fakes import FakeLLM
-from planning.fakes import ScriptedLLM
 from pydantic import BaseModel, SecretStr
-from sketching.support import PAID_VISION, PRICES, FakeImages, clean
+from sketching.support import PAID_VISION, PRICES, clean
 
 from narratoflow.channels.config import load_channel, style_fingerprint
 from narratoflow.library.keys import parse_idea_key

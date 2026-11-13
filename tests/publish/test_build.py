@@ -13,11 +13,11 @@ from typing import Any
 
 import httpx
 import pytest
+from fakes.voice import FakeVoice
 from fixtures.audio import speechlike, to_wav_bytes, tone
 from fixtures.parts import (
     CORPUS,
     GENERATED_PROVENANCE,
-    FakeVoice,
     add_sketch,
     fake_render_report,
     make_series,
@@ -654,10 +654,6 @@ def test_part_filter_and_summary_reads_earlier_reports(
 # -- a verse part -------------------------------------------------------------
 
 
-class _ElevenVoice(FakeVoice):
-    name = "elevenlabs"
-
-
 def test_reference_verse_part_checks_reciter(
     channel: ChannelConfig,
     settings: Settings,
@@ -685,7 +681,7 @@ def test_reference_verse_part_checks_reciter(
         settings,
         out_dir=tmp_path / "audio",
         cache_root=tmp_path / ".cache",
-        voices=[VoiceChoice(_ElevenVoice(), "v1")],
+        voices=[VoiceChoice(FakeVoice("elevenlabs"), "v1")],
         aligner=None,
         reciters=ReciterIndex([reciter()]),
         http=httpx.Client(transport=httpx.MockTransport(handler)),

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from llm.fakes import FakeLLM
+from fakes.llm import FakeLLM
 
 from narratoflow.channels.config import ChannelConfig, StyleConfig, VisionConfig
 from narratoflow.errors import InvalidIdeaKeyError, ProviderError

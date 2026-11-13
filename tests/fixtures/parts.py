@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fixtures import images as img
-from fixtures.audio import speechlike, to_wav_bytes, tone
+from fixtures.audio import tone
 from narratoflow.audio import io as aio
 from narratoflow.audio.timeline import (
     AssetUse,
@@ -49,7 +49,6 @@ from narratoflow.render.ffmpeg import RenderTools
 from narratoflow.render.layout import Canvas, frame_of, frame_range
 from narratoflow.render.report import RenderAsset, RenderReport, SceneRender, VerseRender
 from narratoflow.settings import Settings
-from narratoflow.tts import Speech, SpeechRequest
 from narratoflow.visuals.strokes import Stroke, StrokeSet
 
 FIXTURES = Path(__file__).parent
@@ -272,17 +271,6 @@ def reciter() -> Reciter:
         source="https://audio.example.org/r/",
         checked=date(2026, 11, 11),
     )
-
-
-class FakeVoice:
-    name = "paid"
-    model = "m1"
-
-    def synthesize(self, req: SpeechRequest) -> Speech:
-        audio = to_wav_bytes(speechlike(len(req.text.split()), lead_ms=150))
-        return Speech(
-            audio=audio, spans=(), provider=self.name, model=self.model, billed_chars=len(req.text)
-        )
 
 
 def _verse_sha256(timing: SceneTiming) -> str:

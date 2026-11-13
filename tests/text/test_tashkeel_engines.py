@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from conftest import FIXTURES
-from llm.fakes import FakeLLM
+from fakes.llm import FakeLLM
 
 import narratoflow.planning.prompts as prompts_module
 import narratoflow.text.tashkeel.engines as engines_module

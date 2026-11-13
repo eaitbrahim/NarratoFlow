@@ -1,7 +1,7 @@
 import pytest
+from fakes.llm import FakeLLM
 from pydantic import BaseModel
 
-from llm.fakes import FakeLLM
 from narratoflow.errors import ProviderError
 from narratoflow.llm.base import LLMClient, Usage
 

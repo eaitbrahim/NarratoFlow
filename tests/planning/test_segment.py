@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from conftest import FIXTURES
-from llm.fakes import FakeLLM
+from fakes.llm import FakeLLM
 
 from narratoflow.errors import SegmentationError
 from narratoflow.models import SceneKind, VerseRef

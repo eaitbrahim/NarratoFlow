@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
-from llm.fakes import FakeLLM
+from fakes.llm import FakeLLM
 from pydantic import BaseModel
 
 from narratoflow.channels.config import (

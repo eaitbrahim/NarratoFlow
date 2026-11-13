@@ -1,4 +1,4 @@
-"""Deterministic test doubles for the planning pipeline."""
+"""Deterministic fakes for the planning pipeline."""
 
 from __future__ import annotations
 

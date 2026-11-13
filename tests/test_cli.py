@@ -824,7 +824,7 @@ def test_sketch_resolve_regenerate_estimate_includes_the_vision_check_when_on(
 def test_sketch_generate_real_run_without_vision_warns_unchecked(
     channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data_dir: Path
 ) -> None:
-    from sketching.support import FakeImages
+    from fakes.images import FakeImages
 
     from narratoflow.sketching import generate as generate_module
     from narratoflow.visuals.bundled import BundledIcons
@@ -1280,6 +1280,28 @@ def test_render_prints_part_lines_and_warnings(
     assert "report: /o/part-01.render.json" in text
     assert "warning: part 1: drift 3 ms" in text
     assert "part 2/2" in text and "part 2:" not in text
+
+
+def test_render_force_flag_and_skipped_line(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.render.build import RenderResult
+
+    path = _approved_series(tmp_path)
+    result = RenderResult(
+        parts=[_render_part(1, 2, ["drift 3 ms"]), _render_part(2, 2, [])], skipped=[1]
+    )
+    seen = _patch_render(monkeypatch, result)
+    out = runner.invoke(cli.app, _render_args(path, channel_file, "--force"))
+    assert out.exit_code == 0, out.output
+    assert seen[0]["force"] is True
+    text = " ".join(out.output.split())
+    assert "part 1/2: unchanged, kept /o/part-01.mp4" in text
+    assert "1845 frames, 1080x1920 @ 30 fps -> /o/part-02.mp4" in text
+    assert "part 1/2: 61.5 s" not in text and "report: /o/part-01.render.json" not in text
+    assert "warning: part 1: drift 3 ms" in text
+    runner.invoke(cli.app, _render_args(path, channel_file))
+    assert seen[1]["force"] is False
 
 
 def test_render_default_audio_and_out_dirs_and_part_filter(

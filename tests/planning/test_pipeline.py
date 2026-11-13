@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 from conftest import FIXTURES
-from llm.fakes import FakeLLM
+from fakes.llm import FakeLLM
+from fakes.planning import FATHA, SCRIPTED_IDEA, ConstantEmbedder, ScriptedLLM, add_fatha
 from PIL import Image
 from pydantic import BaseModel, SecretStr
 from rich.console import Console
@@ -56,8 +57,6 @@ from narratoflow.script.source import load_script
 from narratoflow.settings import Settings
 from narratoflow.text.tashkeel.engines import Vocalized
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons
-
-from .fakes import FATHA, SCRIPTED_IDEA, ConstantEmbedder, ScriptedLLM, add_fatha
 
 INPUT = FIXTURES / "input"
 PAID_LLM = LlmConfig(provider="anthropic", model="claude-opus-5-5")

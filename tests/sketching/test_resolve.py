@@ -4,8 +4,9 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from fakes.images import FakeImages
+from fakes.llm import FakeLLM
 from fixtures import images as img
-from llm.fakes import FakeLLM
 
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
@@ -27,7 +28,6 @@ from narratoflow.visuals.marker import marker_seed
 from sketching.support import (
     PER_SKETCH,
     PRICES,
-    FakeImages,
     clean,
     scene,
     scenes_of,

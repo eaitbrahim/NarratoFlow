@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 from conftest import FIXTURES
+from fakes.voice import FakeVoice
 from fixtures import images as img
 from fixtures.audio import speechlike, to_wav_bytes, tone
 
@@ -58,7 +59,7 @@ from narratoflow.money import format_usd
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.reciters import Reciter, ReciterIndex
 from narratoflow.settings import Settings
-from narratoflow.tts import Speech, SpeechRequest, VoiceChoice
+from narratoflow.tts import VoiceChoice
 from narratoflow.visuals.marker import video_id as marker_video_id
 from narratoflow.visuals.strokes import Stroke, StrokeSet
 
@@ -72,23 +73,6 @@ CORPUS = QuranCorpus.from_files(
 PRICES_WITH_ELEVEN = PriceTable({"voice": {"elevenlabs/eleven_multilingual_v2": (PER_KCHAR,)}})
 RECITATION = to_wav_bytes(speechlike(5, seed=7))
 Handler = Callable[[httpx.Request], httpx.Response]
-
-
-class FakeVoice:
-    def __init__(self, name: str = "paid", model: str = "m1", *, fail: bool = False) -> None:
-        self.name = name
-        self.model = model
-        self.fail = fail
-        self.requests: list[SpeechRequest] = []
-
-    def synthesize(self, req: SpeechRequest) -> Speech:
-        self.requests.append(req)
-        if self.fail:
-            raise ProviderError("HTTP 500")
-        audio = to_wav_bytes(speechlike(len(req.text.split()), lead_ms=150))
-        return Speech(
-            audio=audio, spans=(), provider=self.name, model=self.model, billed_chars=len(req.text)
-        )
 
 
 def files_reciter() -> Reciter:
@@ -797,7 +781,7 @@ def test_fallback_recorded_in_timeline(
     pack: SfxPack,
     tmp_path: Path,
 ) -> None:
-    primary, backup = FakeVoice(fail=True), FakeVoice("other", "m2")
+    primary, backup = FakeVoice(fail_on=""), FakeVoice("other", "m2")
     s = make_series([narr("s1", "alpha beta")])
     _, result = run(
         s, channel, settings, tmp_path, voices=[primary, backup], library=library, pack=pack

@@ -5,25 +5,27 @@ from __future__ import annotations
 import hashlib
 import multiprocessing
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, ClassVar
 
 import cv2
 import httpx
 import pytest
+from fakes.voice import FakeVoice
 from fixtures import images as img
 from fixtures.audio import speechlike, to_wav_bytes, tone
 from fixtures.parts import (
     CORPUS,
     SLOT_MS,
-    FakeVoice,
     _strokes,
     add_sketch,
     make_series,
@@ -40,6 +42,7 @@ from narratoflow.audio.recitation import display_words
 from narratoflow.audio.sfx import SfxAsset, SfxPack
 from narratoflow.audio.timeline import (
     AyahTiming,
+    PartTimeline,
     TimelineWord,
     TimingSource,
 )
@@ -59,6 +62,7 @@ from narratoflow.models import (
 from narratoflow.quran.reciters import ReciterIndex
 from narratoflow.render import build as build_module
 from narratoflow.render import compose
+from narratoflow.render import encoder as encoder_module
 from narratoflow.render.assets import default_fonts
 from narratoflow.render.build import build_render, check_timeline
 from narratoflow.render.encoder import verify_mp4
@@ -318,7 +322,7 @@ def test_rerender_identical_frames(
     before = framemd5(render_tools, first.parts[0].video_path)
     (tmp_path / "video" / ".render-part-01").mkdir()  # a leftover work dir is replaced
     (tmp_path / "video" / ".render-part-01" / "junk").write_text("x")
-    again = render(series, channel, settings, tmp_path, render_tools, library=library)
+    again = render(series, channel, settings, tmp_path, render_tools, library=library, force=True)
     assert framemd5(render_tools, again.parts[0].video_path) == before
     assert again.parts[0].report == first.parts[0].report
     assert not (tmp_path / "video" / ".render-part-01").exists()
@@ -1021,3 +1025,221 @@ def test_verse_page_without_duration_refused_naming_part_scene_ayah(
     with pytest.raises(RenderError, match=r"FAIL: part 1, scene v1, verse 31:33"):
         render(series, channel, settings, tmp_path, probe_tools, library=library)
     assert not (tmp_path / "video").exists()
+
+
+# -- skipping parts whose render inputs are unchanged (#20) -------------------
+
+
+@pytest.fixture
+def run_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The part index of every `_run_jobs` call; the real function still runs."""
+    calls: list[int] = []
+    real = build_module._run_jobs
+
+    def spy(jobs: list[compose.SceneJob], workers: int | None, part: int) -> None:
+        calls.append(part)
+        real(jobs, workers, part)
+
+    monkeypatch.setattr(build_module, "_run_jobs", spy)
+    return calls
+
+
+@dataclass
+class _World:
+    """Everything one render call reads, so a change can be applied between two renders."""
+
+    series: Series
+    channel: ChannelConfig
+    settings: Settings
+    library: SketchLibrary
+    tmp_path: Path
+    tools: RenderTools
+    monkeypatch: pytest.MonkeyPatch
+    sketch_id: int
+    canvas: Canvas = field(default_factory=lambda: Canvas(Fraction(1, 6)))
+
+    @property
+    def audio(self) -> Path:
+        return self.tmp_path / "audio"
+
+    @property
+    def video(self) -> Path:
+        return self.tmp_path / "video"
+
+    def render(self, **kw: Any) -> build_module.RenderResult:
+        return render(
+            self.series,
+            self.channel,
+            self.settings,
+            self.tmp_path,
+            self.tools,
+            library=self.library,
+            canvas=self.canvas,
+            **kw,
+        )
+
+    def style(self, **update: Any) -> None:
+        style = self.channel.style.model_copy(update=update)
+        self.channel = self.channel.model_copy(update={"style": style})
+
+
+@pytest.fixture
+def world(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    render_tools: RenderTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _World:
+    series = _one_part(library)
+    sid = series.parts[0].scenes[0].sketch_id
+    assert sid is not None
+    write_timelines(series, tmp_path / "audio", library)
+    return _World(series, channel, settings, library, tmp_path, render_tools, monkeypatch, sid)
+
+
+def _edit_word(w: _World) -> None:
+    w.series = w.series.model_copy(deep=True)
+    w.series.parts[0].scenes[0].narration.source_text = "alpha beta omega"
+
+
+def _edit_timeline(w: _World) -> None:
+    path = w.audio / "part-01.timeline.json"
+    timeline = PartTimeline.load(path)
+    first = timeline.scenes[0].words[0]
+    timeline.scenes[0].words[0] = first.model_copy(update={"end_ms": first.end_ms - 10})
+    timeline.save(path)
+
+
+def _edit_flac(w: _World) -> None:
+    timeline = PartTimeline.load(w.audio / "part-01.timeline.json")
+    aio.encode_flac(tone(timeline.duration_ms, hz=330), w.audio / "part-01.flac")
+
+
+def _edit_strokes(w: _World) -> None:
+    w.library.put_strokes(w.sketch_id, _strokes(5))
+    write_timelines(w.series, w.audio, w.library)
+
+
+def _edit_ink(w: _World) -> None:
+    w.style(ink="#222222")
+
+
+def _edit_line_weight(w: _World) -> None:
+    w.style(line_weight_px=4.0)
+
+
+def _edit_canvas(w: _World) -> None:
+    w.canvas = Canvas(Fraction(1, 3))
+
+
+def _flip_mirror_safe(w: _World) -> None:
+    real = w.library.get_sketch
+
+    def flipped(sketch_id: int) -> Any:
+        record = real(sketch_id)
+        assert record is not None
+        return record.model_copy(update={"mirror_safe": not record.mirror_safe})
+
+    w.monkeypatch.setattr(w.library, "get_sketch", flipped)
+
+
+def _delete_mp4(w: _World) -> None:
+    (w.video / "part-01.mp4").unlink()
+
+
+def _truncate_mp4(w: _World) -> None:
+    path = w.video / "part-01.mp4"
+    path.write_bytes(path.read_bytes()[:100])
+
+
+def _delete_captions(w: _World) -> None:
+    (w.video / "part-01.ass").unlink()
+
+
+def _old_report(w: _World) -> None:
+    path = w.video / "part-01.render.json"
+    RenderReport.load(path).model_copy(update={"inputs_key": None}).save(path)
+
+
+def _corrupt_report(w: _World) -> None:
+    (w.video / "part-01.render.json").write_text("{not json", encoding="utf-8")
+
+
+def test_rerun_unchanged_skips_part(world: _World, run_calls: list[int]) -> None:
+    first = world.render()
+    mp4 = first.parts[0].video_path
+    mtime = mp4.stat().st_mtime_ns
+    seen: list[build_module.PartVideo] = []
+    again = world.render(on_part=seen.append)
+    assert run_calls == [1]
+    assert again.skipped == [1] and first.skipped == []
+    assert again.parts[0].report == first.parts[0].report
+    assert mp4.stat().st_mtime_ns == mtime
+    assert [p.index for p in seen] == [1]
+    key = first.parts[0].report.inputs_key
+    assert key is not None and re.fullmatch(r"[0-9a-f]{24}", key)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        _edit_word,
+        _edit_timeline,
+        _edit_flac,
+        _edit_strokes,
+        _edit_ink,
+        _edit_line_weight,
+        _edit_canvas,
+        _flip_mirror_safe,
+        _delete_mp4,
+        _truncate_mp4,
+        _delete_captions,
+        _old_report,
+        _corrupt_report,
+    ],
+)
+def test_changed_input_rerenders(
+    world: _World, run_calls: list[int], change: Callable[[_World], None]
+) -> None:
+    world.render()
+    change(world)
+    again = world.render()
+    assert run_calls == [1, 1]
+    assert again.skipped == []
+
+
+def test_force_rerenders(world: _World, run_calls: list[int]) -> None:
+    world.render()
+    again = world.render(force=True)
+    assert run_calls == [1, 1]
+    assert again.skipped == []
+
+
+def test_inputs_key_ignores_paths_and_workers(world: _World) -> None:
+    one = world.render(out="a", workers=1)
+    two = world.render(out="b", workers=2)
+    assert one.parts[0].report.inputs_key == two.parts[0].report.inputs_key is not None
+
+
+def test_failed_rerender_is_not_skipped_next_time(
+    world: _World, run_calls: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.render()
+    original = world.series
+    _edit_word(world)
+    real = encoder_module.encode_part
+
+    def boom(*args: Any, **kw: Any) -> None:
+        raise RenderError("encode failed")
+
+    monkeypatch.setattr("narratoflow.render.build.encode_part", boom)
+    with pytest.raises(RenderError, match="encode failed"):
+        world.render()
+    assert not (world.video / "part-01.render.json").exists()
+    monkeypatch.setattr("narratoflow.render.build.encode_part", real)
+    world.series = original
+    again = world.render()
+    assert run_calls == [1, 1, 1]
+    assert again.skipped == []

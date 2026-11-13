@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 from types import ModuleType
 
@@ -8,8 +9,9 @@ import numpy as np
 import pytest
 from fixtures import audio as fx
 
-from narratoflow.audio.words import TimedSpan
-from narratoflow.models import WordTiming
+from narratoflow.audio.words import TimedSpan, tokens
+from narratoflow.models import Language, WordTiming
+from narratoflow.tts import Speech, SpeechRequest
 
 ROOT = Path(__file__).parents[2]
 
@@ -317,3 +319,188 @@ def test_edge_tts_version_falls_back_to_unknown(monkeypatch: pytest.MonkeyPatch)
 
 def test_offset_stats_accepts_float() -> None:
     assert spike.offset_stats([0.5, 1.5]).median_ms == pytest.approx(1.0)
+
+
+def _word_spans(text: str, shift: int = 0) -> list[TimedSpan]:
+    return [
+        TimedSpan(w, 190 + shift + 700 * i, 450 + shift + 700 * i)
+        for i, w in enumerate(tokens(text))
+    ]
+
+
+BROKEN_ALIGNER = False
+
+
+class _FakeAligner:
+    def align(
+        self, samples: object, sample_rate: int, text: str, language: Language
+    ) -> list[TimedSpan]:
+        return [TimedSpan("zz", 0, 10)] if BROKEN_ALIGNER else _word_spans(text, shift=10)
+
+
+def _fake_services(
+    monkeypatch: pytest.MonkeyPatch, mp3: bytes, *, ctc: bool = True, broken: bool = False
+) -> None:
+    """Pretend both extras are installed, with no network and no model."""
+    real = importlib.util.find_spec
+    present = {"edge_tts"} | ({"ctc_forced_aligner"} if ctc else set())
+
+    def fake_find(name: str, package: str | None = None) -> object:
+        if name in {"edge_tts", "ctc_forced_aligner"}:
+            return object() if name in present else None
+        return real(name, package)
+
+    class FakeEdge:
+        def synthesize(self, req: SpeechRequest) -> Speech:
+            spans = [TimedSpan("zz", 0, 10)] if broken else _word_spans(req.text)
+            return Speech(mp3, tuple(spans), "edge", "fake", None)
+
+    edge = types.ModuleType("narratoflow.tts.edge")
+    monkeypatch.setattr(edge, "EdgeProvider", FakeEdge, raising=False)
+    align = types.ModuleType("narratoflow.align.ctc")
+    monkeypatch.setattr(align, "CtcAligner", _FakeAligner, raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "BROKEN_ALIGNER", broken)
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find)
+    monkeypatch.setitem(sys.modules, "narratoflow.tts.edge", edge)
+    monkeypatch.setitem(sys.modules, "narratoflow.align.ctc", align)
+
+
+@pytest.fixture
+def mp3(ffmpeg_bin: str) -> bytes:
+    assert ffmpeg_bin
+    return fx.to_mp3_bytes(_bursts(3))
+
+
+@pytest.mark.parametrize("ctc", [True, False])
+def test_save_captures_every_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mp3: bytes, ctc: bool
+) -> None:
+    _fake_services(monkeypatch, mp3, ctc=ctc)
+    monkeypatch.setattr(spike.metadata, "version", lambda name: "9.9")
+    target = tmp_path / "cap"
+    assert spike.main(["--save", str(target)]) == 0
+    captures = spike.load_captures(target)
+    assert [c.sentence for c in captures] == list(spike.SENTENCES)
+    assert all(c.audio == mp3 for c in captures)
+    assert all((c.ctc is not None) is ctc for c in captures)
+    manifest = json.loads((target / "manifest.json").read_text())
+    assert manifest["voice"] == spike.VOICE
+    assert manifest["edge_tts_version"] == "9.9"
+    assert manifest["captured_at"]
+
+
+def test_legacy_run_prints_the_report(
+    monkeypatch: pytest.MonkeyPatch, mp3: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_services(monkeypatch, mp3)
+    assert spike.main([]) == 0
+    out = capsys.readouterr().out
+    assert "| # | words | spans |" in out
+    assert "Absolute totals over" in out
+    assert "Native mapping failures: none" in out
+    assert "Pooled signed end median" in out
+
+
+def test_legacy_run_lists_mapping_failures(
+    monkeypatch: pytest.MonkeyPatch, mp3: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_services(monkeypatch, mp3, broken=True)
+    assert spike.main([]) == 0
+    out = capsys.readouterr().out
+    assert "Native mapping failures:\n- sentence 1: at 0:" in out
+    assert "CTC mapping failures:\n- sentence 1: at 0:" in out
+    assert "Absolute totals" not in out
+
+
+def test_legacy_run_without_extras_exits_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _no_extras(monkeypatch)
+    assert spike.main([]) == 2
+    assert spike.EXTRAS_HINT in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("body", ["[1]", '[["a", 1, "b"]]'])
+def test_malformed_spans_name_the_file(tmp_path: Path, ffmpeg_bin: str, body: str) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    (tmp_path / "01.edge.json").write_text(body)
+    with pytest.raises(ValueError, match=r"01\.edge\.json"):
+        spike.load_captures(tmp_path)
+
+
+def test_missing_mp3_names_the_file(tmp_path: Path, ffmpeg_bin: str) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    (tmp_path / "01.mp3").unlink()
+    with pytest.raises(ValueError, match=r"01\.mp3"):
+        spike.load_captures(tmp_path)
+
+
+@pytest.mark.parametrize("body", ["[]", '{"sentences": [1]}', '{"sentences": "x"}'])
+def test_manifest_must_list_sentences(tmp_path: Path, ffmpeg_bin: str, body: str) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    (tmp_path / "manifest.json").write_text(body)
+    with pytest.raises(ValueError, match=r"manifest\.json"):
+        spike.load_captures(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "entry", [5, {"sentence": "1", "word": 0, "onset_ms": 1}, {"sentence": 1, "word": 0}]
+)
+def test_label_entries_must_be_integer_objects(tmp_path: Path, entry: object) -> None:
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"version": 1, "labels": [entry]}))
+    with pytest.raises(ValueError, match="labels"):
+        spike.load_labels(path)
+
+
+def test_from_runs_live_ctc_for_missing_spans(
+    tmp_path: Path,
+    ffmpeg_bin: str,
+    monkeypatch: pytest.MonkeyPatch,
+    mp3: bytes,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_capture(tmp_path, ffmpeg_bin, ctc=True)
+    (tmp_path / "02.ctc.json").unlink()
+    _fake_services(monkeypatch, mp3)
+    assert spike.main(["--from", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "ctc first" in out
+    assert "CTC: not available" not in out
+
+
+def test_from_marks_unmappable_and_unmatched_cells(
+    tmp_path: Path,
+    ffmpeg_bin: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    _no_extras(monkeypatch)
+    far = [["aa", 5000, 5260], ["bb", 5700, 5960], ["cc", 6400, 6660]]
+    (tmp_path / "01.edge.json").write_text(json.dumps(far))
+    (tmp_path / "02.edge.json").write_text(json.dumps([["zz", 0, 10]]))
+    label = {"sentence": 1, "word": 1, "onset_ms": 5000}
+    (tmp_path / "labels.json").write_text(json.dumps({"version": 1, "labels": [label]}))
+    assert spike.main(["--from", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "| 1 | +4780 | +4735 | - |" in out
+    assert "| 2 | n/a | n/a | - |" in out
+
+
+def test_from_skips_estimators_without_labelled_words(
+    tmp_path: Path,
+    ffmpeg_bin: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    _no_extras(monkeypatch)
+    (tmp_path / "labels.json").write_text(json.dumps({"version": 1, "labels": []}))
+    assert spike.main(["--from", str(tmp_path)]) == 0
+    assert "labelled words" not in capsys.readouterr().out
+
+
+def test_from_reports_a_bad_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert spike.main(["--from", str(tmp_path / "missing")]) == 1
+    assert "error: manifest.json" in capsys.readouterr().err

@@ -102,6 +102,8 @@ Recommendation: do not change production yet. The first step of the follow-up is
 
 The same ground-truth check decides how to handle the last-word end gap.
 
+Procedure and tools for that ground-truth check: [docs/spikes/2026-11-13-word-onset-ground-truth.md](2026-11-13-word-onset-ground-truth.md).
+
 Follow-up issue (tracked as #133):
 - Title: Arabic word timings: establish onset ground truth, then fix the ~115 ms edge/CTC offset and last-word end
 - Body: Spike #13 (docs/spikes/2026-11-12-arabic-word-timing.md) measured edge-tts ar-SA-HamedNeural word starts against CTC on 92 words. The binding absolute-drift rule is not met (median 115 ms vs 80, p95 206 ms vs 200), so by the rule CTC goes first for Arabic. The signed data shows a constant offset of about 115 ms (all 92 negative, same sign in all 11 sentences, std 45 ms) with residual median 24 ms, p95 91 ms; the origin is unknown (edge boundary offset, CTC frame/blank bias, or MP3 decoder priming in `decode(speech.audio)`). The last word's end also differs by about 860 ms. Step 1: establish onset ground truth on a few words (waveform or by ear) and measure the decoder priming delay. Step 2: choose (a) shift native edge starts by the measured offset in the right direction, keeping native first, or (b) CTC first; decide the last-word end the same way. Confirm on more voices, sentences and digits before hard-coding anything.

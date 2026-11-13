@@ -141,6 +141,19 @@ def _tail_window(part: Part, d: int, h: int, teaser_prefix: str) -> tuple[int, i
     return max(h, d - ms), d, prefix + text
 
 
+def _gaps(windows: list[tuple[int, int, str]], duration_ms: int) -> list[tuple[int, int]]:
+    """The spans of `[0, duration_ms)` that no sorted window covers."""
+    gaps: list[tuple[int, int]] = []
+    t = 0
+    for start, end, _ in windows:
+        if start > t:
+            gaps.append((t, start))
+        t = max(t, end)
+    if duration_ms > t:
+        gaps.append((t, duration_ms))
+    return gaps
+
+
 def _headline(series: Series, part: Part, duration_ms: int) -> list[AssEvent]:
     _, recap_prefix, teaser_prefix = LABELS[series.language]
     d = duration_ms
@@ -160,14 +173,7 @@ def _headline(series: Series, part: Part, duration_ms: int) -> list[AssEvent]:
         if end - h >= MIN_OVERLAY_MS:
             windows.append((h, end, recap_prefix + part.recap_text))
     windows = sorted(w for w in windows if w[1] > w[0])
-    gaps: list[tuple[int, int]] = []
-    t = 0
-    for start, end, _ in windows:
-        if start > t:
-            gaps.append((t, start))
-        t = max(t, end)
-    if d > t:
-        gaps.append((t, d))
+    gaps = _gaps(windows, d)
     if series.title.strip():
         windows += [(a, b, series.title) for a, b in gaps if b - a >= MIN_OVERLAY_MS]
     return [

@@ -229,6 +229,8 @@ class Part(BaseModel):
     hook_text: str
     recap_text: str = ""
     teaser_text: str = ""
+    end_card_text: str = ""
+    """Closing call to action shown on the final part only ("" shows none)."""
     scenes: list[Scene]
     flags: list[str] = Field(default_factory=list)
     est_cost_usd: Decimal = Decimal(0)

@@ -447,7 +447,7 @@ def test_rules_origin_hides_home(
     assert report.rules_origin == "~/data/rules.toml"
     assert (report.width, report.video_sha256) == (None, None)
     assert report.duration_ms == inputs.render.duration_ms
-    assert report.rules_checked == date(2026, 11, 11)
+    assert report.rules_checked == date(2026, 11, 12)
 
 
 def test_verse_part_report_sections(

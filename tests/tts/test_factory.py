@@ -93,6 +93,37 @@ def test_chain_with_piper_fallback(tmp_path: Path) -> None:
     assert (chain[1].provider.model, chain[1].voice_id) == ("ar_JO-kareem-medium", "piper")
 
 
+def test_piper_carries_declared_licence(tmp_path: Path) -> None:
+    model = piper_model(tmp_path / "m.onnx")
+    chain = build_voice_chain(
+        channel(
+            **eleven(
+                fallback=["piper"],
+                piper_model=str(model),
+                piper_model_license="CC-BY-4.0",
+                piper_model_source="https://example.org/voice",
+                piper_model_attribution="Voice by A. Reader",
+            )
+        ),
+        keyed(),
+    )
+    piper = chain[1].provider
+    assert isinstance(piper, PiperProvider)
+    assert piper.model_license == "CC-BY-4.0"
+    assert piper.model_source == "https://example.org/voice"
+    assert piper.model_attribution == "Voice by A. Reader"
+
+
+def test_piper_undeclared_licence_is_none(tmp_path: Path) -> None:
+    model = piper_model(tmp_path / "m.onnx")
+    chain = build_voice_chain(
+        channel(**eleven(fallback=["piper"], piper_model=str(model))), keyed()
+    )
+    piper = chain[1].provider
+    assert isinstance(piper, PiperProvider)
+    assert (piper.model_license, piper.model_source, piper.model_attribution) == (None, None, "")
+
+
 def test_chain_skips_primary_in_fallback(tmp_path: Path) -> None:
     chain = build_voice_chain(
         channel(provider="edge", voice_id="ar-SA-ZariyahNeural", fallback=["edge"]), Settings()

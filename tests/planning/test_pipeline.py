@@ -52,6 +52,7 @@ from narratoflow.planning.ideas import IdeaOut
 from narratoflow.planning.pipeline import plan_series
 from narratoflow.planning.prompts import IDEAS_SYSTEM
 from narratoflow.planning.segment import SegmentOut, collapse_ws
+from narratoflow.planning.series import end_card_text
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.script.source import load_script
 from narratoflow.settings import Settings
@@ -817,3 +818,42 @@ def test_part_estimate_reflects_pronunciation_lexicon(
         return sum((p.est_cost_usd for p in series.parts), Decimal(0))
 
     assert estimate(spoken) > estimate(base) > 0
+
+
+def _english_parts(
+    tmp_path: Path,
+    channel: ChannelConfig,
+    settings: Settings,
+    prices: PriceTable,
+    end_card: str | None,
+) -> list[Part]:
+    _seed(settings, channel, SCRIPTED_IDEA)
+    english = channel.model_copy(
+        update={
+            "language": Language.ENGLISH,
+            "end_card": end_card,
+            "part_min_s": 5,
+            "part_max_s": 20,
+        }
+    )
+    body = read("clean_en.txt")
+    series = plan_series(
+        write_script(tmp_path, body), english, settings, llm=ScriptedLLM(), prices=prices
+    )
+    return series.parts
+
+
+def test_plan_series_puts_the_language_default_end_card_on_the_last_part(
+    tmp_path: Path, channel: ChannelConfig, settings: Settings, prices: PriceTable
+) -> None:
+    parts = _english_parts(tmp_path, channel, settings, prices, None)
+    assert len(parts) > 1
+    assert parts[-1].end_card_text == end_card_text(None, Language.ENGLISH) != ""
+    assert [p.end_card_text for p in parts[:-1]] == [""] * (len(parts) - 1)
+
+
+def test_plan_series_empty_end_card_turns_it_off(
+    tmp_path: Path, channel: ChannelConfig, settings: Settings, prices: PriceTable
+) -> None:
+    parts = _english_parts(tmp_path, channel, settings, prices, "")
+    assert [p.end_card_text for p in parts] == [""] * len(parts)

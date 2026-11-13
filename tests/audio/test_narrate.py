@@ -381,6 +381,57 @@ def test_cache_hit_makes_no_call_and_no_charge(cache: StageCache) -> None:
     ) == len("alpha betagamma delta epsilonzeta eta")
 
 
+class FakeVoicePiper(PiperProvider):
+    """A real `PiperProvider` (so the isinstance check holds) that voices through a fake."""
+
+    def __init__(self, model_path: Path, **declared: str) -> None:
+        super().__init__(model_path, **declared)
+        self.fake = TimedVoice("piper", model_path.stem, billed=False)
+
+    def synthesize(self, req: SpeechRequest) -> Speech:
+        return self.fake.synthesize(req)
+
+
+def _piper_choice(tmp_path: Path, **declared: str) -> VoiceChoice:
+    model = tmp_path / "m.onnx"
+    if not model.exists():  # the model file's mtime is in the key; keep it unchanged
+        model.write_bytes(b"onnx")
+    return VoiceChoice(FakeVoicePiper(model, **declared), "piper")
+
+
+def test_piper_voice_records_model_licence(cache: StageCache, tmp_path: Path) -> None:
+    choice = _piper_choice(
+        tmp_path,
+        license="MIT",
+        source="https://example.org/voice",
+        attribution="Voice by A. Reader",
+    )
+    result, _ = run(three(), [choice], cache)
+    voice = voice_of(result)
+    assert voice.model_license == "MIT"
+    assert voice.model_source == "https://example.org/voice"
+    assert voice.model_attribution == "Voice by A. Reader"
+    assert voice.terms == "piper-model-license"
+
+
+def test_other_voices_record_no_model_licence(cache: StageCache) -> None:
+    result, _ = run(three(), [VoiceChoice(TimedVoice(), "p")], cache)
+    voice = voice_of(result)
+    assert (voice.model_license, voice.model_source, voice.model_attribution) == (None, None, "")
+
+
+def test_licence_not_in_cache_key(cache: StageCache, tmp_path: Path) -> None:
+    first = _piper_choice(tmp_path, license="MIT", source="s")
+    run(three(), [first], cache)
+    assert isinstance(first.provider, FakeVoicePiper)
+    assert len(first.provider.fake.requests) == 3
+    second = _piper_choice(tmp_path, license="CC-BY-4.0", source="other", attribution="x")
+    result, _ = run(three(), [second], cache)
+    assert isinstance(second.provider, FakeVoicePiper)
+    assert second.provider.fake.requests == []
+    assert voice_of(result).model_license == "CC-BY-4.0"
+
+
 def test_uncached_chars_counts_repeated_text_once(cache: StageCache) -> None:
     part = make_part(narration("s1", "same words"), narration("s2", "same words"), verse("v"))
     assert uncached_chars(

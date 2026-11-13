@@ -110,8 +110,9 @@ def _voice_records(inputs: PartInputs) -> list[AssetRecord]:
         AssetRecord(
             kind="voice",
             asset_id=f"{voice.provider}/{voice.voice_id}",
-            source=voice.provider,
-            license=voice.terms,
+            source=voice.model_source or voice.provider,
+            license=voice.model_license or voice.terms,
+            attribution=voice.model_attribution,
             provider=voice.provider,
             model=voice.model,
             scene_ids=narrated,
@@ -171,7 +172,7 @@ def _licence_table(rules: Rules, record: AssetRecord) -> dict[str, LicenceRule] 
     if record.kind == "sketch":
         return licences.generated
     if record.kind == "voice":
-        return licences.voice
+        return {**licences.assets, **licences.voice}
     if record.kind == "recitation":
         return None  # checked against the reciter allow-list instead
     return licences.assets

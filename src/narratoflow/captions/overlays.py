@@ -1,4 +1,4 @@
-"""On-screen overlays (part label, topic badge, hook/recap/teaser headline) and text cards.
+"""On-screen overlays (part label, topic badge, hook/recap/teaser/end-card headline) and text cards.
 
 Every author string is cut for display by `truncate` and passed through `escape_text`,
 so it can never open an override block. Windows are on the part clock.
@@ -18,6 +18,7 @@ from narratoflow.models import Language, Part, Scene, SceneKind, Series
 HOOK_MS = 2500
 RECAP_MS = 2500
 TEASER_MS = 3000
+END_CARD_MS = 3000
 MIN_OVERLAY_MS = 1000
 OVERLAY_MAX_CHARS = 60
 # An Arabic headline stays on one line: at the Headline em two Amiri lines (line height =
@@ -127,6 +128,32 @@ def part_label(index: int, count: int, language: Language) -> str | None:
     return localize_digits(LABELS[language][0].format(n=index, m=count), language)
 
 
+def _tail_window(part: Part, d: int, h: int, teaser_prefix: str) -> tuple[int, int, str] | None:
+    """The closing window: the teaser, or on the final part the end card; None if no room."""
+    if d - h < MIN_OVERLAY_MS:
+        return None
+    if part.index < part.count:
+        text, ms, prefix = part.teaser_text, TEASER_MS, teaser_prefix
+    else:
+        text, ms, prefix = part.end_card_text, END_CARD_MS, ""
+    if not text.strip():
+        return None
+    return max(h, d - ms), d, prefix + text
+
+
+def _gaps(windows: list[tuple[int, int, str]], duration_ms: int) -> list[tuple[int, int]]:
+    """The spans of `[0, duration_ms)` that no sorted window covers."""
+    gaps: list[tuple[int, int]] = []
+    t = 0
+    for start, end, _ in windows:
+        if start > t:
+            gaps.append((t, start))
+        t = max(t, end)
+    if duration_ms > t:
+        gaps.append((t, duration_ms))
+    return gaps
+
+
 def _headline(series: Series, part: Part, duration_ms: int) -> list[AssEvent]:
     _, recap_prefix, teaser_prefix = LABELS[series.language]
     d = duration_ms
@@ -137,22 +164,16 @@ def _headline(series: Series, part: Part, duration_ms: int) -> list[AssEvent]:
     if part.hook_text.strip():
         windows.append((0, h, part.hook_text))
     teaser_start = d
-    if part.index < part.count and part.teaser_text.strip() and d - h >= MIN_OVERLAY_MS:
-        teaser_start = max(h, d - TEASER_MS)
-        windows.append((teaser_start, d, teaser_prefix + part.teaser_text))
+    tail = _tail_window(part, d, h, teaser_prefix)
+    if tail is not None:
+        teaser_start = tail[0]
+        windows.append(tail)
     if part.index > 1 and part.recap_text.strip():
         end = min(h + RECAP_MS, teaser_start)
         if end - h >= MIN_OVERLAY_MS:
             windows.append((h, end, recap_prefix + part.recap_text))
     windows = sorted(w for w in windows if w[1] > w[0])
-    gaps: list[tuple[int, int]] = []
-    t = 0
-    for start, end, _ in windows:
-        if start > t:
-            gaps.append((t, start))
-        t = max(t, end)
-    if d > t:
-        gaps.append((t, d))
+    gaps = _gaps(windows, d)
     if series.title.strip():
         windows += [(a, b, series.title) for a, b in gaps if b - a >= MIN_OVERLAY_MS]
     return [

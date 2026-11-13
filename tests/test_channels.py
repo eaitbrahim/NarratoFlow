@@ -192,6 +192,43 @@ def test_piper_without_model_rejected_by_config(
         load_channel(channel_file)
 
 
+def _piper_channel(channel_file: Path, extra: str) -> Path:
+    channel_file.write_text(
+        channel_file.read_text(encoding="utf-8").replace(
+            'voice_id = "ar-SA-HamedNeural"',
+            'voice_id = "ar-SA-HamedNeural"\nfallback = ["piper"]\n'
+            f'piper_model = "voices/m.onnx"\n{extra}',
+        ),
+        encoding="utf-8",
+    )
+    return channel_file
+
+
+def test_piper_licence_needs_source(channel_file: Path) -> None:
+    _piper_channel(channel_file, 'piper_model_license = "MIT"')
+    with pytest.raises(ChannelConfigError, match=r"piper_model_license needs.*piper_model_source"):
+        load_channel(channel_file)
+
+
+def test_piper_licence_loads(channel_file: Path) -> None:
+    _piper_channel(
+        channel_file,
+        'piper_model_license = "CC-BY-4.0"\n'
+        'piper_model_source = "https://example.org/voice"\n'
+        'piper_model_attribution = "Voice by A. Reader"',
+    )
+    voice = load_channel(channel_file).voice
+    assert voice.piper_model_license == "CC-BY-4.0"
+    assert voice.piper_model_source == "https://example.org/voice"
+    assert voice.piper_model_attribution == "Voice by A. Reader"
+
+
+def test_piper_licence_defaults_undeclared(channel_file: Path) -> None:
+    voice = load_channel(_piper_channel(channel_file, "")).voice
+    assert (voice.piper_model_license, voice.piper_model_source) == (None, None)
+    assert voice.piper_model_attribution == ""
+
+
 def test_unknown_fallback_rejected(channel_file: Path) -> None:
     channel_file.write_text(
         channel_file.read_text(encoding="utf-8").replace(
@@ -263,3 +300,10 @@ def test_pronunciation_table_loads_and_validates(channel_file: Path) -> None:
         load_channel(channel_file)
     assert "SECRETPHRASE" not in str(exc.value)
     assert "OTHERVALUE" not in str(exc.value)
+
+
+def test_end_card_config(channel_file: Path) -> None:
+    base = channel_file.read_text(encoding="utf-8")
+    assert load_channel(channel_file).end_card is None
+    channel_file.write_text('end_card = ""\n' + base, encoding="utf-8")
+    assert load_channel(channel_file).end_card == ""

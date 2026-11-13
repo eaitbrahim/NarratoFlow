@@ -4,8 +4,8 @@
 # listed sources, then bump `version` and `checked`. A copy named
 # platform_rules.toml in the data directory overrides this packaged file.
 
-version = "2026-11-11.1"
-checked = 2026-11-11
+version = "2026-11-12.1"
+checked = 2026-11-12
 
 [loudness]
 # No platform publishes a rejection limit; these are NarratoFlow's mastering targets.
@@ -64,7 +64,7 @@ verify = "600 s is the in-app recording limit; uploads reportedly allow up to 60
 [licences.voice]
 "elevenlabs-terms" = { verdict = "warn", note = "commercial use needs a paid ElevenLabs plan" }
 "edge-tts-terms" = { verdict = "warn", note = "Microsoft's read-aloud service grants no explicit commercial licence" }
-"piper-model-license" = { verdict = "warn", note = "depends on the licence of the voice model used" }
+"piper-model-license" = { verdict = "warn", note = "set voice.piper_model_license (and piper_model_source) to the voice model's licence" }
 
 [content.graphic_violence]
 description = "graphic or gratuitous violence"

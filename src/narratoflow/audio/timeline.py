@@ -193,6 +193,9 @@ class VoiceUsed(BaseModel):
     terms: str  # provider terms id, e.g. "elevenlabs-terms"
     fallback_from: str | None = None
     fallback_reasons: list[str] = Field(default_factory=list)
+    model_license: str | None = None  # a Piper model's declared licence
+    model_source: str | None = None
+    model_attribution: str = ""
 
 
 class RecitationUsed(BaseModel):

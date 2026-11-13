@@ -12,7 +12,7 @@ import hashlib
 import re
 import unicodedata
 
-from narratoflow.models import ContentFinding, ContentReview, Language, Part, SceneKind
+from narratoflow.models import ContentFinding, ContentReview, Language, Part, Scene, SceneKind
 from narratoflow.planning.approval import verse_label
 from narratoflow.planning.prompts import CONTENT_REVIEW_SYSTEM
 from narratoflow.publish.checks import CheckId, CheckResult, Severity
@@ -27,42 +27,49 @@ MAX_SCENE_ID_CHARS = 64
 MAX_REASON_CHARS = 300
 
 
+def _scene_review_lines(scene: Scene, language: Language, lexicon: Lexicon) -> list[str]:
+    lines = [f"[{scene.id} title] {scene.title}"] if scene.title else []
+    if scene.kind is SceneKind.VERSE:
+        label = "" if scene.verse is None else f" {verse_label(scene.verse)}"
+        lines.append(f"[{scene.id}] (Qur'an{label}, recited; not reviewed)")
+    else:
+        lines.extend(_narration_review_lines(scene, language, lexicon))
+    if scene.card_text:
+        lines.append(f"[{scene.id} card] {scene.card_text}")
+    return lines
+
+
+def _narration_review_lines(scene: Scene, language: Language, lexicon: Lexicon) -> list[str]:
+    narration = scene.narration
+    lines = [f"[{scene.id}] {narration.source_text}"]
+    spoken = spoken_text(narration.tts_text or narration.source_text, language, lexicon).text
+    if spoken != narration.source_text:
+        lines.append(f"[{scene.id} spoken] {spoken}")
+    if narration.caption_text is not None and narration.caption_text != narration.source_text:
+        lines.append(f"[{scene.id} caption] {narration.caption_text}")
+    return lines
+
+
 def review_text(part: Part, *, series_title: str, language: Language, lexicon: Lexicon) -> str:
     """Everything a viewer sees or hears, one labelled line each; verses are not sent.
 
     Lines: the series title (burned on screen in headline gaps), hook, recap, teaser,
-    then per scene its title, narration (or a verse marker), the spoken form where it
+    end card, then per scene its title, narration (or a verse marker), the spoken form where it
     differs from the narration, the caption text where it differs, and the card text.
     The spoken form is exactly what the voice says: `spoken_text` of the voiced text
     (numbers, signs, currency and lexicon entries applied). Editing any of them makes
     a stored review stale.
     """
     lines = [f"[series title] {series_title}", f"[hook] {part.hook_text}"]
-    if part.recap_text:
-        lines.append(f"[recap] {part.recap_text}")
-    if part.teaser_text:
-        lines.append(f"[teaser] {part.teaser_text}")
+    for label, value in (
+        ("recap", part.recap_text),
+        ("teaser", part.teaser_text),
+        ("end card", part.end_card_text),
+    ):
+        if value:
+            lines.append(f"[{label}] {value}")
     for scene in part.scenes:
-        if scene.title:
-            lines.append(f"[{scene.id} title] {scene.title}")
-        if scene.kind is SceneKind.VERSE:
-            label = "" if scene.verse is None else f" {verse_label(scene.verse)}"
-            lines.append(f"[{scene.id}] (Qur'an{label}, recited; not reviewed)")
-        else:
-            narration = scene.narration
-            lines.append(f"[{scene.id}] {narration.source_text}")
-            spoken = spoken_text(
-                narration.tts_text or narration.source_text, language, lexicon
-            ).text
-            if spoken != narration.source_text:
-                lines.append(f"[{scene.id} spoken] {spoken}")
-            if (
-                narration.caption_text is not None
-                and narration.caption_text != narration.source_text
-            ):
-                lines.append(f"[{scene.id} caption] {narration.caption_text}")
-        if scene.card_text:
-            lines.append(f"[{scene.id} card] {scene.card_text}")
+        lines.extend(_scene_review_lines(scene, language, lexicon))
     return "\n".join(lines)
 
 

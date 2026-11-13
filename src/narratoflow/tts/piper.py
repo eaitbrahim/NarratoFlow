@@ -22,8 +22,18 @@ EXTRA_HINT = "install the 'tts-local' extra: uv sync --extra tts-local"
 class PiperProvider:
     name: str = "piper"
 
-    def __init__(self, model_path: Path) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        *,
+        license: str | None = None,
+        source: str | None = None,
+        attribution: str = "",
+    ) -> None:
         self.model_path = model_path
+        self.model_license = license
+        self.model_source = source
+        self.model_attribution = attribution
         self.model = model_path.stem
         self._voice: Any = None
 

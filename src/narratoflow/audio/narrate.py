@@ -348,6 +348,29 @@ def _caption_words(
     return out
 
 
+def _voice_used(choice: VoiceChoice, first: VoiceChoice | None, reasons: list[str]) -> VoiceUsed:
+    """What the timeline records about the voice that narrated, with a Piper model's licence."""
+    declared: dict[str, str | None] = {}
+    provider = choice.provider
+    if isinstance(provider, PiperProvider):
+        declared = {
+            "model_license": provider.model_license,
+            "model_source": provider.model_source,
+            "model_attribution": provider.model_attribution,
+        }
+    return VoiceUsed.model_validate(
+        {
+            "provider": provider.name,
+            "model": provider.model,
+            "voice_id": choice.voice_id,
+            "terms": voice_terms(provider.name),
+            "fallback_from": _label(first) if first is not None else None,
+            "fallback_reasons": reasons,
+            **declared,
+        }
+    )
+
+
 def narrate_part(
     part: Part,
     chain: list[VoiceChoice],
@@ -375,14 +398,7 @@ def narrate_part(
         except (ProviderError, ExtraMissingError, _BadVoiceAudio) as exc:
             reasons.append(f"{_label(choice)}: {exc}")
             continue
-        voice = VoiceUsed(
-            provider=choice.provider.name,
-            model=choice.provider.model,
-            voice_id=choice.voice_id,
-            terms=voice_terms(choice.provider.name),
-            fallback_from=_label(chain[0]) if index > 0 else None,
-            fallback_reasons=reasons,
-        )
+        voice = _voice_used(choice, chain[0] if index > 0 else None, reasons)
         timer = _Timer(aligner, language)
         clips: dict[str, NarrationClip] = {}
         for scene in scenes:

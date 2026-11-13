@@ -80,7 +80,14 @@ def _piper(channel: ChannelConfig) -> VoiceChoice:
     config = Path(f"{model}.json")
     if not config.is_file():
         raise ChannelConfigError(f"piper model config not found: {config}")
-    return VoiceChoice(PiperProvider(model), PIPER_VOICE_ID)
+    voice = channel.voice
+    provider = PiperProvider(
+        model,
+        license=voice.piper_model_license,
+        source=voice.piper_model_source,
+        attribution=voice.piper_model_attribution,
+    )
+    return VoiceChoice(provider, PIPER_VOICE_ID)
 
 
 def _edge(voice_id: str) -> VoiceChoice:

@@ -39,6 +39,8 @@ class VoiceConfig(BaseModel):
 
     `edge_voice` None means the language default (`tts.edge.DEFAULT_EDGE_VOICES`);
     `piper_model` is resolved relative to the channel TOML by `load_channel`.
+    `piper_model_license`, `piper_model_source` and `piper_model_attribution` declare the
+    model's licence for provenance; a licence needs a source.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -49,11 +51,21 @@ class VoiceConfig(BaseModel):
     fallback: list[Literal["edge", "piper"]] = ["edge"]  # pydantic copies the default
     edge_voice: str | None = None
     piper_model: Path | None = None
+    piper_model_license: str | None = None
+    piper_model_source: str | None = None
+    piper_model_attribution: str = ""
 
     @field_validator("provider")
     @classmethod
     def _lower_provider(cls, value: str) -> str:
         return value.strip().lower()
+
+    @model_validator(mode="after")
+    def _licence_has_source(self) -> VoiceConfig:
+        source = (self.piper_model_source or "").strip()
+        if self.piper_model_license and not source:
+            raise ValueError("piper_model_license needs voice.piper_model_source")
+        return self
 
 
 class LlmConfig(BaseModel):

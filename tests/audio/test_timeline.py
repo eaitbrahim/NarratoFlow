@@ -252,6 +252,12 @@ def test_timeline_rejects_extra_and_negative_and_non_finite() -> None:
         make(data)
 
 
+def test_old_timeline_without_model_licence_fields_loads() -> None:
+    voice = make(base()).voice
+    assert voice is not None
+    assert (voice.model_license, voice.model_source, voice.model_attribution) == (None, None, "")
+
+
 def test_timeline_allows_silent_lufs_and_no_voice() -> None:
     data = base()
     data["integrated_lufs"] = None

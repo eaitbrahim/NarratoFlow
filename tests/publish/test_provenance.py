@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from fixtures.parts import (
     GENERATED_PROVENANCE,
     add_sketch,
@@ -170,7 +171,7 @@ def test_unknown_generated_terms_fail_and_local_model_warns(
     rules = _voice_pass(tmp_path)
     unknown = _with_sketch(inputs, license="mystery-terms")
     [reason] = _fails(provenance_checks(unknown, rules, EMPTY))
-    assert "licence mystery-terms is not allowed by platform rules 2026-11-11.1" in reason
+    assert "licence mystery-terms is not allowed by platform rules 2026-11-12.1" in reason
     local = _with_sketch(inputs, license="local-model-license")
     results = provenance_checks(local, rules, EMPTY)
     assert _fails(results) == []
@@ -264,6 +265,91 @@ def test_edge_voice_terms_warn_with_note(
     [warn] = _warns(results)
     assert warn.startswith("voice edge/ar-SA-x")
     assert "Microsoft's read-aloud service grants no explicit commercial licence" in warn
+
+
+def _piper_inputs(inputs: PartInputs, **declared: object) -> PartInputs:
+    piper = VoiceUsed.model_validate(
+        {
+            "provider": "piper",
+            "model": "m",
+            "voice_id": "piper",
+            "terms": "piper-model-license",
+            **declared,
+        }
+    )
+    return replace(inputs, timeline=inputs.timeline.model_copy(update={"voice": piper}))
+
+
+_SRC = "https://example.org/voice"
+
+
+@pytest.mark.parametrize(
+    ("declared", "severity", "text"),
+    [
+        ({"model_license": "MIT", "model_source": _SRC}, None, ""),
+        (
+            {"model_license": "CC-BY-4.0", "model_source": _SRC, "model_attribution": "By A"},
+            None,
+            "",
+        ),
+        (
+            {"model_license": "CC-BY-4.0", "model_source": _SRC},
+            Severity.FAIL,
+            "needs an attribution",
+        ),
+        (
+            {"model_license": "CC-BY-NC-4.0", "model_source": _SRC},
+            Severity.FAIL,
+            "not allowed",
+        ),
+        ({}, Severity.WARN, "voice.piper_model_license"),
+    ],
+)
+def test_piper_declared_licence_verdicts(
+    tmp_path: Path,
+    library: SketchLibrary,
+    channel: ChannelConfig,
+    declared: dict[str, object],
+    severity: Severity | None,
+    text: str,
+) -> None:
+    inputs = _piper_inputs(make_inputs(tmp_path, library, channel), **declared)
+    results = provenance_checks(inputs, load_rules(PACKAGED_RULES), EMPTY)
+    voice_findings = [
+        r for r in results if r.severity is not Severity.PASS and r.reason.startswith("voice ")
+    ]
+    if severity is None:
+        assert voice_findings == []
+        return
+    [finding] = voice_findings
+    assert finding.severity is severity
+    assert text in finding.reason
+
+
+def test_piper_record_uses_declared_source_and_attribution(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _piper_inputs(
+        make_inputs(tmp_path, library, channel),
+        model_license="CC-BY-4.0",
+        model_source=_SRC,
+        model_attribution="By A",
+    )
+    voice = next(r for r in asset_records(inputs) if r.kind == "voice")
+    assert (voice.license, voice.source, voice.attribution) == ("CC-BY-4.0", _SRC, "By A")
+
+
+def test_edge_voice_unchanged(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    edge = VoiceUsed(provider="edge", model="edge-tts", voice_id="ar-SA-x", terms="edge-tts-terms")
+    inputs = replace(inputs, timeline=inputs.timeline.model_copy(update={"voice": edge}))
+    [warn] = _warns(provenance_checks(inputs, load_rules(PACKAGED_RULES), EMPTY))
+    assert warn == (
+        "voice edge/ar-SA-x: licence edge-tts-terms: "
+        "Microsoft's read-aloud service grants no explicit commercial licence"
+    )
 
 
 def test_verse_without_recitation_fails(

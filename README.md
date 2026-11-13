@@ -115,7 +115,21 @@ not fixed by the spec has a `verify` note with a source; re-check each one, then
 ### Voices
 
 The channel's `[voice]` table picks the narrator: `provider` (`elevenlabs`, `edge` or `piper`),
-`voice_id`, `model` and, for `piper`, `piper_model` (path to the `.onnx` file). `fallback` (default
+`voice_id`, `model` and, for `piper`, `piper_model` (path to the `.onnx` file) with the model's
+licence: `piper_model_license` (for example `MIT`, `CC-BY-4.0`), `piper_model_source` (where the model
+came from; required with a licence) and `piper_model_attribution` (required for `CC-BY-4.0`). The
+licence goes into the publish provenance check: an undeclared licence warns, an attribution-only
+licence without an attribution fails, and a licence the platform rules do not allow
+(`CC-BY-NC-4.0`) fails. Example:
+
+```toml
+piper_model = "voices/ar_JO-kareem-medium.onnx"
+piper_model_license = "CC-BY-4.0"
+piper_model_source = "https://huggingface.co/rhasspy/piper-voices"
+piper_model_attribution = "Voice: Kareem (Piper voices), CC-BY-4.0"
+```
+
+`fallback` (default
 `["edge"]`) re-voices a whole part with the next voice when the first one is down;
 the timeline and the command output record the fallback, so there is one voice per part and it is
 never silent. `edge_voice` names the edge voice the fallback uses (an edge short name such as

@@ -31,8 +31,8 @@ def test_packaged_rules_load_with_pinned_values(tmp_path: Path) -> None:
     rules = default_rules(_settings(tmp_path))
     f = rules.file
     assert rules.origin == "packaged"
-    assert f.version == "2026-11-11.1"
-    assert f.checked == date(2026, 11, 11)
+    assert f.version == "2026-11-12.1"
+    assert f.checked == date(2026, 11, 12)
     assert f.platforms["youtube-shorts"].max_duration_s == 180
     assert f.platforms["tiktok"].max_duration_s == 600
     for p in f.platforms.values():
@@ -77,7 +77,7 @@ def test_rules_sha256_is_of_file_bytes(tmp_path: Path) -> None:
 
 def test_data_dir_override_wins(tmp_path: Path) -> None:
     assert default_rules(_settings(tmp_path)).origin == "packaged"
-    path = _write(tmp_path, _packaged_text().replace("2026-11-11.1", "override.1"))
+    path = _write(tmp_path, _packaged_text().replace("2026-11-12.1", "override.1"))
     rules = default_rules(_settings(tmp_path))
     assert rules.origin == str(path.resolve())
     assert rules.file.version == "override.1"
@@ -87,7 +87,7 @@ def test_broken_rules_names_file(tmp_path: Path) -> None:
     text = _packaged_text()
     cases = [
         "this is = not [ toml",
-        text.replace('version = "2026-11-11.1"\n', ""),
+        text.replace('version = "2026-11-12.1"\n', ""),
         text + '\nsurprise = "x"\n',
     ]
     for bad in cases:
@@ -103,7 +103,7 @@ def test_rules_age_warns_after_180_days(tmp_path: Path) -> None:
     checked = rules.file.checked
     (ok,) = rules_checks(rules, checked + timedelta(days=180))
     assert ok.severity is Severity.PASS
-    assert ok.reason == "platform rules 2026-11-11.1 (checked 2026-11-11)"
+    assert ok.reason == "platform rules 2026-11-12.1 (checked 2026-11-12)"
     (warn,) = rules_checks(rules, checked + timedelta(days=181))
     assert warn.severity is Severity.WARN
     assert "over 180 days ago" in warn.reason
@@ -114,7 +114,7 @@ def test_rules_checked_in_the_future_warns(tmp_path: Path) -> None:
     (warn,) = rules_checks(rules, rules.file.checked - timedelta(days=1))
     assert warn.severity is Severity.WARN
     assert warn.reason == (
-        "platform rules 2026-11-11.1 have a checked date 2026-11-11 in the future; "
+        "platform rules 2026-11-12.1 have a checked date 2026-11-12 in the future; "
         "fix data/platform_rules.toml"
     )
 

@@ -19,6 +19,17 @@ _OWNER_FFMPEG = Path(v) if (v := os.environ.get("NARRATOFLOW_FFMPEG")) else None
 
 
 @pytest.fixture
+def ffmpeg_bin() -> str:
+    """Path to ffmpeg; skips locally when missing, fails in CI."""
+    found = shutil.which("ffmpeg")
+    if found is None:
+        if os.environ.get("CI"):
+            pytest.fail("ffmpeg is required in CI")
+        pytest.skip("ffmpeg not installed")
+    return found
+
+
+@pytest.fixture
 def render_tools() -> RenderTools:
     """An ffmpeg with libass: skips locally without one, fails under CI."""
     try:

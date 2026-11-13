@@ -131,7 +131,7 @@ def test_partial_last_window_uses_its_real_size() -> None:
     # 10 loud samples at -40 dBFS in a 240-sample window: only the real size clears -45.
     tail = np.full(10, 0.01, dtype=np.float32)
     samples = np.concatenate([np.zeros(2 * _WIN, dtype=np.float32), tail])
-    regions = voiced_regions(samples, SR, min_voiced_ms=1)
+    regions = voiced_regions(samples, SR, min_voiced_ms=0)
     assert len(regions) == 1
     assert regions[0].start_ms == 10.0
     assert regions[0].end_ms == pytest.approx(len(samples) * 1000 / SR)
@@ -154,3 +154,14 @@ def test_regions_are_exact_at_rates_where_window_is_not_whole_samples() -> None:
         assert len(regions) == 1
         _close(regions[0].start_ms, 10000)
         _close(regions[0].end_ms, 10300)
+
+
+def test_trailing_region_shorter_than_min_voiced_after_capping_is_dropped() -> None:
+    # Four loud windows, the last only half a window: 20 ms uncapped, 17.5 ms real.
+    samples = np.concatenate(
+        [
+            np.zeros(_WIN, dtype=np.float32),
+            np.full(3 * _WIN + _WIN // 2, 0.5, dtype=np.float32),
+        ]
+    )
+    assert voiced_regions(samples, SR, min_voiced_ms=20) == []

@@ -1,7 +1,8 @@
 """Storyboard intermediate representation (IR).
 
-`Series` (schema v2) is the IR every stage reads and writes; `Project` (v1) remains only
-for `validate`. See docs/adr/0004.
+`Series` (schema v2) is the IR every stage reads: `plan`, `approve`, `sketch generate`,
+`sketch resolve`, `audio build` and `review` write it back, while `render` and `publish`
+only read it. `Project` (v1) remains only for `validate`. See docs/adr/0004.
 Bump `SCHEMA_VERSION` on a breaking change (a removed, renamed or re-typed field);
 `Series.load` and `Project.load` each refuse any other (or a missing) version and there are
 no migrations.

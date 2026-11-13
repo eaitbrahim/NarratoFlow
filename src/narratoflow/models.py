@@ -1,8 +1,10 @@
 """Storyboard intermediate representation (IR).
 
-`Series` (schema v2) is the planning root; `Project` (v1) remains for `validate`.
-Every pipeline stage reads and writes a `Project`; the review UI edits it too.
-Bump `SCHEMA_VERSION` on breaking changes and add a migration.
+`Series` (schema v2) is the IR every stage reads and writes; `Project` (v1) remains only
+for `validate`. See docs/adr/0004.
+Bump `SCHEMA_VERSION` on a breaking change (a removed, renamed or re-typed field);
+`Series.load` refuses any other version and there are no migrations. `Project.load` does not
+check `schema_version` (legacy, `validate` only).
 """
 
 from __future__ import annotations

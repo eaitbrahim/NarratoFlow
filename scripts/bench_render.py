@@ -160,7 +160,7 @@ def _timing(index: int, sketch_id: int, stroke_count: int, scene_ms: int) -> Sce
 
 def prepare(root: Path, *, duration_ms: int = 180_000, scene_ms: int = 10_000) -> BenchInputs:
     """Write the channel, library, timeline and FLAC for one part under `root`."""
-    if scene_ms <= 0 or duration_ms % scene_ms != 0:
+    if scene_ms <= 0 or duration_ms < scene_ms or duration_ms % scene_ms != 0:
         raise ValueError("duration_ms must be a positive multiple of scene_ms")
     count = duration_ms // scene_ms
     settings = Settings(data_dir=root / "data")

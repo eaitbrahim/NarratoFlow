@@ -563,3 +563,29 @@ def test_json_files_are_indented_and_rewritable(tmp_path: Path) -> None:
 
 def test_parser_description_is_the_docstring_title() -> None:
     assert spike._parser().description == (spike.__doc__ or "").splitlines()[0]
+
+
+def test_every_estimator_is_scored_on_the_same_post_pause_word(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The pause ends at 1000 ms. CTC puts bb at 1010; edge runs ~110 ms early, so bb
+    # is at 890 and cc at 1080, which is nearer to 1000 on its own. Both must score bb.
+    zeros = np.zeros
+    samples = np.concatenate(
+        [zeros(SR * 200 // 1000, dtype=np.float32), fx.tone(300), zeros(SR // 2), fx.tone(400)]
+    ).astype(np.float32)
+    monkeypatch.setattr(spike, "decode", lambda _audio: samples)
+    edge = [TimedSpan("aa", 100, 400), TimedSpan("bb", 890, 1070), TimedSpan("cc", 1080, 1300)]
+    ctc = [TimedSpan("aa", 200, 500), TimedSpan("bb", 1010, 1190), TimedSpan("cc", 1200, 1400)]
+    capture = spike.Capture(1, "aa bb cc", b"", ["aa", "bb", "cc"], edge, ctc)
+    scored = spike._score(capture, ctc)
+    assert scored.deltas["edge"].pause_starts_ms == [(1, pytest.approx(-110, abs=10))]
+    assert scored.deltas["ctc"].pause_starts_ms == [(1, pytest.approx(10, abs=10))]
+
+
+def test_match_pause_words_picks_one_word_for_all_estimators() -> None:
+    late = _timings([0, 1010, 1200])
+    early = _timings([0, 890, 1080])
+    got = spike.match_pause_words({"edge": early, "ctc": late}, [1000.0], window_ms=300)
+    assert got == [1]
+    assert spike.match_pause_words({"edge": early, "ctc": late}, [5000.0], window_ms=300) == [None]

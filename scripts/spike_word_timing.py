@@ -17,7 +17,7 @@ import json
 import math
 import statistics
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import metadata
@@ -470,22 +470,46 @@ class WaveDeltas:
     pause_starts_ms: list[tuple[int, float]]
 
 
-def _nearest_word(timings: Sequence[WordTiming], onset: float, window_ms: int) -> int | None:
-    best = min(range(1, len(timings)), key=lambda i: abs(timings[i].start_ms - onset), default=None)
-    if best is None or abs(timings[best].start_ms - onset) > window_ms:
-        return None
-    return best
+def match_pause_words(
+    estimates: Mapping[str, Sequence[WordTiming]], onsets: Sequence[float], window_ms: int
+) -> list[int | None]:
+    """The word each pause onset belongs to, chosen once for every estimator.
+
+    Rule: among words 1.. (word 0 is the sentence start), take the one whose start
+    has the smallest summed distance to the onset over all estimators, provided
+    every estimator has it within `window_ms`; None when no word qualifies. An
+    estimator that runs early cannot pull the match to the next word on its own.
+    """
+    count = min((len(t) for t in estimates.values()), default=0)
+    out: list[int | None] = []
+    for onset in onsets:
+        distance = {
+            i: [abs(t[i].start_ms - onset) for t in estimates.values()] for i in range(1, count)
+        }
+        ok = {i: sum(d) for i, d in distance.items() if max(d) <= window_ms}
+        out.append(min(ok, key=lambda i: ok[i]) if ok else None)
+    return out
 
 
 def wave_deltas(
-    timings: Sequence[WordTiming], truth: WaveTruth, *, window_ms: int = 300
+    timings: Sequence[WordTiming],
+    truth: WaveTruth,
+    *,
+    window_ms: int = 300,
+    words: Sequence[int | None] | None = None,
 ) -> WaveDeltas:
-    """Estimate minus waveform at the sentence start, each post-pause word and the end."""
-    pauses: list[tuple[int, float]] = []
-    for onset in truth.pause_onsets_ms:
-        word = _nearest_word(timings, onset, window_ms)
-        if word is not None:
-            pauses.append((word, timings[word].start_ms - onset))
+    """Estimate minus waveform at the sentence start, each post-pause word and the end.
+
+    `words` is the matched word per pause onset (see `match_pause_words`); when
+    omitted it is matched against these timings alone.
+    """
+    if words is None:
+        words = match_pause_words({"": timings}, truth.pause_onsets_ms, window_ms)
+    pauses = [
+        (word, timings[word].start_ms - onset)
+        for word, onset in zip(words, truth.pause_onsets_ms, strict=True)
+        if word is not None
+    ]
     return WaveDeltas(
         first_start_ms=timings[0].start_ms - truth.first_onset_ms,
         last_end_ms=timings[-1].end_ms - truth.last_offset_ms,
@@ -559,7 +583,10 @@ def _score(capture: Capture, ctc: list[TimedSpan] | None) -> _Scored:
         if mapped:
             timings[name] = mapped
     truth = wave_truth(decode(capture.audio), SAMPLE_RATE)
-    deltas = {n: wave_deltas(t, truth) for n, t in timings.items()} if truth else {}
+    deltas: dict[str, WaveDeltas] = {}
+    if truth:
+        words = match_pause_words(timings, truth.pause_onsets_ms, 300)
+        deltas = {n: wave_deltas(t, truth, words=words) for n, t in timings.items()}
     return _Scored(capture.index, timings, deltas)
 
 

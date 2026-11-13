@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from conftest import FIXTURES
 
-from narratoflow.models import Language, Narration, Scene, SceneKind
+from narratoflow.models import Language, Narration, Part, Scene, SceneKind
 from narratoflow.planning import series as series_module
 from narratoflow.planning.series import (
     END_CARD_DEFAULTS,
@@ -259,3 +259,70 @@ def test_unfinished_ending_ignores_invisible_marks() -> None:
 @pytest.mark.parametrize("text", ["", "   \n", "\u200b\u200f", " \u200b \ufeff"])
 def test_blank_text_counts_as_unfinished(text: str) -> None:
     assert series_module._is_unfinished(text) is True
+
+
+def _stub_estimates(monkeypatch: pytest.MonkeyPatch, table: dict[str, float]) -> None:
+    """Exact, dyadic per-scene seconds so boundary cases do not depend on float rounding."""
+    monkeypatch.setattr(series_module, "estimate_scene_seconds", lambda s, lang: table[s.id])
+    monkeypatch.setattr(series_module, "TAIL_MERGE_SLACK", 1.25)
+
+
+def _ids(parts: list[Part]) -> list[list[str]]:
+    return [[s.id for s in p.scenes] for p in parts]
+
+
+def test_lone_scene_exactly_at_max_is_not_over_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_estimates(monkeypatch, {"a": 40.0, "b": 40.5})
+    exact = split_into_parts([narr("x.", sid="a")], Language.ENGLISH, min_s=20, max_s=40)
+    assert exact[0].flags == []
+    over = split_into_parts([narr("x.", sid="b")], Language.ENGLISH, min_s=20, max_s=40)
+    assert over[0].flags == ["over_max"]
+
+
+def test_tail_of_exactly_half_min_is_kept_but_shorter_is_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_estimates(monkeypatch, {"p": 35.0, "t10": 10.0, "t9": 9.5})
+    kept = split_into_parts(
+        [narr("x.", sid="p"), narr("y.", sid="t10")], Language.ENGLISH, min_s=20, max_s=40
+    )
+    assert _ids(kept) == [["p"], ["t10"]]
+    merged = split_into_parts(
+        [narr("x.", sid="p"), narr("y.", sid="t9")], Language.ENGLISH, min_s=20, max_s=40
+    )
+    assert _ids(merged) == [["p", "t9"]]
+
+
+def test_tail_merge_allowed_up_to_exactly_the_slack(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_estimates(monkeypatch, {"p": 35.0, "fits": 15.0, "over": 15.5})
+    fits = split_into_parts(
+        [narr("x.", sid="p"), narr("y.", sid="fits")], Language.ENGLISH, min_s=40, max_s=40
+    )
+    assert _ids(fits) == [["p", "fits"]]
+    over = split_into_parts(
+        [narr("x.", sid="p"), narr("y.", sid="over")], Language.ENGLISH, min_s=40, max_s=40
+    )
+    assert _ids(over) == [["p"], ["over"]]
+
+
+def test_tail_merges_into_the_part_before_it_not_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_estimates(monkeypatch, {"a": 38.0, "b": 38.0, "c": 5.0})
+    parts = split_into_parts(
+        [narr("x.", sid="a"), narr("y.", sid="b"), narr("z.", sid="c")],
+        Language.ENGLISH,
+        min_s=20,
+        max_s=40,
+    )
+    assert _ids(parts) == [["a"], ["b", "c"]]
+    assert parts[-1].count == 2
+
+
+def test_unfinished_ending_judges_the_last_narration_of_the_last_part() -> None:
+    first_open = [narr("Opening line,", sid="a"), narr("Closing line.", sid="b")]
+    flags = split_into_parts(first_open, Language.ENGLISH, min_s=60, max_s=90)[-1].flags
+    assert "unfinished_ending" not in flags
+    last_open = [narr("Opening line.", sid="a"), narr("Closing line,", sid="b")]
+    flags = split_into_parts(last_open, Language.ENGLISH, min_s=60, max_s=90)[-1].flags
+    assert "unfinished_ending" in flags

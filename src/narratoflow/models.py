@@ -184,7 +184,7 @@ def _load_versioned[M: BaseModel](cls: type[M], path: Path, label: str, version:
     except json.JSONDecodeError as exc:
         raise PlanningError(f"{label} file {path} is not valid JSON: {exc}") from exc
     found = raw.get("schema_version") if isinstance(raw, dict) else None
-    if found != version:
+    if type(found) is not int or found != version:  # true and 1.0 compare equal to 1
         raise PlanningError(f"unsupported {label} schema_version {found}; expected {version}")
     try:
         return cls.model_validate_json(text)

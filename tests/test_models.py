@@ -157,6 +157,17 @@ def test_project_load_rejects_other_or_missing_schema(
         Project.load(path)
 
 
+@pytest.mark.parametrize("bad", ["true", "1.0", "2.0"])
+@pytest.mark.parametrize("loader", ["project", "series"])
+def test_load_rejects_non_int_schema_version(tmp_path: Path, loader: str, bad: str) -> None:
+    path = tmp_path / "f.json"
+    data = {"title": "T", "language": "ar"} if loader == "project" else _series().model_dump()
+    data["schema_version"] = json.loads(bad)
+    path.write_text(json.dumps(data, default=str), encoding="utf-8")
+    with pytest.raises(PlanningError, match=f"unsupported {loader} schema_version"):
+        (Project.load if loader == "project" else Series.load)(path)
+
+
 def test_project_load_missing_file(tmp_path: Path) -> None:
     with pytest.raises(PlanningError, match="cannot read project file"):
         Project.load(tmp_path / "missing.json")

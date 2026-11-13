@@ -229,6 +229,30 @@ def test_piper_licence_defaults_undeclared(channel_file: Path) -> None:
     assert voice.piper_model_attribution == ""
 
 
+def test_piper_licence_and_source_are_stripped(channel_file: Path) -> None:
+    voice = load_channel(
+        _piper_channel(
+            channel_file,
+            'piper_model_license = " MIT "\npiper_model_source = "  https://example.org/v "',
+        )
+    ).voice
+    assert voice.piper_model_license == "MIT"
+    assert voice.piper_model_source == "https://example.org/v"
+
+
+def test_blank_piper_licence_and_source_mean_undeclared(channel_file: Path) -> None:
+    voice = load_channel(
+        _piper_channel(channel_file, 'piper_model_license = "  "\npiper_model_source = ""')
+    ).voice
+    assert (voice.piper_model_license, voice.piper_model_source) == (None, None)
+
+
+def test_blank_source_does_not_satisfy_a_licence(channel_file: Path) -> None:
+    _piper_channel(channel_file, 'piper_model_license = "MIT"\npiper_model_source = "  "')
+    with pytest.raises(ChannelConfigError, match=r"piper_model_license needs.*piper_model_source"):
+        load_channel(channel_file)
+
+
 def test_unknown_fallback_rejected(channel_file: Path) -> None:
     channel_file.write_text(
         channel_file.read_text(encoding="utf-8").replace(

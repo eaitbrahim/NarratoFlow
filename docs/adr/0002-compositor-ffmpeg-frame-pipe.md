@@ -44,8 +44,10 @@ Frames are drawn in Python and piped to ffmpeg; no scene-graph or browser render
 - libass with HarfBuzz shaping is a hard dependency of the system ffmpeg. `render/ffmpeg.py` fails
   with an install hint (`brew install ffmpeg-full` on macOS) when the `ass` filter is missing or
   when Arabic letters are not joined.
-- Rendering is CPU-bound Python plus x264; there is no GPU path and no measured throughput figure
-  in the repository.
+- Rendering is CPU-bound Python plus x264; there is no GPU path. The CPU benchmark
+  (`docs/benchmarks/2026-11-13-render-cpu.md`) rendered one 180 s part (5400 frames, 1080x1920,
+  30 fps) in 84.5 s with the default workers and 181.8 s with one worker, on one 16-core arm
+  machine with ffmpeg-full 9.0.2 (single runs, no variance known), under the 600 s NFR.
 
 ## Alternatives considered
 

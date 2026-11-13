@@ -60,10 +60,14 @@ class VoiceConfig(BaseModel):
     def _lower_provider(cls, value: str) -> str:
         return value.strip().lower()
 
+    @field_validator("piper_model_license", "piper_model_source")
+    @classmethod
+    def _strip_blank_to_none(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
+
     @model_validator(mode="after")
     def _licence_has_source(self) -> VoiceConfig:
-        source = (self.piper_model_source or "").strip()
-        if self.piper_model_license and not source:
+        if self.piper_model_license and not self.piper_model_source:
             raise ValueError("piper_model_license needs voice.piper_model_source")
         return self
 

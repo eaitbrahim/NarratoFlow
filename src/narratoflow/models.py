@@ -1,10 +1,11 @@
 """Storyboard intermediate representation (IR).
 
-`Series` (schema v2) is the IR every stage reads and writes; `Project` (v1) remains only
-for `validate`. See docs/adr/0004.
+`Series` (schema v2) is the IR every stage reads: `plan`, `approve`, `sketch generate`,
+`sketch resolve`, `audio build` and `review` write it back, while `render` and `publish`
+only read it. `Project` (v1) remains only for `validate`. See docs/adr/0004.
 Bump `SCHEMA_VERSION` on a breaking change (a removed, renamed or re-typed field);
-`Series.load` refuses any other version and there are no migrations. `Project.load` does not
-check `schema_version` (legacy, `validate` only).
+`Series.load` and `Project.load` each refuse any other (or a missing) version and there are
+no migrations.
 """
 
 from __future__ import annotations
@@ -172,6 +173,25 @@ class Voice(BaseModel):
     pitch: str = "+0Hz"
 
 
+def _load_versioned[M: BaseModel](cls: type[M], path: Path, label: str, version: int) -> M:
+    """Read a JSON model file; every failure is a PlanningError naming `label`."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PlanningError(f"cannot read {label} file {path}: {exc}") from exc
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise PlanningError(f"{label} file {path} is not valid JSON: {exc}") from exc
+    found = raw.get("schema_version") if isinstance(raw, dict) else None
+    if found != version:
+        raise PlanningError(f"unsupported {label} schema_version {found}; expected {version}")
+    try:
+        return cls.model_validate_json(text)
+    except ValidationError as exc:
+        raise PlanningError(f"{label} file {path} is invalid:\n{exc}") from exc
+
+
 class Project(BaseModel):
     schema_version: int = PROJECT_SCHEMA_VERSION
     title: str
@@ -186,7 +206,7 @@ class Project(BaseModel):
 
     @classmethod
     def load(cls, path: Path) -> Project:
-        return cls.model_validate_json(path.read_text(encoding="utf-8"))
+        return _load_versioned(cls, path, "project", PROJECT_SCHEMA_VERSION)
 
 
 MAX_FINDING_REASON = 200
@@ -280,20 +300,4 @@ class Series(BaseModel):
 
     @classmethod
     def load(cls, path: Path) -> Series:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise PlanningError(f"cannot read series file {path}: {exc}") from exc
-        try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise PlanningError(f"series file {path} is not valid JSON: {exc}") from exc
-        found = raw.get("schema_version") if isinstance(raw, dict) else None
-        if found != SCHEMA_VERSION:
-            raise PlanningError(
-                f"unsupported series schema_version {found}; expected {SCHEMA_VERSION}"
-            )
-        try:
-            return cls.model_validate_json(text)
-        except ValidationError as exc:
-            raise PlanningError(f"series file {path} is invalid:\n{exc}") from exc
+        return _load_versioned(cls, path, "series", SCHEMA_VERSION)

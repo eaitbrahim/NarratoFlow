@@ -22,20 +22,25 @@ stroke data) that outlive a single run and are read by later stages and by the p
   - publish reports: `PUBLISH_SCHEMA_VERSION = 1` (`src/narratoflow/publish/report.py`);
   - `StrokeSet`: `version = 1` (`src/narratoflow/visuals/strokes.py`).
 - **Versioning rule as built:**
-  - The `Series`, timeline, render report, publish report and stroke loaders refuse any other
+  - The `Series`, `Project`, timeline, render report, publish report and stroke loaders refuse any other
     `schema_version`. `Series.load` raises `PlanningError`
     "unsupported series schema_version {found}; expected {SCHEMA_VERSION}"; the timeline, render
     report and publish loaders raise the same shape ("unsupported ... schema_version ...;
     expected ..."), each naming the version found and the one expected. `StrokeSet.version` is
     constrained to exactly 1 (`Field(ge=1, le=1)`), so another value fails validation as
     `StrokeDataError` ("invalid stroke data"), without that message.
-    The exception is `Project.load` (legacy `storyboard.json`, used only by `narratoflow validate`):
-    it is a bare `model_validate_json` over `schema_version: int`, so it does not check the
-    version and accepts any integer. Tracked as #148.
+    `Project.load` (legacy `storyboard.json`, used only by `narratoflow validate`) refuses
+    the same way: it raises `PlanningError` "unsupported project schema_version {found}; expected
+    1", and a missing `schema_version` is refused too (found `None`). Every loader now refuses
+    other versions (#148).
   - There are no migrations. Re-planning or re-building the stage is the upgrade path.
   - Adding an optional field with a default does not bump the version. Example:
     `RenderReport.inputs_key: str | None = None` was added with `REPORT_SCHEMA_VERSION` left at 1;
-    older reports load with `None` and the part is simply re-rendered.
+    older reports load with `None` and the part is simply re-rendered. Likewise
+    `Part.end_card_text: str = ""` (the closing call to action of the final part) was added to
+    `Series` with `SCHEMA_VERSION` left at 2; an older `series.json` loads with `""`, which
+    shows no end card. The same rule holds for stroke data: `docs/strokes-schema.md` says an
+    added optional field does not bump `StrokeSet.version`, a removed or required one does.
   - Removing, renaming or re-typing a field bumps the version.
 
 ## Consequences

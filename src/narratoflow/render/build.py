@@ -64,7 +64,7 @@ CRF = int(X264_ARGS[X264_ARGS.index("-crf") + 1])
 # encode look like (compositor, camera, layouts, captions styling, x264 flags): a part
 # whose inputs are unchanged is kept as is, so a renderer change without a bump serves
 # stale videos until `render --force`.
-RENDER_INPUTS_VERSION = "1"
+RENDER_INPUTS_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -475,7 +475,7 @@ class _Run:
             "line_weight_px": style.line_weight_px,
             "canvas": [self.canvas.width, self.canvas.height],
             "crf": CRF,
-            "ffmpeg": self.tools.version,
+            "ffmpeg": [self.tools.version, self.tools.fingerprint],
             "warnings": self._part_warnings(plan),
         }
 

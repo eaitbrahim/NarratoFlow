@@ -127,7 +127,8 @@ def test_id3_is_skipped() -> None:
 def test_id3_footer_is_skipped() -> None:
     data = bytearray(_mp3(id3=True, tag="Info", lame=(576, 960)))
     data[5] = 0x10
-    data[10 + 127 : 10 + 127] = bytes(10)
+    # A footer whose bytes look like a frame sync: a reader that scans it finds no Info tag.
+    data[10 + 127 : 10 + 127] = bytes([0xFF, 0xFB, 0x90, 0xC0]) + bytes(6)
     assert read_mp3_info(bytes(data)).tag == "Info"
 
 
@@ -187,6 +188,8 @@ def test_ffmpeg_honours_info_tag_delay(ffmpeg_bin: str, tmp_path: Path) -> None:
     assert info.encoder is not None
     assert info.encoder.startswith(("Lavc", "LAME"))
     assert info.encoder_delay == 576
+    assert info.encoder_padding is not None
+    assert 0 < info.encoder_padding <= 1152
     assert abs(_onset(data) - 200) <= 3
 
 
@@ -207,3 +210,29 @@ def test_id3_body_and_footer_are_never_searched_for_a_frame() -> None:
     footer[2:6] = decoy
     info = read_mp3_info(bytes(header + body + footer + real))
     assert (info.mpeg_version, info.sample_rate, info.tag) == ("2", 24000, "Info")
+
+
+# The first 260 bytes (ID3v2 tag, then the Info frame with its LAME extension) of a file
+# written by ffmpeg 9.0.2 with libmp3lame: lavfi sine 440 Hz, 24000 Hz mono, 1.234 s,
+# 48 kbit/s, -write_xing 1. The encoder reports delay 576 and padding 912 (0x240 and
+# 0x390), which the synthetic builder above does not produce, so the bit masks are
+# checked against bytes this file did not write.
+_REAL_LAVC_INFO_FRAME = bytes.fromhex(
+    "49443304000000000022545353450000000e0000034c61766636332e312e3130"
+    "320000000000000000000000fff384c0000000000000000000496e666f000000"
+    "0f0000003600001f20000a0f0f141418181d1d2121262b2b2f2f343439393d3d"
+    "4242464b4b5050545459595e5e6262676b6b7070757579797e7e8387878c8c90"
+    "9095959a9a9e9ea3a8a8acacb1b1b5b5bababfbfc3c8c8cdcdd1d1d6d6dadadf"
+    "dfe4e8e8ededf2f2f6f6fbfbff000000004c61766336332e312e000000000000"
+    "0000000000002403900000000000001f20afc334010000000000000000000000"
+    "000000000000000000000000fff364c4001c708e68175918003a926e172cb965"
+    "b32cb982"
+)
+
+
+def test_real_lame_header_bytes_give_the_known_delay_and_padding() -> None:
+    info = read_mp3_info(_REAL_LAVC_INFO_FRAME)
+    assert info.tag == "Info"
+    assert info.encoder == "Lavc63.1."
+    assert (info.encoder_delay, info.encoder_padding) == (576, 912)
+    assert (info.sample_rate, info.channels, info.frames) == (24000, 1, 54)

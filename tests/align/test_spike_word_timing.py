@@ -464,10 +464,21 @@ def test_from_runs_live_ctc_for_missing_spans(
     _write_capture(tmp_path, ffmpeg_bin, ctc=True)
     (tmp_path / "02.ctc.json").unlink()
     _fake_services(monkeypatch, mp3)
+    aligned: list[str] = []
+    real_align = _FakeAligner.align
+
+    def recording_align(
+        self: _FakeAligner, samples: object, sample_rate: int, text: str, language: Language
+    ) -> list[TimedSpan]:
+        aligned.append(text)
+        return real_align(self, samples, sample_rate, text, language)
+
+    monkeypatch.setattr(_FakeAligner, "align", recording_align)
     assert spike.main(["--from", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "ctc first" in out
     assert "CTC: not available" not in out
+    assert aligned == [SENTENCE_TWO]  # only the sentence without a saved NN.ctc.json
 
 
 def test_from_marks_unmappable_and_unmatched_cells(
@@ -563,3 +574,118 @@ def test_json_files_are_indented_and_rewritable(tmp_path: Path) -> None:
 
 def test_parser_description_is_the_docstring_title() -> None:
     assert spike._parser().description == (spike.__doc__ or "").splitlines()[0]
+
+
+def test_every_estimator_is_scored_on_the_same_post_pause_word(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The pause ends at 1000 ms. CTC puts bb at 1010; edge runs ~110 ms early, so bb
+    # is at 890 and cc at 1080, which is nearer to 1000 on its own. Both must score bb.
+    zeros = np.zeros
+    samples = np.concatenate(
+        [zeros(SR * 200 // 1000, dtype=np.float32), fx.tone(300), zeros(SR // 2), fx.tone(400)]
+    ).astype(np.float32)
+    monkeypatch.setattr(spike, "decode", lambda _audio: samples)
+    edge = [TimedSpan("aa", 100, 400), TimedSpan("bb", 890, 1070), TimedSpan("cc", 1080, 1300)]
+    ctc = [TimedSpan("aa", 200, 500), TimedSpan("bb", 1010, 1190), TimedSpan("cc", 1200, 1400)]
+    capture = spike.Capture(1, "aa bb cc", b"", ["aa", "bb", "cc"], edge, ctc)
+    scored = spike._score(capture, ctc)
+    assert scored.deltas["edge"].pause_starts_ms == [(1, pytest.approx(-110, abs=10))]
+    assert scored.deltas["ctc"].pause_starts_ms == [(1, pytest.approx(10, abs=10))]
+
+
+def test_match_pause_words_without_estimators_matches_nothing() -> None:
+    assert spike.match_pause_words({}, [100.0, 200.0], 300) == [None, None]
+
+
+def test_match_pause_words_picks_one_word_for_all_estimators() -> None:
+    late = _timings([0, 1010, 1200])
+    early = _timings([0, 890, 1080])
+    got = spike.match_pause_words({"edge": early, "ctc": late}, [1000.0], window_ms=300)
+    assert got == [1]
+    assert spike.match_pause_words({"edge": early, "ctc": late}, [5000.0], window_ms=300) == [None]
+
+
+@pytest.mark.parametrize("flag", [True, False])
+@pytest.mark.parametrize("field", ["sentence", "word", "onset_ms"])
+def test_label_entries_reject_json_booleans(tmp_path: Path, field: str, flag: bool) -> None:
+    entry = {"sentence": 1, "word": 1, "onset_ms": 1, field: flag}
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"version": 1, "labels": [entry]}))
+    with pytest.raises(ValueError, match="integers"):
+        spike.load_labels(path)
+
+
+@pytest.mark.parametrize("version", ["missing", 2, "1", True])
+def test_labels_version_must_be_the_integer_one(tmp_path: Path, version: object) -> None:
+    body: dict[str, object] = {"labels": [{"sentence": 1, "word": 1, "onset_ms": 1}]}
+    if version != "missing":
+        body["version"] = version
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps(body))
+    with pytest.raises(ValueError, match=r"labels.*version"):
+        spike.load_labels(path)
+
+
+@pytest.mark.parametrize("labels", [5, "x", {"sentence": 1}, None])
+def test_labels_must_be_a_list(tmp_path: Path, labels: object) -> None:
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"version": 1, "labels": labels}))
+    with pytest.raises(ValueError, match="labels"):
+        spike.load_labels(path)
+
+
+@pytest.mark.parametrize("version", ["missing", 2, "1", True])
+def test_manifest_version_must_match(tmp_path: Path, ffmpeg_bin: str, version: object) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    if version == "missing":
+        del manifest["version"]
+    else:
+        manifest["version"] = version
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match=r"manifest\.json.*version"):
+        spike.load_captures(tmp_path)
+
+
+def test_save_refuses_a_non_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mp3: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_services(monkeypatch, mp3, ctc=False)
+    target = tmp_path / "cap"
+    target.mkdir()
+    stale = target / "02.ctc.json"
+    stale.write_text("[]")
+    assert spike.main(["--save", str(target)]) == 2
+    assert "not empty" in capsys.readouterr().err
+    assert [p.name for p in target.iterdir()] == ["02.ctc.json"]
+
+
+def test_save_refuses_an_existing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mp3: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_services(monkeypatch, mp3, ctc=False)
+    target = tmp_path / "cap"
+    target.write_text("keep me")
+    assert spike.main(["--save", str(target)]) == 2
+    assert "not empty" in capsys.readouterr().err
+    assert target.read_text() == "keep me"
+
+
+def test_save_accepts_an_existing_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mp3: bytes
+) -> None:
+    _fake_services(monkeypatch, mp3, ctc=False)
+    target = tmp_path / "cap"
+    target.mkdir()
+    assert spike.main(["--save", str(target)]) == 0
+
+
+def test_priming_note_burst_time_is_authored_time_plus_computed_delay(
+    tmp_path: Path, ffmpeg_bin: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    assert spike.main(["--from", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    # (576 + 529) / 24000 s = 46.04 ms, so a burst authored at 200 ms lands at 246.04 ms.
+    assert "46.04 ms late (burst at 246.04 ms)" in out

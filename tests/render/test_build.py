@@ -1145,6 +1145,28 @@ def _flip_mirror_safe(w: _World) -> None:
     w.monkeypatch.setattr(w.library, "get_sketch", flipped)
 
 
+def _edit_part_field(w: _World, **update: Any) -> None:
+    part = w.series.parts[0].model_copy(update=update)
+    w.series = w.series.model_copy(update={"parts": [part]})
+
+
+def _edit_end_card(w: _World) -> None:
+    _edit_part_field(w, end_card_text="Subscribe for part two")
+
+
+def _edit_hook(w: _World) -> None:
+    _edit_part_field(w, hook_text="a different hook")
+
+
+def _edit_series_title(w: _World) -> None:
+    w.series = w.series.model_copy(update={"title": "Another title"})
+    write_timelines(w.series, w.audio, w.library)
+
+
+def _swap_ffmpeg_build(w: _World) -> None:
+    w.tools = replace(w.tools, fingerprint=w.tools.fingerprint + "-other-build")
+
+
 def _delete_mp4(w: _World) -> None:
     (w.video / "part-01.mp4").unlink()
 
@@ -1193,6 +1215,9 @@ def test_rerun_unchanged_skips_part(world: _World, run_calls: list[int]) -> None
         _edit_line_weight,
         _edit_canvas,
         _flip_mirror_safe,
+        _swap_ffmpeg_build,
+        _edit_hook,
+        _edit_series_title,
         _delete_mp4,
         _truncate_mp4,
         _delete_captions,
@@ -1208,6 +1233,35 @@ def test_changed_input_rerenders(
     again = world.render()
     assert run_calls == [1, 1]
     assert again.skipped == []
+
+
+@pytest.mark.parametrize("change", [_edit_hook, _edit_series_title])
+def test_overlay_only_edit_changes_inputs_key(
+    world: _World, change: Callable[[_World], None]
+) -> None:
+    before = world.render().parts[0].report.inputs_key
+    change(world)
+    after = world.render().parts[0].report.inputs_key
+    assert before is not None and after is not None and before != after
+
+
+def _long_enough_for_end_card(w: _World) -> None:
+    """The end card needs 1 s beyond the 2.5 s hook; the default 2 s part has no room."""
+    scenes = [narr(f"s{i}", f"word{i} more") for i in range(1, 6)]
+    scenes[0] = narr("s1", "alpha beta gamma", sketch=w.sketch_id, title="One")
+    w.series = make_series(scenes, language=Language.ARABIC)
+    write_timelines(w.series, w.audio, w.library)
+
+
+def test_end_card_edit_rerenders_and_changes_inputs_key(
+    world: _World, run_calls: list[int]
+) -> None:
+    _long_enough_for_end_card(world)
+    before = world.render().parts[0].report.inputs_key
+    _edit_end_card(world)
+    again = world.render()
+    assert run_calls == [1, 1] and again.skipped == []
+    assert before is not None and again.parts[0].report.inputs_key != before
 
 
 def test_force_rerenders(world: _World, run_calls: list[int]) -> None:

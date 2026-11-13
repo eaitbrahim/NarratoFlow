@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -28,6 +29,9 @@ class RenderTools:
     ffmpeg: Path
     ffprobe: Path
     version: str
+    """First line of `ffmpeg -version`, for display."""
+    fingerprint: str = ""
+    """sha256 of the full `ffmpeg -version` output: tells builds of one version apart."""
 
 
 @dataclass(frozen=True)
@@ -84,42 +88,54 @@ def run_tool(
     return run_tool_capture(tool, args, cwd=cwd, input=input, timeout_s=timeout_s)[0]
 
 
-def find_render_tools(settings: Settings) -> RenderTools:
+def _locate_ffmpeg(settings: Settings) -> Path:
     if settings.ffmpeg is not None:
-        ffmpeg: Path | None = settings.ffmpeg
         if not settings.ffmpeg.is_file():
             raise RenderError(f"ffmpeg not found at {settings.ffmpeg} (NARRATOFLOW_FFMPEG)")
-    else:
-        found = shutil.which("ffmpeg")
-        ffmpeg = Path(found) if found else None
-    if ffmpeg is None:
+        return settings.ffmpeg.absolute()
+    found = shutil.which("ffmpeg")
+    if not found:
         raise RenderError(
             "ffmpeg not found; install it (brew install ffmpeg-full / apt install ffmpeg)"
         )
-    ffmpeg = ffmpeg.absolute()
+    return Path(found).absolute()
+
+
+def _locate_ffprobe(ffmpeg: Path) -> Path:
     beside = ffmpeg.with_name("ffprobe")
     if beside.is_file():
-        ffprobe: Path | None = beside
-    else:
-        found_probe = shutil.which("ffprobe")
-        ffprobe = Path(found_probe) if found_probe else None
-    if ffprobe is None:
+        return beside.absolute()
+    found = shutil.which("ffprobe")
+    if not found:
         raise RenderError("ffprobe not found beside ffmpeg or on PATH")
-    ffprobe = ffprobe.absolute()
+    return Path(found).absolute()
 
+
+def _tool_text(ffmpeg: Path, args: list[str]) -> str:
+    return run_tool(ffmpeg, args).decode("utf-8", errors="replace")
+
+
+def _missing_capabilities(ffmpeg: Path) -> list[str]:
     missing: list[str] = []
-    filters = run_tool(ffmpeg, ["-hide_banner", "-filters"]).decode("utf-8", errors="replace")
+    filters = _tool_text(ffmpeg, ["-hide_banner", "-filters"])
     if not any(len(p) > 1 and p[1] == "ass" for p in (ln.split() for ln in filters.splitlines())):
         missing.append(_ASS_FIX)
-    encoders = run_tool(ffmpeg, ["-hide_banner", "-encoders"]).decode("utf-8", errors="replace")
+    encoders = _tool_text(ffmpeg, ["-hide_banner", "-encoders"])
     names = {p[1] for p in (ln.split() for ln in encoders.splitlines()) if len(p) > 1}
     missing.extend(f"missing encoder {enc}" for enc in _ENCODERS if enc not in names)
+    return missing
+
+
+def find_render_tools(settings: Settings) -> RenderTools:
+    ffmpeg = _locate_ffmpeg(settings)
+    ffprobe = _locate_ffprobe(ffmpeg)
+    missing = _missing_capabilities(ffmpeg)
     if missing:
         raise RenderError(f"{ffmpeg} is not usable for render: " + "; ".join(missing))
-
-    out = run_tool(ffmpeg, ["-version"]).decode("utf-8", errors="replace")
+    out = _tool_text(ffmpeg, ["-version"])
     version = out.splitlines()[0] if out else ""
-    return RenderTools(ffmpeg=ffmpeg, ffprobe=ffprobe, version=version)
+    fingerprint = hashlib.sha256(out.encode("utf-8")).hexdigest()
+    return RenderTools(ffmpeg=ffmpeg, ffprobe=ffprobe, version=version, fingerprint=fingerprint)
 
 
 def _ms(value: object) -> int | None:

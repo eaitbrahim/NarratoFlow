@@ -159,6 +159,12 @@ def test_prepare_refuses_bad_scene_lengths(tmp_path: Path, duration_ms: int, sce
         bench.prepare(tmp_path, duration_ms=duration_ms, scene_ms=scene_ms)
 
 
+@pytest.mark.parametrize("duration_ms", [0, -10_000])
+def test_prepare_refuses_non_positive_duration(tmp_path: Path, duration_ms: int) -> None:
+    with pytest.raises(ValueError, match="positive multiple"):
+        bench.prepare(tmp_path, duration_ms=duration_ms, scene_ms=10_000)
+
+
 def test_prepare_twice_into_the_same_root(tmp_path: Path) -> None:
     bench.prepare(tmp_path, duration_ms=10_000, scene_ms=10_000)
     again = bench.prepare(tmp_path, duration_ms=10_000, scene_ms=10_000)

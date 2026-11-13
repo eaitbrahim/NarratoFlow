@@ -1145,6 +1145,10 @@ def _flip_mirror_safe(w: _World) -> None:
     w.monkeypatch.setattr(w.library, "get_sketch", flipped)
 
 
+def _swap_ffmpeg_build(w: _World) -> None:
+    w.tools = replace(w.tools, fingerprint=w.tools.fingerprint + "-other-build")
+
+
 def _delete_mp4(w: _World) -> None:
     (w.video / "part-01.mp4").unlink()
 
@@ -1193,6 +1197,7 @@ def test_rerun_unchanged_skips_part(world: _World, run_calls: list[int]) -> None
         _edit_line_weight,
         _edit_canvas,
         _flip_mirror_safe,
+        _swap_ffmpeg_build,
         _delete_mp4,
         _truncate_mp4,
         _delete_captions,

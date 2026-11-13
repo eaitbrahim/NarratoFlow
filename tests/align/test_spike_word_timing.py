@@ -589,3 +589,34 @@ def test_match_pause_words_picks_one_word_for_all_estimators() -> None:
     got = spike.match_pause_words({"edge": early, "ctc": late}, [1000.0], window_ms=300)
     assert got == [1]
     assert spike.match_pause_words({"edge": early, "ctc": late}, [5000.0], window_ms=300) == [None]
+
+
+@pytest.mark.parametrize("flag", [True, False])
+@pytest.mark.parametrize("field", ["sentence", "word", "onset_ms"])
+def test_label_entries_reject_json_booleans(tmp_path: Path, field: str, flag: bool) -> None:
+    entry = {"sentence": 1, "word": 1, "onset_ms": 1, field: flag}
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"version": 1, "labels": [entry]}))
+    with pytest.raises(ValueError, match="integers"):
+        spike.load_labels(path)
+
+
+@pytest.mark.parametrize("labels", [5, "x", {"sentence": 1}, None])
+def test_labels_must_be_a_list(tmp_path: Path, labels: object) -> None:
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"version": 1, "labels": labels}))
+    with pytest.raises(ValueError, match="labels"):
+        spike.load_labels(path)
+
+
+@pytest.mark.parametrize("version", ["missing", 2, "1", True])
+def test_manifest_version_must_match(tmp_path: Path, ffmpeg_bin: str, version: object) -> None:
+    _write_capture(tmp_path, ffmpeg_bin)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    if version == "missing":
+        del manifest["version"]
+    else:
+        manifest["version"] = version
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match=r"manifest\.json.*version"):
+        spike.load_captures(tmp_path)

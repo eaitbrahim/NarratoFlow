@@ -436,7 +436,13 @@ def _load_one(directory: Path, index: int, sentence: str) -> Capture:
 def load_captures(directory: Path) -> list[Capture]:
     """Every sentence saved in `directory`; ValueError names the offending file."""
     manifest = _read_json(directory / "manifest.json")
-    sentences = manifest.get("sentences") if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict) or type(manifest.get("version")) is not int:
+        raise ValueError("manifest.json: expected an object with an integer version")
+    if manifest["version"] != CAPTURE_VERSION:
+        raise ValueError(
+            f"manifest.json: version {manifest['version']}, expected {CAPTURE_VERSION}"
+        )
+    sentences = manifest.get("sentences")
     if not isinstance(sentences, list) or not all(isinstance(s, str) for s in sentences):
         raise ValueError("manifest.json: expected a list of sentences")
     return [_load_one(directory, n, s) for n, s in enumerate(sentences, 1)]
@@ -521,7 +527,7 @@ def _label_entry(raw: object, known: int) -> tuple[int, int, int]:
     if not isinstance(raw, dict):
         raise ValueError("labels: each entry must be an object")
     sentence, word, onset = raw.get("sentence"), raw.get("word"), raw.get("onset_ms")
-    if not all(isinstance(v, int) for v in (sentence, word, onset)):
+    if not all(type(v) is int for v in (sentence, word, onset)):  # bool is an int subclass
         raise ValueError(f"labels: sentence, word and onset_ms must be integers: {raw}")
     if not 1 <= sentence <= known:
         raise ValueError(f"labels: unknown sentence {sentence}")
@@ -536,7 +542,10 @@ def load_labels(path: Path, *, known: int = len(SENTENCES)) -> dict[int, list[tu
     if not isinstance(body, dict) or body.get("version") != CAPTURE_VERSION:
         raise ValueError(f"labels: {path.name} must have version {CAPTURE_VERSION}")
     out: dict[int, list[tuple[int, int]]] = {}
-    for raw in body.get("labels", []):
+    entries = body.get("labels", [])
+    if not isinstance(entries, list):
+        raise ValueError("labels: 'labels' must be a list")
+    for raw in entries:
         sentence, word, onset = _label_entry(raw, known)
         out.setdefault(sentence, []).append((word, onset))
     return out

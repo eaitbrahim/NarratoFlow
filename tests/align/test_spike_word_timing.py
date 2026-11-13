@@ -620,3 +620,25 @@ def test_manifest_version_must_match(tmp_path: Path, ffmpeg_bin: str, version: o
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match=r"manifest\.json.*version"):
         spike.load_captures(tmp_path)
+
+
+def test_save_refuses_a_non_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mp3: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_services(monkeypatch, mp3, ctc=False)
+    target = tmp_path / "cap"
+    target.mkdir()
+    stale = target / "02.ctc.json"
+    stale.write_text("[]")
+    assert spike.main(["--save", str(target)]) == 2
+    assert "not empty" in capsys.readouterr().err
+    assert [p.name for p in target.iterdir()] == ["02.ctc.json"]
+
+
+def test_save_accepts_an_existing_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mp3: bytes
+) -> None:
+    _fake_services(monkeypatch, mp3, ctc=False)
+    target = tmp_path / "cap"
+    target.mkdir()
+    assert spike.main(["--save", str(target)]) == 0

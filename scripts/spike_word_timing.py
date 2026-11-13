@@ -720,6 +720,10 @@ def _aligner() -> Any:
 
 
 def _save(directory: Path) -> int:
+    if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+        # Stale NN.ctc.json files would otherwise mix with the new audio.
+        print(f"error: {directory} exists and is not empty; use a new directory", file=sys.stderr)
+        return 2
     if importlib.util.find_spec("edge_tts") is None:
         print(f"missing extra: run {EDGE_HINT}", file=sys.stderr)
         return 2

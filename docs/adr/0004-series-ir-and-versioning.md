@@ -36,7 +36,11 @@ stroke data) that outlive a single run and are read by later stages and by the p
   - There are no migrations. Re-planning or re-building the stage is the upgrade path.
   - Adding an optional field with a default does not bump the version. Example:
     `RenderReport.inputs_key: str | None = None` was added with `REPORT_SCHEMA_VERSION` left at 1;
-    older reports load with `None` and the part is simply re-rendered.
+    older reports load with `None` and the part is simply re-rendered. Likewise
+    `Part.end_card_text: str = ""` (the closing call to action of the final part) was added to
+    `Series` with `SCHEMA_VERSION` left at 2; an older `series.json` loads with `""`, which
+    shows no end card. The same rule holds for stroke data: `docs/strokes-schema.md` says an
+    added optional field does not bump `StrokeSet.version`, a removed or required one does.
   - Removing, renaming or re-typing a field bumps the version.
 
 ## Consequences

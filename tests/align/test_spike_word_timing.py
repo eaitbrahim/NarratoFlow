@@ -464,10 +464,21 @@ def test_from_runs_live_ctc_for_missing_spans(
     _write_capture(tmp_path, ffmpeg_bin, ctc=True)
     (tmp_path / "02.ctc.json").unlink()
     _fake_services(monkeypatch, mp3)
+    aligned: list[str] = []
+    real_align = _FakeAligner.align
+
+    def recording_align(
+        self: _FakeAligner, samples: object, sample_rate: int, text: str, language: Language
+    ) -> list[TimedSpan]:
+        aligned.append(text)
+        return real_align(self, samples, sample_rate, text, language)
+
+    monkeypatch.setattr(_FakeAligner, "align", recording_align)
     assert spike.main(["--from", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "ctc first" in out
     assert "CTC: not available" not in out
+    assert aligned == [SENTENCE_TWO]  # only the sentence without a saved NN.ctc.json
 
 
 def test_from_marks_unmappable_and_unmatched_cells(

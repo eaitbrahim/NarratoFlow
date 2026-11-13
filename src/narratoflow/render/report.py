@@ -86,6 +86,7 @@ class RenderReport(BaseModel):
     verses: list[VerseRender]
     assets: list[RenderAsset]
     warnings: list[str]
+    inputs_key: str | None = None  # `render.build` fingerprint; None = written before it
 
     @model_validator(mode="after")
     def _files(self) -> RenderReport:

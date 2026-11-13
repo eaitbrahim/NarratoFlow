@@ -28,7 +28,7 @@ uv run narratoflow approve series.json                 # review the list, then c
 uv run narratoflow sketch generate series.json --channel channel.toml   # draw or reuse a sketch per scene; keeps progress on errors
 uv run narratoflow sketch resolve series.json s003 --regenerate --channel channel.toml   # or --swap KEY --description TEXT, or --text-card
 uv run narratoflow audio build series.json --channel channel.toml   # narrate, mix and master each part; --part N (repeatable), --out DIR
-uv run narratoflow render series.json --channel channel.toml   # draw and encode each part to an MP4; --part N, --audio DIR, --out DIR, --workers N
+uv run narratoflow render series.json --channel channel.toml   # draw and encode each part to an MP4; --part N, --audio DIR, --out DIR, --workers N, --force
 uv run narratoflow review series.json --channel channel.toml   # optional, paid, asks first: LLM check of each part's text against the content rules; --part N, --yes
 uv run narratoflow publish series.json --channel channel.toml   # free and offline: check each part, export the ones that pass; --part N, --audio DIR, --render DIR, --export DIR
 ```
@@ -75,7 +75,11 @@ channel's pronunciation entries applied (see Pronunciation).
 `render` turns each part's FLAC and timeline into `part-NN.mp4` (1080x1920, 30 fps, H.264 High
 yuv420p, AAC 48 kHz) plus `part-NN.render.json` (frames, scenes, fonts and hand licences, warnings),
 next to the audio unless `--out` is given. Render twice, or with another `--workers`, and the decoded
-frames are identical. It needs an ffmpeg built with libass; on macOS the Homebrew `ffmpeg` has none,
+frames are identical. A re-run skips each part whose render inputs are unchanged (it prints
+`unchanged, kept`): the series text, the part's timeline and FLAC bytes, its sketches' strokes, the
+channel's ink and line weight, the canvas, the fonts and hand, and the ffmpeg version, with an intact
+MP4 and captions file on disk. Pass `--force` to re-render anyway.
+It needs an ffmpeg built with libass; on macOS the Homebrew `ffmpeg` has none,
 so run `brew install ffmpeg-full` and set `NARRATOFLOW_FFMPEG=$(brew --prefix ffmpeg-full)/bin/ffmpeg`.
 `render` refuses a stale timeline (swapped sketch, text-card swap, edited verse): after
 `sketch resolve` run `audio build` again before `render`. A text card says what `--card-text`
@@ -202,7 +206,7 @@ System requirement: `ffmpeg` on `PATH`.
   scenes containing numbers, signs, currency or percent are voiced again once and a paid voice bills them again, so the spend
   can differ from an estimate approved before the upgrade. Changing a pronunciation entry likewise
   re-voices the scenes it touches.
-- `render` re-renders the selected parts deterministically at no cost (after an error it prints the finished parts; pass `--part` for the others).
+- `render` re-renders the selected parts deterministically at no cost, skipping the ones whose inputs are unchanged unless `--force` (after an error it prints the finished parts; pass `--part` for the others).
 - `review` shows an estimate and asks before spending, unless `--yes` is given.
 - `publish` is free.
 

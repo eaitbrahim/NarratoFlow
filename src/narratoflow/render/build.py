@@ -39,6 +39,7 @@ from narratoflow.errors import LibraryError, PlanningError, RenderError, StaleTi
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.library.schemas import SketchRecord, SketchStatus
 from narratoflow.models import AspectRatio, Language, Part, Scene, SceneKind, Series, VisualSource
+from narratoflow.pipeline.cache import cache_key
 from narratoflow.quran.corpus import QuranCorpus, default_corpus
 from narratoflow.render import compose
 from narratoflow.render.assets import FontPack, HandSprite, default_fonts, default_hand
@@ -59,6 +60,11 @@ REBUILD_AUDIO = "rebuild audio: narratoflow audio build"
 LANDSCAPE_WARNING = "16:9 is not rendered in v1"
 AUDIO_TOLERANCE_MS = 30
 CRF = int(X264_ARGS[X264_ARGS.index("-crf") + 1])
+# Part of every part's `inputs_key`. Bump it with any change to what the frames or the
+# encode look like (compositor, camera, layouts, captions styling, x264 flags): a part
+# whose inputs are unchanged is kept as is, so a renderer change without a bump serves
+# stale videos until `render --force`.
+RENDER_INPUTS_VERSION = "1"
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,7 @@ class PartVideo:
 @dataclass
 class RenderResult:
     parts: list[PartVideo] = field(default_factory=list)
+    skipped: list[int] = field(default_factory=list)  # part indexes kept unchanged
 
 
 def _stale(message: str) -> StaleTimelineError:
@@ -325,6 +332,21 @@ def _run_jobs(jobs: list[SceneJob], workers: int | None, part: int) -> None:
             raise
 
 
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sketches_payload(sketches: dict[str, tuple[SketchRecord, StrokeSet]]) -> dict[str, object]:
+    return {
+        scene_id: {
+            "blob": record.blob_hash,
+            "strokes": hashlib.sha256(strokes.to_json()).hexdigest(),
+            "mirror_safe": record.mirror_safe,
+        }
+        for scene_id, (record, strokes) in sketches.items()
+    }
+
+
 def visual_kind(scene: Scene) -> Literal["sketch", "text_card", "verse"]:
     if scene.kind is SceneKind.VERSE:
         return "verse"
@@ -342,6 +364,7 @@ class _Run:
     audio_dir: Path
     out_dir: Path
     workers: int | None
+    force: bool = False
 
     def jobs(self, plan: _PartPlan, work: Path) -> tuple[list[SceneJob], list[SceneRender]]:
         vid = video_id(self.series)
@@ -428,12 +451,76 @@ class _Run:
         )
         return out
 
-    def part(self, plan: _PartPlan) -> PartVideo:
+    def _payload(self, plan: _PartPlan) -> dict[str, object]:
+        """Every input of the part's frames and encode, as JSON (no paths, no worker count)."""
+        n = plan.part.index
+        series = self.series
+        style = self.channel.style
+        return {
+            "series": {
+                "title": series.title,
+                "channel_slug": series.channel_slug,
+                "language": series.language.value,
+            },
+            "part": {"index": n, "count": plan.part.count},
+            "scenes": [s.model_dump(mode="json") for s in plan.part.scenes],
+            "captions_sha256": hashlib.sha256(plan.doc.to_text().encode("utf-8")).hexdigest(),
+            "timeline_sha256": _sha256_file(self.audio_dir / f"part-{n:02d}.timeline.json"),
+            "audio_sha256": _sha256_file(self.audio_dir / plan.timeline.audio_file),
+            "sketches": _sketches_payload(plan.sketches),
+            "verses": [v.model_dump(mode="json") for v in plan.verses],
+            "assets": [a.model_dump(mode="json") for a in self.assets(plan.doc)],
+            "hand": {"id": self.hand.id, "sha256": self.hand.sha256, "tip": list(self.hand.tip)},
+            "ink": style.ink,
+            "line_weight_px": style.line_weight_px,
+            "canvas": [self.canvas.width, self.canvas.height],
+            "crf": CRF,
+            "ffmpeg": self.tools.version,
+            "warnings": self._part_warnings(plan),
+        }
+
+    def inputs_key(self, plan: _PartPlan) -> str:
+        return cache_key("render", RENDER_INPUTS_VERSION, self._payload(plan))
+
+    def _kept(self, plan: _PartPlan, key: str) -> PartVideo | None:
+        """The finished part when its report matches `key` and its files still verify."""
+        video, report_path, captions = self._paths(plan)
+        try:
+            report = RenderReport.load(report_path)
+            if report.inputs_key != key or not (video.is_file() and captions.is_file()):
+                return None
+            verify_mp4(
+                self.tools,
+                video,
+                size=(self.canvas.width, self.canvas.height),
+                frames=report.frames,
+                duration_ms=report.duration_ms,
+            )
+        except RenderError:
+            return None
+        return PartVideo(plan.part.index, video, report_path, report)
+
+    def _paths(self, plan: _PartPlan) -> tuple[Path, Path, Path]:
+        """The part's MP4, report and captions paths."""
+        stem = f"part-{plan.part.index:02d}"
+        return (
+            self.out_dir / f"{stem}.mp4",
+            self.out_dir / f"{stem}.render.json",
+            self.out_dir / f"{stem}.ass",
+        )
+
+    def part(self, plan: _PartPlan) -> tuple[PartVideo, bool]:
+        """The part's video and whether it was kept unchanged (not re-rendered)."""
+        key = self.inputs_key(plan)
+        kept = None if self.force else self._kept(plan, key)
+        if kept is not None:
+            return kept, True
+        return self._render_part(plan, key), False
+
+    def _render_part(self, plan: _PartPlan, key: str) -> PartVideo:
         n = plan.part.index
         stem = f"part-{n:02d}"
-        video = self.out_dir / f"{stem}.mp4"
-        report_path = self.out_dir / f"{stem}.render.json"
-        captions = self.out_dir / f"{stem}.ass"
+        video, report_path, captions = self._paths(plan)
         timeline = plan.timeline
         frames = frame_of(timeline.duration_ms)
         work = self.out_dir / f".render-{stem}"
@@ -468,7 +555,6 @@ class _Run:
                     duration_ms=timeline.duration_ms,
                 )
                 plan.doc.write(captions)
-                warnings = [*self._warnings(), *plan.ass_warnings]
                 report = RenderReport(
                     series_title=self.series.title,
                     channel_slug=self.series.channel_slug,
@@ -489,7 +575,8 @@ class _Run:
                     scenes=scenes,
                     verses=plan.verses,
                     assets=self.assets(plan.doc),
-                    warnings=warnings,
+                    warnings=self._part_warnings(plan),
+                    inputs_key=key,
                 )
                 report.save(report_path)
             except BaseException:
@@ -500,8 +587,9 @@ class _Run:
             shutil.rmtree(work, ignore_errors=True)
         return PartVideo(n, video, report_path, report)
 
-    def _warnings(self) -> list[str]:
-        return [LANDSCAPE_WARNING] if AspectRatio.LANDSCAPE in self.channel.outputs else []
+    def _part_warnings(self, plan: _PartPlan) -> list[str]:
+        landscape = [LANDSCAPE_WARNING] if AspectRatio.LANDSCAPE in self.channel.outputs else []
+        return [*landscape, *plan.ass_warnings]
 
 
 def build_render(
@@ -520,6 +608,7 @@ def build_render(
     fonts: FontPack | None = None,
     hand: HandSprite | None = None,
     on_part: Callable[[PartVideo], None] | None = None,
+    force: bool = False,
 ) -> RenderResult:
     """Render every selected part (`parts`: part indexes; None = all) to `out_dir`.
 
@@ -528,6 +617,10 @@ def build_render(
 
     `workers`: 1 renders inline; None uses one process per core (at most one per
     scene). `canvas` scales the frame (tests use 1/6); the output is 9:16 only.
+
+    A part whose `inputs_key` matches its report, with a verifying MP4 and its captions
+    on disk, is kept as is (`RenderResult.skipped`, `on_part` still called); `force`
+    re-renders every selected part.
     """
     if workers is not None and workers < 1:
         raise ValueError(f"workers must be at least 1, got {workers}")
@@ -563,12 +656,20 @@ def build_render(
         audio_dir=audio_dir,
         out_dir=out_dir,
         workers=workers,
+        force=force,
     )
     result = RenderResult()
     for plan in plans:
-        built = run.part(plan)
+        built, kept = run.part(plan)
         result.parts.append(built)
-        logger.info("render part %d: %d frames", built.index, built.report.frames)
+        if kept:
+            result.skipped.append(built.index)
+        logger.info(
+            "render part %d: %d frames%s",
+            built.index,
+            built.report.frames,
+            " (kept)" if kept else "",
+        )
         if on_part is not None:
             on_part(built)
     return result

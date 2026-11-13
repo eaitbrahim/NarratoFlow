@@ -1,4 +1,4 @@
-# ADR 0003: TTS strategy is a voice chain with edge as the free default
+# ADR 0003: TTS strategy is a voice chain with edge as the default free fallback
 
 **Status:** Accepted, 2026-11-13
 
@@ -29,9 +29,10 @@ Captions also need per-word timings, which not every engine provides.
   `src/narratoflow/pipeline/cache.py`) covers provider, model, voice id, spoken text and, for a
   local model, the model file path, size and mtime.
 - **Word timings.** `_timings` in `narrate.py` uses the provider's spans when they map onto the
-  caption words (`TimingSource.PROVIDER`), else the CTC aligner `CtcAligner`
-  (`src/narratoflow/align/ctc.py`, extra `align`; `ALIGNED`), else an even spread over the clip
-  (`ESTIMATED`, with a warning). Piper reports no spans (`src/narratoflow/tts/piper.py`).
+  spoken words (`tokens(spoken.text)`; `TimingSource.PROVIDER`), else the CTC aligner `CtcAligner`
+  (`src/narratoflow/align/ctc.py`, extra `align`; `ALIGNED`), else a length-weighted spread over
+  the clip's non-silent span (`estimate_timings` in `audio/words.py`; `ESTIMATED`, with a
+  warning). Piper reports no spans (`src/narratoflow/tts/piper.py`).
 - **Terms.** Each part's `VoiceUsed.terms` is a terms id from `voice_terms` (`tts/factory.py`):
   `elevenlabs-terms`, `edge-tts-terms`, `piper-model-license`. These feed the publish rules in
   `src/narratoflow/data/platform_rules.toml`, where all three are `warn`.

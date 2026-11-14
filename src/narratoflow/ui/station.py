@@ -38,7 +38,7 @@ from narratoflow.audio.build import (
     estimate_voice_cost,
 )
 from narratoflow.audio.timeline import PartTimeline
-from narratoflow.channels.config import load_channel
+from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.costs.prices import PriceTable, default_prices
 from narratoflow.errors import PlanningError
 from narratoflow.images import ImageProvider
@@ -391,6 +391,27 @@ def upload_visual(
     return UploadReport(series_sha256(paths.series), record.id)
 
 
+def _regenerate_cost(
+    series: Series, channel: ChannelConfig, scene_id: str, prices: PriceTable
+) -> Decimal:
+    idea_key = check_regenerable(series, scene_id, require_quarantine=False)
+    require_series_channel(series, channel)
+    return regenerate_estimate(idea_key, channel, prices)
+
+
+def regenerate_cost(
+    paths: StationPaths,
+    scene_id: str,
+    *,
+    settings: Settings | None = None,
+    prices: PriceTable | None = None,
+) -> Decimal:
+    """What `regenerate_visual` would spend on this scene (`PlanningError` if it cannot)."""
+    settings = settings if settings is not None else get_settings()
+    prices = prices if prices is not None else default_prices(settings)
+    return _regenerate_cost(_load(paths), load_channel(paths.channel), scene_id, prices)
+
+
 def regenerate_visual(
     paths: StationPaths,
     scene_id: str,
@@ -407,10 +428,8 @@ def regenerate_visual(
     settings = settings if settings is not None else get_settings()
     series = _load(paths, expected_sha256)
     channel = load_channel(paths.channel)
-    idea_key = check_regenerable(series, scene_id, require_quarantine=False)
-    require_series_channel(series, channel)
     prices = prices if prices is not None else default_prices(settings)
-    _confirmed(regenerate_estimate(idea_key, channel, prices), confirm)
+    _confirmed(_regenerate_cost(series, channel, scene_id, prices), confirm)
     try:
         updated, result = regenerate(
             series,

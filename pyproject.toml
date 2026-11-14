@@ -93,6 +93,7 @@ module = [
     "unidecode.*",
     "fontTools.*",
     "svgelements.*",
+    "gradio.*",
 ]
 ignore_missing_imports = true
 

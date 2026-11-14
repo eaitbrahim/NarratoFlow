@@ -18,6 +18,7 @@ from narratoflow.costs.prices import default_prices
 from narratoflow.costs.tracker import require_generation_prices
 from narratoflow.errors import (
     CorruptInputError,
+    ExtraMissingError,
     LibraryError,
     NarratoFlowError,
     PlanningError,
@@ -761,6 +762,33 @@ def publish(
             f"export blocked for part(s) {listed}: "
             "fix every FAIL above and run narratoflow publish again"
         )
+
+
+@app.command()
+def ui(
+    series_json: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    audio: Annotated[
+        Path | None,
+        typer.Option("--audio", help="Audio directory (default: audio/ next to SERIES_JSON)."),
+    ] = None,
+    export: Annotated[
+        Path | None,
+        typer.Option("--export", help="Export directory (default: export/ next to SERIES_JSON)."),
+    ] = None,
+    host: Annotated[str, typer.Option("--host", help="Address to listen on.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to listen on.")] = 7860,
+) -> None:
+    """Open the review station: edit scenes of SERIES_JSON, rebuild one, export 9:16 or 16:9."""
+    try:
+        import gradio as gr
+    except ImportError as exc:
+        raise ExtraMissingError("install the 'ui' extra: uv sync --extra ui") from exc
+    from narratoflow.ui.app import build_app
+    from narratoflow.ui.station import StationPaths
+
+    paths = StationPaths.derive(series_json, channel_toml, audio_dir=audio, export_dir=export)
+    build_app(paths, get_settings(), gr).launch(server_name=host, server_port=port)
 
 
 def main() -> None:

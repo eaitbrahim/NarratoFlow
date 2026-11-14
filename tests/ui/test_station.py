@@ -60,6 +60,7 @@ from narratoflow.ui.station import (
     export,
     list_scenes,
     rebuild_scene,
+    regenerate_cost,
     regenerate_visual,
     scene_view,
     series_sha256,
@@ -525,6 +526,14 @@ def test_regenerate_visual_needs_confirm_then_redraws(world: World) -> None:
     assert len(world.images.requests) == 1
     assert done.generated.generated == 1 and done.sha256 == world.sha()
     assert done.spent_usd == IMAGE_PRICE
+
+
+def test_regenerate_cost_is_the_estimate_without_spending(world: World) -> None:
+    kit = world.kit("settings", "prices")
+    assert regenerate_cost(world.paths, "p1-a", **kit) == IMAGE_PRICE
+    with pytest.raises(PlanningError, match="unknown scene"):
+        regenerate_cost(world.paths, "nope", **kit)
+    assert world.images.requests == []
 
 
 def test_regenerate_visual_saves_the_partial_when_interrupted(world: World) -> None:

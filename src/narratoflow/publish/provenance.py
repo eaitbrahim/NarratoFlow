@@ -12,7 +12,7 @@ from narratoflow.errors import ScriptBlockedError
 from narratoflow.library.schemas import COMPOSITE_SEPARATOR, SketchOrigin, SketchRecord
 from narratoflow.models import SceneKind
 from narratoflow.publish.checks import CheckId, CheckResult, PartInputs, Severity, summarize
-from narratoflow.publish.rules import LicenceRule, Rules
+from narratoflow.publish.rules import LicenceRule, Rules, home_free
 from narratoflow.quran.reciters import ReciterIndex
 from narratoflow.script.source import check_rights
 
@@ -244,7 +244,7 @@ def _unknown_licence_remedy(record: AssetRecord, rules: Rules, licence: str) -> 
     if rules.origin == "packaged":
         return remedy
     return (
-        f"add {licence} to {rules.origin} (merge it with the packaged rules "
+        f"add {licence} to {home_free(rules.origin)} (merge it with the packaged rules "
         f"after an upgrade), or {remedy}"
     )
 

@@ -692,3 +692,16 @@ def test_unknown_voice_licence_says_rebuild_with_an_allowed_voice(
     [reason] = [r for r in _fails(provenance_checks(inputs, rules, EMPTY)) if "voice" in r]
     assert reason.endswith("; rebuild the audio with an allowed voice")
     assert "replace the asset" not in reason
+
+
+def test_unknown_licence_with_an_override_under_home_shows_it_home_free(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    under_home = str(Path.home() / ".narratoflow" / "platform_rules.toml")
+    rules = replace(_voice_pass(tmp_path), origin=under_home)
+    [reason] = _fails(
+        provenance_checks(_with_sketch(inputs, license="mystery-terms"), rules, EMPTY)
+    )
+    assert "add mystery-terms to ~/.narratoflow/platform_rules.toml" in reason
+    assert str(Path.home()) not in reason

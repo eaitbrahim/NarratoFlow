@@ -7,7 +7,7 @@ import pytest
 
 from narratoflow.errors import PublishError
 from narratoflow.publish.checks import Severity
-from narratoflow.publish.rules import default_rules, load_rules, rules_checks
+from narratoflow.publish.rules import default_rules, home_free, load_rules, rules_checks
 from narratoflow.settings import Settings
 
 PACKAGED = Path(__file__).parents[2] / "src" / "narratoflow" / "data" / "platform_rules.toml"
@@ -149,3 +149,11 @@ def test_own_work_licence_passes(tmp_path: Path) -> None:
     assert rules.file.version == "2026-11-14.1"
     own = rules.file.licences.assets["own-work"]
     assert (own.verdict, own.attribution) == ("pass", False)
+
+
+def test_home_free_shows_a_home_prefix_as_tilde() -> None:
+    home = Path.home()
+    assert home_free(str(home / "data" / "rules.toml")) == "~/data/rules.toml"
+    assert home_free(str(home)) == "~"
+    assert home_free("packaged") == "packaged"
+    assert home_free(str(home) + "x/rules.toml") == str(home) + "x/rules.toml"

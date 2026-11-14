@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import tomllib
 from dataclasses import dataclass
@@ -115,6 +116,14 @@ class RulesFile(BaseModel):
             if category.max_severity != "warn":
                 raise ValueError(f"content.{name} must have max_severity = 'warn'")
         return self
+
+
+def home_free(s: str) -> str:
+    """`s` with a leading home-directory prefix shown as ``~``."""
+    home = str(Path.home())
+    if home not in ("", "/") and (s == home or s.startswith(home + os.sep)):
+        return "~" + s[len(home) :]
+    return s
 
 
 @dataclass(frozen=True)

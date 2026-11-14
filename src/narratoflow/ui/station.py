@@ -463,7 +463,10 @@ def regenerate_visual(
 def use_text_card(
     paths: StationPaths, scene_id: str, card_text: str, *, expected_sha256: str
 ) -> str:
-    """Show a text card instead of a sketch; the new sha256."""
+    """Show a text card instead of a sketch; the new sha256. A blank card is refused;
+    `regenerate_visual` brings a sketch back."""
+    if not card_text.strip():
+        raise PlanningError("a text card needs text")
     series = _load(paths, expected_sha256)
     _narration(series, scene_id)
     updated = resolve.use_text_card(series, scene_id, card_text, require_quarantine=False)

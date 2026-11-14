@@ -530,6 +530,26 @@ def test_use_text_card_persists_and_returns_the_new_sha(world: World) -> None:
     assert scene.sketch_id is None and new == world.sha()
 
 
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_use_text_card_refuses_blank_text(world: World, blank: str) -> None:
+    sha = world.sha()
+    with pytest.raises(PlanningError, match="card needs text"):
+        use_text_card(world.paths, "p1-b", blank, expected_sha256=sha)
+    assert world.sha() == sha
+
+
+def test_a_text_card_scene_can_be_redrawn_by_regenerate(world: World) -> None:
+    """Text card was one click with no way back; regenerate is the way back (ICON)."""
+    _fresh_idea(world, "p1-a")
+    sha = use_text_card(world.paths, "p1-a", "Hello", expected_sha256=world.sha())
+    kit = world.kit("settings", "library", "images", "vision", "prices")
+    kit["vision"] = None
+    done = regenerate_visual(world.paths, "p1-a", confirm=True, expected_sha256=sha, **kit)
+    scene = _scenes(world.series())["p1-a"]
+    assert scene.visual.source is VisualSource.ICON and scene.sketch_id is not None
+    assert done.generated.generated == 1
+
+
 def test_regenerate_visual_needs_confirm_then_redraws(world: World) -> None:
     _fresh_idea(world, "p1-a")
     sha = world.sha()

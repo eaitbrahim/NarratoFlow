@@ -273,7 +273,6 @@ def test_regenerate_refuses_scenes_generate_missing_would_skip(
     cases = [
         scene(1, flags=[QUARANTINED_FLAG], kind="verse"),
         scene(1, flags=[QUARANTINED_FLAG], idea_key=None),
-        scene(1, flags=[QUARANTINED_FLAG], visual={"source": "text_card"}),
     ]
     for sc in cases:
         s = series([sc])
@@ -300,8 +299,7 @@ def test_check_regenerable_accepts_only_a_quarantined_drawable_scene() -> None:
     with pytest.raises(PlanningError, match="not quarantined"):
         check_regenerable(quarantined(), "s002")
     text_card = scene(1, flags=[QUARANTINED_FLAG], visual={"source": "text_card"})
-    with pytest.raises(PlanningError, match="nothing to generate"):
-        check_regenerable(series([text_card]), "s001")
+    assert check_regenerable(series([text_card]), "s001") == "thing-1|roman"
 
 
 def _uploaded_scene() -> Series:
@@ -366,9 +364,33 @@ def test_check_regenerable_unflagged_scene_when_allowed() -> None:
     with pytest.raises(PlanningError, match="not quarantined"):
         check_regenerable(s, "s001")
     assert check_regenerable(s, "s001", require_quarantine=False) == "thing-1|roman"
-    text_card = series([scene(1, visual={"source": "text_card"})])
-    with pytest.raises(PlanningError, match="nothing to generate"):
-        check_regenerable(text_card, "s001", require_quarantine=False)
+
+
+def test_regenerate_resets_a_text_card_scene_to_icon(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s = series([scene(1, visual={"source": "text_card"})])
+    assert check_regenerable(s, "s001", require_quarantine=False) == "thing-1|roman"
+    out, result = regenerate(
+        s,
+        "s001",
+        channel,
+        settings,
+        images=FakeImages([img.scroll(size=256)]),
+        vision=None,
+        library=library,
+        prices=PRICES,
+        require_quarantine=False,
+    )
+    [sc] = scenes_of(out)
+    assert sc.visual.source is VisualSource.ICON and sc.sketch_id is not None
+    assert result.generated == 1
+
+
+def test_swap_idea_resets_a_text_card_scene_to_icon() -> None:
+    s = series([scene(1, visual={"source": "text_card"})])
+    [sc] = scenes_of(swap_idea(s, "s001", "lamp|roman", "an oil lamp", require_quarantine=False))
+    assert sc.visual.source is VisualSource.ICON and sc.sketch_id is None
 
 
 def test_swap_idea_unflagged_scene_when_allowed() -> None:

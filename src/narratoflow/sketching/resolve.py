@@ -67,18 +67,14 @@ def _requarantined(partial: Series, scene_id: str) -> Series:
 
 def _drawable_key(scene: Scene) -> str:
     """The idea key of a scene `generate_missing` would draw, else `PlanningError`."""
-    if (
-        scene.kind is SceneKind.VERSE
-        or scene.idea_key is None
-        or scene.visual.source is VisualSource.TEXT_CARD
-    ):
+    if scene.kind is SceneKind.VERSE or scene.idea_key is None:
         raise PlanningError(f"scene {scene.id} has nothing to generate")
     return scene.idea_key
 
 
 def _styled(scene: Scene) -> Scene:
-    """`scene` with an upload given up: a styled re-draw replaces the creator's image."""
-    if scene.visual.source is not VisualSource.IMAGE_TO_SKETCH:
+    """`scene` with an upload or a text card given up: a styled re-draw replaces it."""
+    if scene.visual.source not in (VisualSource.IMAGE_TO_SKETCH, VisualSource.TEXT_CARD):
         return scene
     return scene.model_copy(
         update={"visual": scene.visual.model_copy(update={"source": VisualSource.ICON})}

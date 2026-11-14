@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from narratoflow.errors import ScriptBlockedError
-from narratoflow.library.schemas import SketchOrigin, SketchRecord
+from narratoflow.library.schemas import COMPOSITE_SEPARATOR, SketchOrigin, SketchRecord
 from narratoflow.models import SceneKind
 from narratoflow.publish.checks import CheckId, CheckResult, PartInputs, Severity, summarize
 from narratoflow.publish.rules import LicenceRule, Rules
@@ -201,34 +201,45 @@ def _record_findings(record: AssetRecord, rules: Rules) -> list[CheckResult]:
     table = _licence_table(rules, record)
     if table is None:
         return out
+    # a generated sketch's licence is "<model> AND <lora>": judge each id on its own
+    ids = licence.split(COMPOSITE_SEPARATOR) if record.kind == "sketch" else [licence]
+    for lid in ids:
+        out.extend(_licence_findings(record, rules, table, lid.strip()))
+    return out
+
+
+def _licence_findings(
+    record: AssetRecord, rules: Rules, table: dict[str, LicenceRule], licence: str
+) -> list[CheckResult]:
+    label, scene = _label(record), _scene(record)
     rule = table.get(licence)
     if rule is None:
-        out.append(
+        return [
             _fail(
                 f"{label}: licence {licence} is not allowed by platform rules "
                 f"{rules.file.version}; replace the asset",
                 scene,
             )
-        )
-    elif rule.attribution and not record.attribution.strip():
-        out.append(
+        ]
+    if rule.attribution and not record.attribution.strip():
+        return [
             _fail(
                 f"{label}: {licence} needs an attribution; none is recorded; "
                 "record the attribution or replace the asset",
                 scene,
             )
+        ]
+    if rule.verdict != "warn":
+        return []
+    note = rule.note.strip()
+    return [
+        CheckResult(
+            check=CheckId.ASSET_PROVENANCE,
+            severity=Severity.WARN,
+            reason=f"{label}: licence {licence}" + (f": {note}" if note else ""),
+            scene_id=scene,
         )
-    elif rule.verdict == "warn":
-        out.append(
-            CheckResult(
-                check=CheckId.ASSET_PROVENANCE,
-                severity=Severity.WARN,
-                reason=f"{label}: licence {licence}"
-                + (f": {rule.note.strip()}" if rule.note.strip() else ""),
-                scene_id=scene,
-            )
-        )
-    return out
+    ]
 
 
 def _recitation_findings(inputs: PartInputs, reciters: ReciterIndex) -> list[CheckResult]:

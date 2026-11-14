@@ -19,6 +19,10 @@ class SketchStatus(StrEnum):
     FAILED = "failed"
 
 
+COMPOSITE_SEPARATOR = " AND "
+"""Joins the licence ids of a composite licence (`Apache-2.0 AND MIT`), SPDX style."""
+
+
 class Provenance(BaseModel):
     source: str
     license: str

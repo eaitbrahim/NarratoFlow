@@ -171,7 +171,7 @@ def test_unknown_generated_terms_fail_and_local_model_warns(
     rules = _voice_pass(tmp_path)
     unknown = _with_sketch(inputs, license="mystery-terms")
     [reason] = _fails(provenance_checks(unknown, rules, EMPTY))
-    assert "licence mystery-terms is not allowed by platform rules 2026-11-13.1" in reason
+    assert "licence mystery-terms is not allowed by platform rules 2026-11-13.2" in reason
     local = _with_sketch(inputs, license="local-model-license")
     results = provenance_checks(local, rules, EMPTY)
     assert _fails(results) == []
@@ -533,3 +533,42 @@ def test_warn_licence_with_blank_note_has_no_dangling_colon(
     )
     [warn] = _warns(provenance_checks(inputs, rules, EMPTY))
     assert warn.endswith("licence elevenlabs-terms"), warn
+
+
+@pytest.mark.parametrize(
+    ("licence", "verdict"),
+    [
+        ("Apache-2.0", "pass"),
+        ("MIT", "pass"),
+        ("OpenRAIL++-M", "warn"),
+        ("Apache-2.0 AND OpenRAIL++-M", "warn"),
+        ("Apache-2.0 AND FLUX-1-dev-non-commercial", "fail"),
+    ],
+)
+def test_generated_composite_licence_verdicts(
+    tmp_path: Path,
+    library: SketchLibrary,
+    channel: ChannelConfig,
+    licence: str,
+    verdict: str,
+) -> None:
+    inputs = _with_sketch(make_inputs(tmp_path, library, channel), license=licence)
+    results = provenance_checks(inputs, _voice_pass(tmp_path), EMPTY)
+    fails, warns = _fails(results), _warns(results)
+    assert (len(fails), len(warns)) == {"pass": (0, 0), "warn": (0, 1), "fail": (1, 0)}[verdict]
+    if verdict == "fail":
+        assert "licence FLUX-1-dev-non-commercial is not allowed" in fails[0]
+    if verdict == "warn":
+        assert "OpenRAIL++-M" in warns[0]
+
+
+def test_unknown_composite_part_names_only_that_part(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _with_sketch(
+        make_inputs(tmp_path, library, channel), license="mystery-a AND Apache-2.0 AND mystery-b"
+    )
+    reasons = _fails(provenance_checks(inputs, _voice_pass(tmp_path), EMPTY))
+    assert len(reasons) == 2
+    assert "licence mystery-a is not allowed" in reasons[0]
+    assert "licence mystery-b is not allowed" in reasons[1]

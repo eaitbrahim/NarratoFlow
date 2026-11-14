@@ -231,6 +231,65 @@ copy of that index inside the installed `narratoflow` package, not the repositor
 
 System requirement: `ffmpeg` on `PATH`.
 
+## Text-to-sketch (diffusion)
+
+Optional: a channel can draw new sketches with a local diffusion model instead of OpenAI. Without
+a GPU and without the `diffusion` extra nothing changes: bundled icons, library reuse, uploads,
+text cards and the OpenAI provider all run as before, and no run imports torch unless the channel
+selects `lineart-diffusion` and a scene needs a new sketch. Install with
+`uv sync --extra diffusion`.
+
+```toml
+[style]
+reference_sketch = "ref.png"
+instructions = "Black ink whiteboard sketch, minimal, no shading."
+image_provider = "lineart-diffusion"
+image_model = "black-forest-labs/FLUX.1-schnell"
+
+[style.diffusion]
+model_license = "Apache-2.0"
+model_source = "https://huggingface.co/black-forest-labs/FLUX.1-schnell"
+model_revision = "741f7c3ce8b383c54771c7003378a50191e9efe9"
+seed = 0              # the channel's pin; each drawing also mixes in video, scene and attempt
+steps = 4             # FLUX.1-schnell is distilled: 4 steps, guidance 0.0
+guidance_scale = 0.0
+device = "auto"       # cuda, then mps, then cpu; or "cpu" / "cuda" / "mps"
+# optional LoRA; a licence and a source are then mandatory
+# lora = "owner/name"
+# lora_weight_name = "file.safetensors"
+# lora_revision = "..."
+# lora_license = "Apache-2.0"
+# lora_source = "https://huggingface.co/owner/name"
+# lora_scale = 1.0
+```
+
+Licences. FLUX.1-schnell is Apache-2.0, but its Hugging Face repository is gated: accept the terms
+on the model page and log in to Hugging Face before the first download. The licence ids
+you declare are copied into every sketch's provenance and checked at publish against
+`[licences.generated]` in the platform rules: `Apache-2.0` and `MIT` pass, `OpenRAIL++-M` (SDXL)
+warns because it carries use-based restrictions, and anything else, such as FLUX.1-dev's
+non-commercial licence, fails. With a LoRA the recorded licence is `<model> AND <lora>` and each
+part is checked. No LoRA ships by default: no line-art LoRA with a commercial-safe licence for
+schnell was found (follow-up #161). Changing the seed, model or LoRA gives the channel a new style
+version, so old sketches are not reused for the new look.
+
+Determinism. The seed reaches the generator on a CPU generator, so the same channel, video, scene
+and attempt draw the same image, and a regenerate draws a new one. This is proved offline with an
+injected pipeline; whether the real model is bit-identical on a GPU is not measured, see #160.
+
+VRAM. All figures come from model cards and the diffusers memory guide and are not measured; see
+#160.
+
+| Model | Weights | VRAM | Status |
+|---|---|---|---|
+| FLUX.1-schnell, fully on GPU | about 12B parameters; bf16 weights plus T5-XXL over 30 GB on disk | about 24 GB or more | not measured; see #160 |
+| FLUX.1-schnell with `enable_model_cpu_offload()` | same | lower peak, slower | not measured; see #160 |
+| SDXL fp16 (OpenRAIL++-M, warns at publish) | about 7 GB | about 8 GB typical, 6 GB tight | not measured; see #160 |
+| CPU only (`device = "cpu"`) | same as above | none | works, impractically slow |
+
+`local-diffusion` (image to image, `image_provider = "local-diffusion"`) is a separate provider
+and is unchanged; use `lineart-diffusion` for line art drawn from the text alone.
+
 ## Re-running after an error
 
 - `plan` refuses an existing series file; pass `--replace` to re-plan (this discards its approval, attached sketches and recorded spend).

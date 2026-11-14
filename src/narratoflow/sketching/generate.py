@@ -535,24 +535,48 @@ class _Run:
             self.result.unchecked.append(scene.id)
 
     def _attached_record(self, scene: Scene, key: IdeaKey) -> SketchRecord | None:
-        """The record an earlier run attached, unless it is stale (unknown id, or
-        another style version or idea key), in which case the scene is matched again.
-
-        A creator's upload on an IMAGE_TO_SKETCH scene is never stale: the image is not
-        styled, so any style version and idea key will do."""
-        if scene.sketch_id is None:
-            return None
-        record = self.library.get_sketch(scene.sketch_id)
-        if (
-            record is not None
-            and record.origin is SketchOrigin.UPLOADED
-            and scene.visual.source is VisualSource.IMAGE_TO_SKETCH
-        ):
-            return record
-        if record is None or record.style_version_id != self.version or record.idea_key != str(key):
+        """The record an earlier run attached, unless it is stale (see `usable_record`),
+        in which case the scene is matched again."""
+        record = usable_record(self.library, self.version, scene, key)
+        if record is None and scene.sketch_id is not None:
             logger.info("scene %s: stale sketch id %d; matching again", scene.id, scene.sketch_id)
-            return None
         return record
+
+
+def usable_record(
+    library: SketchLibrary, version: int, scene: Scene, key: IdeaKey
+) -> SketchRecord | None:
+    """The record attached to `scene` when a run would keep it; None when the scene has
+    none or it is stale (unknown id, or another style version or idea key).
+
+    A creator's upload on an IMAGE_TO_SKETCH scene is never stale: the image is not
+    styled, so any style version and idea key will do."""
+    if scene.sketch_id is None:
+        return None
+    record = library.get_sketch(scene.sketch_id)
+    if (
+        record is not None
+        and record.origin is SketchOrigin.UPLOADED
+        and scene.visual.source is VisualSource.IMAGE_TO_SKETCH
+    ):
+        return record
+    if record is None or record.style_version_id != version or record.idea_key != str(key):
+        return None
+    return record
+
+
+def needs_drawing(scene: Scene, channel: ChannelConfig, library: SketchLibrary) -> bool:
+    """Whether `generate_missing` may draw (and pay for) this scene's sketch: it has an
+    idea to draw, is not quarantined or an upload, and has no usable attached record."""
+    idea_key = idea_to_draw(scene)
+    if (
+        idea_key is None
+        or QUARANTINED_FLAG in scene.flags
+        or scene.visual.source is VisualSource.IMAGE_TO_SKETCH
+    ):
+        return False
+    version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
+    return usable_record(library, version, scene, parse_idea_key(idea_key)) is None
 
 
 def require_series_channel(series: Series, channel: ChannelConfig) -> None:

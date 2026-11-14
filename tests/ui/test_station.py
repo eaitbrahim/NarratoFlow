@@ -51,6 +51,8 @@ from narratoflow.render.ffmpeg import RenderTools, probe
 from narratoflow.render.layout import Canvas
 from narratoflow.settings import Settings
 from narratoflow.sketching.generate import QUARANTINED_FLAG
+from narratoflow.sketching.resolve import regenerate
+from narratoflow.sketching.upload import attach_upload
 from narratoflow.tts import VoiceChoice
 from narratoflow.ui import station
 from narratoflow.ui.station import (
@@ -468,6 +470,10 @@ def test_upload_visual_attaches_lineart_and_returns_the_new_sha(world: World) ->
 
 def test_upload_visual_refuses_a_licence_the_rules_do_not_allow(world: World) -> None:
     sha = world.sha()
+    attached = _scenes(world.series())["p1-a"].sketch_id
+    assert attached is not None
+    first_free = attached + 1
+    assert world.library.get_sketch(first_free) is None
     with pytest.raises(PlanningError, match="not allowed"):
         upload_visual(
             world.paths,
@@ -489,6 +495,7 @@ def test_upload_visual_refuses_a_licence_the_rules_do_not_allow(world: World) ->
             **world.kit("settings", "library"),
         )
     assert _scenes(world.series())["p1-b"].visual.source is not VisualSource.IMAGE_TO_SKETCH
+    assert world.library.get_sketch(first_free) is None  # refused and stored nothing
     stale = "0" * 64
     with pytest.raises(PlanningError, match="reload"):
         upload_visual(
@@ -646,6 +653,18 @@ def test_rebuild_draws_a_scene_that_has_no_sketch_after_confirm(world: World) ->
     assert _scenes(world.series())["p1-a"].sketch_id is not None
 
 
+def test_rebuild_estimates_a_redraw_of_a_stale_attached_sketch(world: World) -> None:
+    _fresh_idea(world, "p1-a")  # the attached record no longer matches the idea key
+    sha = world.sha()
+    kit = world.rebuild_kit()
+    with pytest.raises(PlanningError, match="estimated cost") as refused:
+        rebuild_scene(world.paths, "p1-a", confirm=False, expected_sha256=sha, **kit)
+    assert format_usd(IMAGE_PRICE) in str(refused.value)
+    assert world.images.requests == [] and world.sha() == sha
+    report = rebuild_scene(world.paths, "p1-a", confirm=True, expected_sha256=sha, **kit)
+    assert len(world.images.requests) == 1 and report.spent_usd == IMAGE_PRICE
+
+
 def test_rebuild_saves_progress_when_the_image_stage_is_interrupted(world: World) -> None:
     from narratoflow.sketching.generate import GenerationInterruptedError
 
@@ -688,6 +707,81 @@ def test_rebuild_refuses_a_stale_view_and_an_unknown_scene(world: World) -> None
         rebuild_scene(world.paths, "p1-b", confirm=True, expected_sha256="0" * 64, **kit)
     with pytest.raises(PlanningError, match="unknown scene"):
         rebuild_scene(world.paths, "nope", confirm=True, expected_sha256=world.sha(), **kit)
+
+
+def _concurrent_caption(world: World, scene_id: str, caption: str) -> None:
+    """What a second tab saves while a slow stage runs: a caption edit on the file."""
+    edit_text(
+        world.paths,
+        scene_id,
+        tts_text="",
+        caption_text=caption,
+        expected_sha256=world.sha(),
+    )
+
+
+def test_rebuild_refuses_to_overwrite_an_edit_saved_during_the_audio_stage(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def slow_audio(*args: Any, **kw: Any) -> Any:
+        _concurrent_caption(world, "p1-a", "alpha beta")
+        return build_audio(*args, **kw)
+
+    monkeypatch.setattr(station, "build_audio", slow_audio)
+    with pytest.raises(PlanningError, match="reload"):
+        rebuild_scene(
+            world.paths,
+            "p1-b",
+            confirm=True,
+            expected_sha256=world.sha(),
+            **world.rebuild_kit(),
+        )
+    assert _scenes(world.series())["p1-a"].narration.caption_text == "alpha beta"
+
+
+def test_regenerate_refuses_to_overwrite_an_edit_saved_during_the_draw(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fresh_idea(world, "p1-b")
+    real = regenerate
+
+    def slow_draw(*args: Any, **kw: Any) -> Any:
+        _concurrent_caption(world, "p1-a", "alpha beta")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(station, "regenerate", slow_draw)
+    with pytest.raises(PlanningError, match="reload"):
+        regenerate_visual(
+            world.paths,
+            "p1-b",
+            confirm=True,
+            expected_sha256=world.sha(),
+            **world.kit("settings", "library", "images", "vision", "prices"),
+        )
+    assert _scenes(world.series())["p1-a"].narration.caption_text == "alpha beta"
+
+
+def test_upload_refuses_to_overwrite_an_edit_saved_during_the_conversion(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = attach_upload
+
+    def slow_upload(*args: Any, **kw: Any) -> Any:
+        _concurrent_caption(world, "p1-a", "alpha beta")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(station, "attach_upload", slow_upload)
+    with pytest.raises(PlanningError, match="reload"):
+        upload_visual(
+            world.paths,
+            "p1-b",
+            sample_png("camera"),
+            licence="own-work",
+            source="my photo",
+            expected_sha256=world.sha(),
+            **world.kit("settings", "library"),
+        )
+    assert _scenes(world.series())["p1-a"].narration.caption_text == "alpha beta"
 
 
 # -- export --------------------------------------------------------------------

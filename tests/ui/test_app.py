@@ -29,19 +29,19 @@ from narratoflow.ui.station import RebuildReport, StationPaths, series_sha256
 BUTTONS = {
     "Save text": (
         ["Scene", "Vocalized text (tts_text)", "Caption text", "series.json sha256"],
-        10,
+        11,
     ),
-    "Save timing": (["Scene", "Minimum duration (ms)", "Draw fraction", "series.json sha256"], 10),
+    "Save timing": (["Scene", "Minimum duration (ms)", "Draw fraction", "series.json sha256"], 11),
     "Upload": (
         ["Scene", "Your own image", "Licence (own-work for your own)",
          "Where the image came from", "Attribution", "series.json sha256"],
-        10,
+        11,
     ),
-    "Regenerate": (["Scene", "Confirm the estimated cost", "series.json sha256"], 10),
-    "Text card": (["Scene", "Text card text", "series.json sha256"], 10),
-    "Rebuild scene": (["Scene", "Confirm the estimated cost", "series.json sha256"], 10),
-    "Export 9:16": ([], 2),
-    "Export 16:9": ([], 2),
+    "Regenerate": (["Scene", "Confirm the estimated cost", "series.json sha256"], 11),
+    "Text card": (["Scene", "Text card text", "series.json sha256"], 11),
+    "Rebuild scene": (["Scene", "Confirm the estimated cost", "series.json sha256"], 11),
+    "Export 9:16": ([], 3),
+    "Export 16:9": ([], 3),
 }  # fmt: skip
 
 
@@ -108,7 +108,7 @@ def test_app_wires_every_button(paths: StationPaths, settings: Settings) -> None
         assert len(wired.outputs) == outputs, label
     assert isinstance(gr.buttons()["Save text"], Button)
     [load] = demo.loads
-    assert labels(load.inputs) == ["Scene"] and len(load.outputs) == 10
+    assert labels(load.inputs) == ["Scene"] and len(load.outputs) == 11
 
 
 def test_page_load_shows_the_selected_scene(paths: StationPaths, settings: Settings) -> None:
@@ -116,11 +116,39 @@ def test_page_load_shows_the_selected_scene(paths: StationPaths, settings: Setti
     [dropdown] = [c for c in gr.components if c.label == "Scene"]
     assert dropdown.kwargs["choices"] == ["s1", "s2"] and dropdown.kwargs["value"] == "s1"
     [load] = demo.loads
-    source, tts, caption, audio, image, ms, fraction, sha, estimate, status = load.call("s1")
+    source, tts, caption, audio, image, ms, fraction, sha, estimate, status, _confirm = load.call(
+        "s1"
+    )
     assert (source, tts, caption, audio) == ("alpha beta", "", "", None)
     assert image is not None and (ms, fraction) == (3000, 0.65)
     assert sha == series_sha256(paths.series) and status == ""
     assert "$0.04" in estimate  # the history channel has no vision model: the image price
+
+
+def test_page_load_shows_the_rebuild_estimate_too(paths: StationPaths, settings: Settings) -> None:
+    series = Series.load(paths.series)
+    series.parts[0].scenes[1] = series.parts[0].scenes[1].model_copy(update={"sketch_id": None})
+    series.save(paths.series)
+    _, demo = build(paths, settings)
+    estimate = demo.loads[0].call("s2")[8]
+    assert "Regenerating a sketch is estimated at $0.04" in estimate
+    assert "Rebuilding the scene (voice and sketch) is estimated at $0.04" in estimate
+    free = demo.loads[0].call("s1")[8]
+    assert "Rebuilding the scene is free." in free
+
+
+def test_every_handler_unticks_the_confirm_box(
+    paths: StationPaths, settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    gr, demo = build(paths, settings)
+    confirm = next(c for c in gr.components if c.label == "Confirm the estimated cost")
+    every = [*demo.loads, *(w for b in gr.buttons().values() for w in b.wired)]
+    assert every and all(w.outputs[-1] is confirm for w in every)
+    monkeypatch.setattr(station, "export", lambda *a, **k: [])
+    assert click(gr, "Export 9:16")[-1] is False
+    sha = series_sha256(paths.series)
+    assert click(gr, "Save timing", "s1", 4000.0, 0.5, sha)[-1] is False
+    assert demo.loads[0].call("s1")[-1] is False
 
 
 def test_unestimatable_scene_still_loads(paths: StationPaths, settings: Settings) -> None:
@@ -215,9 +243,9 @@ def test_export_buttons_call_both_ratios(
 
     monkeypatch.setattr(station, "export", fake)
     gr, _ = build(paths, settings)
-    files, status = click(gr, "Export 9:16")
+    files, status, _ = click(gr, "Export 9:16")
     assert files == [str(tmp_path / "part-01-PORTRAIT.mp4")] and "part-01-PORTRAIT.mp4" in status
-    files, status = click(gr, "Export 16:9")
+    files, status, _ = click(gr, "Export 16:9")
     assert ratios == [AspectRatio.PORTRAIT, AspectRatio.LANDSCAPE]
     assert files == [] and "nothing" in status and app_module.PILLARBOX_NOTE in status
 

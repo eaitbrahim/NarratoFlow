@@ -41,6 +41,15 @@ def _estimate_text(cost: Decimal) -> str:
     return f"Regenerating a sketch is estimated at {format_usd(cost)}; tick confirm to spend it."
 
 
+def _rebuild_estimate_text(cost: Decimal) -> str:
+    if cost == 0:
+        return "Rebuilding the scene is free."
+    return (
+        f"Rebuilding the scene (voice and sketch) is estimated at {format_usd(cost)}; "
+        "tick confirm to spend it."
+    )
+
+
 def _sketch_image(png: bytes | None) -> Image.Image | None:
     return None if png is None else Image.open(io.BytesIO(png))
 
@@ -53,16 +62,24 @@ def _read(path: str) -> bytes:
 
 
 def _estimate(paths: StationPaths, settings: Settings, scene_id: str) -> str:
-    try:
-        return _estimate_text(station.regenerate_cost(paths, scene_id, settings=settings))
-    except NarratoFlowError as exc:
-        return f"No estimate: {exc}"
+    """Both prices the shared confirm box covers: Regenerate and Rebuild scene."""
+    lines: list[str] = []
+    for label, text, cost in (
+        ("estimate", _estimate_text, station.regenerate_cost),
+        ("rebuild estimate", _rebuild_estimate_text, station.rebuild_cost),
+    ):
+        try:
+            lines.append(text(cost(paths, scene_id, settings=settings)))
+        except NarratoFlowError as exc:
+            lines.append(f"No {label}: {exc}")
+    return "\n\n".join(lines)
 
 
 def _show(
     paths: StationPaths, settings: Settings, scene_id: str, status: str = ""
 ) -> tuple[Any, ...]:
-    """The values of every view component for one scene, then the status line."""
+    """The values of every view component for one scene, the status line, then the
+    confirm box reset to unticked: a confirmation covers one action, never the next."""
     view = station.scene_view(paths, scene_id, settings=settings)
     return (
         view.source_text,
@@ -75,6 +92,7 @@ def _show(
         view.sha256,
         _estimate(paths, settings, scene_id),
         status,
+        False,
     )
 
 
@@ -156,10 +174,10 @@ def _on_rebuild(
 
 def _on_export(
     paths: StationPaths, settings: Settings, ratio: AspectRatio, note: str
-) -> tuple[list[str], str]:
+) -> tuple[list[str], str, bool]:
     files = station.export(paths, ratio, settings=settings)
     names = ", ".join(f.name for f in files) or "nothing (a part failed its checks)"
-    return [str(f) for f in files], f"Exported {names}. {note}".strip()
+    return [str(f) for f in files], f"Exported {names}. {note}".strip(), False
 
 
 def build_app(paths: StationPaths, settings: Settings, gr: Any) -> Any:
@@ -197,7 +215,8 @@ def build_app(paths: StationPaths, settings: Settings, gr: Any) -> Any:
         attribution = gr.Textbox(label="Attribution")
         card_text = gr.Textbox(label="Text card text")
         exports = gr.File(label="Exported files", file_count="multiple", interactive=False)
-        view = [source, tts, caption, audio, image, minimum, fraction, sha, estimate_md, status]
+        view = [source, tts, caption, audio, image, minimum, fraction, sha, estimate_md]
+        view += [status, confirm]
         gr.Button(SAVE_TEXT).click(bind(_on_save_text), [scene, tts, caption, sha], view)
         gr.Button(SAVE_TIMING).click(bind(_on_save_timing), [scene, minimum, fraction, sha], view)
         gr.Button(UPLOAD).click(
@@ -208,10 +227,12 @@ def build_app(paths: StationPaths, settings: Settings, gr: Any) -> Any:
         gr.Button(REBUILD).click(bind(_on_rebuild), [scene, confirm, sha], view)
         with gr.Row():
             gr.Button(EXPORT_PORTRAIT).click(
-                bind(_on_export, AspectRatio.PORTRAIT, ""), [], [exports, status]
+                bind(_on_export, AspectRatio.PORTRAIT, ""), [], [exports, status, confirm]
             )
             gr.Button(EXPORT_LANDSCAPE).click(
-                bind(_on_export, AspectRatio.LANDSCAPE, PILLARBOX_NOTE), [], [exports, status]
+                bind(_on_export, AspectRatio.LANDSCAPE, PILLARBOX_NOTE),
+                [],
+                [exports, status, confirm],
             )
         scene.change(bind(_on_select), [scene], view)
         demo.load(bind(_on_select), [scene], view)

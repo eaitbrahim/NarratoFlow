@@ -66,7 +66,7 @@ from narratoflow.sketching.generate import (
     GenerationInterruptedError,
     GenerationResult,
     generate_missing,
-    idea_to_draw,
+    needs_drawing,
     require_series_channel,
 )
 from narratoflow.sketching.resolve import (
@@ -201,6 +201,17 @@ def _edit(
     series = _load(paths, expected_sha256)
     p, i, scene = _narration(series, scene_id)
     series.parts[p].scenes[i] = change(scene)
+    series.save(paths.series)
+    return series_sha256(paths.series)
+
+
+def _write(paths: StationPaths, series: Series, written_sha256: str) -> str:
+    """Save `series`, refusing (nothing written) when the file is no longer the one this
+    handler last read or wrote; the new sha256. A handler that works for minutes between
+    its load and its save calls this before every save, so an edit another tab or the CLI
+    saved meanwhile is never overwritten (D33)."""
+    if series_sha256(paths.series) != written_sha256:
+        raise PlanningError(SERIES_CHANGED)
     series.save(paths.series)
     return series_sha256(paths.series)
 
@@ -379,8 +390,7 @@ def upload_visual(
         attribution=attribution,
         library=library if library is not None else default_library(settings),
     )
-    updated.save(paths.series)
-    return UploadReport(series_sha256(paths.series), record.id)
+    return UploadReport(_write(paths, updated, expected_sha256), record.id)
 
 
 def _regenerate_cost(
@@ -435,10 +445,9 @@ def regenerate_visual(
             require_quarantine=False,
         )
     except GenerationInterruptedError as exc:
-        exc.partial[0].save(paths.series)
+        _write(paths, exc.partial[0], expected_sha256)
         raise
-    updated.save(paths.series)
-    return RegenerateReport(series_sha256(paths.series), result, result.spent_usd)
+    return RegenerateReport(_write(paths, updated, expected_sha256), result, result.spent_usd)
 
 
 def use_text_card(
@@ -447,11 +456,61 @@ def use_text_card(
     """Show a text card instead of a sketch; the new sha256."""
     series = _load(paths, expected_sha256)
     _narration(series, scene_id)
-    resolve.use_text_card(series, scene_id, card_text, require_quarantine=False).save(paths.series)
-    return series_sha256(paths.series)
+    updated = resolve.use_text_card(series, scene_id, card_text, require_quarantine=False)
+    return _write(paths, updated, expected_sha256)
 
 
 # -- pipeline ------------------------------------------------------------------
+
+
+def _rebuild_cost(
+    series: Series,
+    channel: ChannelConfig,
+    scene_id: str,
+    settings: Settings,
+    paths: StationPaths,
+    *,
+    library: SketchLibrary,
+    voices: list[VoiceChoice] | None,
+    prices: PriceTable,
+) -> Decimal:
+    p, _, scene = find_scene(series, scene_id)
+    estimate = estimate_voice_cost(
+        series,
+        channel,
+        settings,
+        [series.parts[p].index],
+        cache_root=paths.cache_root,
+        voices=voices,
+        prices=prices,
+    )
+    key = scene.idea_key
+    if needs_drawing(scene, channel, library) and key is not None:
+        estimate += regenerate_estimate(key, channel, prices)
+    return estimate
+
+
+def rebuild_cost(
+    paths: StationPaths,
+    scene_id: str,
+    *,
+    settings: Settings | None = None,
+    voices: list[VoiceChoice] | None = None,
+    library: SketchLibrary | None = None,
+    prices: PriceTable | None = None,
+) -> Decimal:
+    """What `rebuild_scene` would spend on this scene (`PlanningError` if it cannot)."""
+    settings = settings if settings is not None else get_settings()
+    return _rebuild_cost(
+        _load(paths),
+        load_channel(paths.channel),
+        scene_id,
+        settings,
+        paths,
+        library=library if library is not None else default_library(settings),
+        voices=voices,
+        prices=prices if prices is not None else default_prices(settings),
+    )
 
 
 def rebuild_scene(
@@ -481,16 +540,14 @@ def rebuild_scene(
     settings = settings if settings is not None else get_settings()
     series = _load(paths, expected_sha256)
     channel = load_channel(paths.channel)
-    p, _, scene = find_scene(series, scene_id)
-    part = series.parts[p].index
     prices = prices if prices is not None else default_prices(settings)
-    estimate = estimate_voice_cost(
-        series, channel, settings, [part], cache_root=paths.cache_root, voices=voices, prices=prices
+    library = library if library is not None else default_library(settings)
+    part = series.parts[find_scene(series, scene_id)[0]].index
+    estimate = _rebuild_cost(
+        series, channel, scene_id, settings, paths, library=library, voices=voices, prices=prices
     )
-    key = idea_to_draw(scene)
-    if scene.sketch_id is None and key is not None:
-        estimate += regenerate_estimate(key, channel, prices)
     _confirmed(estimate, confirm)
+    sha = expected_sha256
     try:
         series, generated = generate_missing(
             series,
@@ -503,9 +560,9 @@ def rebuild_scene(
             only=frozenset({scene_id}),
         )
     except GenerationInterruptedError as exc:
-        exc.partial[0].save(paths.series)
+        _write(paths, exc.partial[0], sha)
         raise
-    series.save(paths.series)
+    sha = _write(paths, series, sha)
     try:
         series, audio = build_audio(
             series,
@@ -521,9 +578,9 @@ def rebuild_scene(
             prices=prices,
         )
     except AudioInterruptedError as exc:
-        exc.partial[0].save(paths.series)
+        _write(paths, exc.partial[0], sha)
         raise
-    series.save(paths.series)
+    sha = _write(paths, series, sha)
     rendered = build_render(
         series,
         channel,
@@ -544,7 +601,7 @@ def rebuild_scene(
         audio_parts=[b.index for b in audio.parts],
         rendered_parts=[b.index for b in rendered.parts if b.index not in rendered.skipped],
         spent_usd=generated.spent_usd + audio.spent_usd,
-        sha256=series_sha256(paths.series),
+        sha256=sha,
     )
 
 

@@ -178,7 +178,7 @@ def test_unknown_generated_terms_fail_and_local_model_warns(
     rules = _voice_pass(tmp_path)
     unknown = _with_sketch(inputs, license="mystery-terms")
     [reason] = _fails(provenance_checks(unknown, rules, EMPTY))
-    assert "licence mystery-terms is not allowed by platform rules 2026-11-14.1" in reason
+    assert "licence mystery-terms is not allowed by platform rules 2026-11-14.2" in reason
     local = _with_sketch(inputs, license="local-model-license")
     results = provenance_checks(local, rules, EMPTY)
     assert _fails(results) == []
@@ -668,7 +668,7 @@ def test_unknown_licence_with_packaged_rules_keeps_the_replace_the_asset_text(
         provenance_checks(_with_sketch(inputs, license="mystery-terms"), rules, EMPTY)
     )
     assert reason.endswith(
-        "licence mystery-terms is not allowed by platform rules 2026-11-14.1; replace the asset"
+        "licence mystery-terms is not allowed by platform rules 2026-11-14.2; replace the asset"
     )
 
 
@@ -678,7 +678,9 @@ def test_unknown_aligner_licence_says_rebuild_without_the_align_extra(
     inputs = _timed(
         make_inputs(tmp_path, library, channel), TimingSource.ALIGNED, TimingSource.ESTIMATED
     )
-    rules = _packaged_origin(_rules(tmp_path, **{"licences.assets.ctc-forced-aligner-terms": None}))
+    rules = _packaged_origin(
+        _rules(tmp_path, **{"licences.aligner.ctc-forced-aligner-terms": None})
+    )
     [reason] = [r for r in _fails(provenance_checks(inputs, rules, EMPTY)) if "aligner" in r]
     assert reason.endswith("; rebuild the audio without the align extra")
     assert "replace the asset" not in reason
@@ -705,3 +707,70 @@ def test_unknown_licence_with_an_override_under_home_shows_it_home_free(
     )
     assert "add mystery-terms to ~/.narratoflow/platform_rules.toml" in reason
     assert str(Path.home()) not in reason
+
+
+def _override_reason(tmp_path: Path, record_kind_inputs: PartInputs, rules: Rules) -> str:
+    [reason] = _fails(provenance_checks(record_kind_inputs, rules, EMPTY))
+    return reason
+
+
+def test_override_remedy_names_generated_table_for_a_sketch(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    reason = _override_reason(
+        tmp_path, _with_sketch(inputs, license="mystery-terms"), _voice_pass(tmp_path)
+    )
+    assert "add mystery-terms to " in reason
+    assert "[licences.generated]" in reason
+    assert "[licences.assets]" not in reason
+
+
+def test_override_remedy_names_assets_table_for_an_icon(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _with_sketch(
+        make_inputs(tmp_path, library, channel),
+        license="mystery-terms",
+        origin=SketchOrigin.BUNDLED,
+    )
+    inputs = _with_sketch(inputs, provider=None)
+    reason = _override_reason(tmp_path, inputs, _voice_pass(tmp_path))
+    assert "icon" in reason
+    assert "[licences.assets]" in reason
+
+
+def test_override_remedy_names_voice_table_for_a_voice(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    rules = _rules(tmp_path, **{"licences.voice.elevenlabs-terms": None})
+    [reason] = [r for r in _fails(provenance_checks(inputs, rules, EMPTY)) if "voice" in r]
+    assert "[licences.voice]" in reason
+
+
+def test_override_remedy_names_aligner_table_for_the_aligner(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _timed(
+        make_inputs(tmp_path, library, channel), TimingSource.ALIGNED, TimingSource.ESTIMATED
+    )
+    rules = _rules(tmp_path, **{"licences.aligner.ctc-forced-aligner-terms": None})
+    [reason] = [r for r in _fails(provenance_checks(inputs, rules, EMPTY)) if "aligner" in r]
+    assert "add ctc-forced-aligner-terms to " in reason
+    assert "[licences.aligner]" in reason
+
+
+def test_an_icon_with_the_aligner_licence_fails_as_unknown(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _with_sketch(
+        make_inputs(tmp_path, library, channel),
+        license="ctc-forced-aligner-terms",
+        provider=None,
+        origin=SketchOrigin.BUNDLED,
+    )
+    rules = _packaged_origin(_voice_pass(tmp_path))
+    [reason] = _fails(provenance_checks(inputs, rules, EMPTY))
+    assert reason.startswith("icon ")
+    assert "licence ctc-forced-aligner-terms is not allowed by platform rules" in reason

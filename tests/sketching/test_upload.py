@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from fixtures import images as img
@@ -225,3 +226,23 @@ def test_check_upload_licence_unknown_id_names_an_override_file(settings: Settin
     override = replace(packaged, origin="/data/platform_rules.toml")
     with pytest.raises(PlanningError, match=r"add mystery-terms to /data/platform_rules\.toml"):
         check_upload_licence(override, "mystery-terms", "")
+
+
+def test_check_upload_licence_refuses_the_aligner_licence(settings: Settings) -> None:
+    with pytest.raises(PlanningError, match="ctc-forced-aligner-terms is not allowed"):
+        check_upload_licence(default_rules(settings), "ctc-forced-aligner-terms", "")
+
+
+def test_upload_remedy_names_the_assets_table(settings: Settings) -> None:
+    override = replace(default_rules(settings), origin="/data/platform_rules.toml")
+    with pytest.raises(PlanningError, match=r"\[licences\.assets\]"):
+        check_upload_licence(override, "mystery-terms", "")
+
+
+def test_upload_remedy_shows_an_override_under_home_as_tilde(settings: Settings) -> None:
+    under_home = str(Path.home() / ".narratoflow" / "platform_rules.toml")
+    override = replace(default_rules(settings), origin=under_home)
+    with pytest.raises(PlanningError) as err:
+        check_upload_licence(override, "mystery-terms", "")
+    assert "~/.narratoflow/platform_rules.toml" in str(err.value)
+    assert str(Path.home()) not in str(err.value)

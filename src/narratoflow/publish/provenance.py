@@ -59,6 +59,7 @@ def _sketch_records(inputs: PartInputs) -> list[AssetRecord]:
             asset_id=str(scene.sketch_id),
             source=p.source,
             license=p.license,
+            attribution=p.attribution,
             provider=p.provider,
             model=p.model,
             created_at=p.created_at,

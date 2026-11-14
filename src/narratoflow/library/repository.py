@@ -158,6 +158,7 @@ class SketchLibrary:
                     Sketch.style_version_id == style_version_id,
                     Sketch.idea_key == key,
                     Sketch.status.in_(_REUSABLE),
+                    Sketch.origin != SketchOrigin.UPLOADED,
                 )
                 .order_by(Sketch.id)
             ).all()
@@ -171,6 +172,7 @@ class SketchLibrary:
                     .where(
                         Sketch.style_version_id == style_version_id,
                         Sketch.status.in_(_REUSABLE),
+                        Sketch.origin != SketchOrigin.UPLOADED,
                     )
                     .distinct()
                     .order_by(Sketch.idea_key)
@@ -184,6 +186,7 @@ class SketchLibrary:
                 .where(
                     Sketch.style_version_id == style_version_id,
                     Sketch.status.in_(_REUSABLE),
+                    Sketch.origin != SketchOrigin.UPLOADED,
                 )
                 .order_by(Sketch.id)
             ).all()
@@ -281,7 +284,8 @@ class SketchLibrary:
             s.commit()
 
     def copy_to(self, sketch_id: int, target_style_version_id: int) -> SketchRecord:
-        """Copy a non-failed sketch into another style version.
+        """Copy a non-failed sketch into another style version (origin COPIED, or
+        UPLOADED when the source is an upload: a creator's image stays theirs).
 
         Returns the existing record if present; its status is authoritative and may be FAILED.
         """
@@ -303,7 +307,7 @@ class SketchLibrary:
                 idea_description=src.idea_description,
                 blob_hash=src.blob_hash,
                 suffix=src.suffix,
-                origin=SketchOrigin.COPIED,
+                origin=src.origin if src.origin is SketchOrigin.UPLOADED else SketchOrigin.COPIED,
                 status=src.status,
                 status_reason=src.status_reason,
                 mirror_safe=src.mirror_safe,

@@ -10,6 +10,7 @@ class SketchOrigin(StrEnum):
     GENERATED = "generated"
     BUNDLED = "bundled"
     COPIED = "copied"
+    UPLOADED = "uploaded"
 
 
 class SketchStatus(StrEnum):
@@ -26,6 +27,7 @@ class Provenance(BaseModel):
     created_at: AwareDatetime
     usage_terms: str | None = None
     copied_from_sketch_id: int | None = None
+    attribution: str = ""
 
 
 class SketchRecord(BaseModel):

@@ -21,7 +21,7 @@ from fixtures.publish import PACKAGED_RULES, dumps_toml, make_inputs, write_rule
 from narratoflow.audio.timeline import AssetUse, RecitationUsed, SfxHit, VoiceUsed
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.library.repository import SketchLibrary
-from narratoflow.library.schemas import SketchOrigin, SketchRecord
+from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord
 from narratoflow.models import RightsBasis, ScriptSource
 from narratoflow.publish.checks import CheckId, CheckResult, PartInputs, Severity
 from narratoflow.publish.provenance import asset_records, provenance_checks, script_checks
@@ -178,6 +178,29 @@ def test_unknown_generated_terms_fail_and_local_model_warns(
     [warn] = _warns(results)
     assert "local-model-license" in warn
     assert "check the local model's licence allows commercial use of outputs" in warn
+
+
+def test_provenance_attribution_default_empty() -> None:
+    old = {"source": "s", "license": "CC0-1.0", "created_at": "2026-01-01T00:00:00Z"}
+    assert Provenance.model_validate(old).attribution == ""
+
+
+def test_upload_cc_by_needs_attribution(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    base = make_inputs(tmp_path, library, channel)
+    rules = _voice_pass(tmp_path)
+    upload = dict(origin=SketchOrigin.UPLOADED, provider=None, model=None, usage_terms=None)
+    bare = _with_sketch(base, source="my photo", license="CC-BY-4.0", **upload)
+    assert next(r.kind for r in asset_records(bare)) == "icon"
+    [reason] = _fails(provenance_checks(bare, rules, EMPTY))
+    assert "CC-BY-4.0 needs an attribution; none is recorded" in reason
+    credited = _with_sketch(
+        base, source="my photo", license="CC-BY-4.0", attribution="Ada, CC BY 4.0", **upload
+    )
+    record = next(r for r in asset_records(credited) if r.kind == "icon")
+    assert record.attribution == "Ada, CC BY 4.0"
+    assert [r.severity for r in provenance_checks(credited, rules, EMPTY)] == [Severity.PASS]
 
 
 def test_icon_cc_by_without_attribution_fails(

@@ -4,6 +4,8 @@
 **Scope:** [`PRD.md`](PRD.md), [`SRD.md`](SRD.md)
 **Verdict:** The vision is clear and the stack is mostly well chosen. Before building, fix several factual and licensing errors (§1) and fill in the missing architecture pieces (§3). Without them the "100% FOSS / zero-cost" promise and the "authentic whiteboard" promise won't hold.
 
+**Status:** Corrections C1–C10 folded into PRD/SRD v1.1 (#1); §5 answered in PRD §8.
+
 ---
 
 ## 1. Corrections (factual / licensing errors)

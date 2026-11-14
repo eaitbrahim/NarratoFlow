@@ -1,0 +1,46 @@
+[
+  {
+    "engine": "identity",
+    "lines": 300,
+    "rejected_lines": 0,
+    "der": 82.77387162621909,
+    "der_no_case": 83.59943411479385,
+    "wer": 99.48964274992494,
+    "wer_no_case": 98.75412788952266,
+    "seconds": 0.03484266600571573,
+    "not_run": null
+  },
+  {
+    "engine": "mishkal",
+    "lines": 300,
+    "rejected_lines": 1,
+    "der": 25.44794738035836,
+    "der_no_case": 18.830840743734843,
+    "wer": 65.02551786250376,
+    "wer_no_case": 38.78715100570399,
+    "seconds": 6.209810333035421,
+    "not_run": null
+  },
+  {
+    "engine": "llm",
+    "lines": 0,
+    "rejected_lines": 0,
+    "der": 0.0,
+    "der_no_case": 0.0,
+    "wer": 0.0,
+    "wer_no_case": 0.0,
+    "seconds": 0.0,
+    "not_run": "not run (paid): needs a budgeted LLM run (ruling R3); see ADR 0005 for the issue"
+  },
+  {
+    "engine": "catt",
+    "lines": 0,
+    "rejected_lines": 0,
+    "der": 0.0,
+    "der_no_case": 0.0,
+    "wer": 0.0,
+    "wer_no_case": 0.0,
+    "seconds": 0.0,
+    "not_run": "not run: catt-tashkeel needs onnxruntime-gpu, which has no macOS arm64 wheel; its weights are a 72 to 86 MB download and its training data may overlap Tashkeela"
+  }
+]

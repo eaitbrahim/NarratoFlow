@@ -1,4 +1,6 @@
 import hashlib
+import re
+from pathlib import Path
 
 import pytest
 
@@ -259,3 +261,17 @@ def test_select_gold_missing_line() -> None:
 def test_mark_after_a_non_letter_is_ignored() -> None:
     gold = f"1{FATHA}{BA}{FATHA}"
     assert B.score_line(gold, f"1{BA}{FATHA}").with_case.letter_errors == 0
+
+
+def test_committed_manifest_is_well_formed() -> None:
+    manifest = B.load_manifest(Path(__file__).parents[2] / "docs/benchmarks/tashkeel-gold.toml")
+    numbers = [n for n, _ in manifest.lines]
+    assert len(numbers) == 300
+    assert numbers == sorted(set(numbers))
+    assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for _, digest in manifest.lines)
+    assert manifest.file_sha256 == (
+        "4e851ff836f0a178abb15d9f4a8bcf92748b77cc0d67030d9fae2fbe698baa12"
+    )
+    assert manifest.commit == "e083579c03e489936200b69d792fd426bb576743"
+    assert "MIT" in manifest.licence_notes
+    assert "GPLv2" in manifest.licence_notes

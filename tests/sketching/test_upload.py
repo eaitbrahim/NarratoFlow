@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -214,3 +215,13 @@ def test_check_upload_licence(settings: Settings) -> None:
         check_upload_licence(rules, "CC-BY-4.0", " ")
     with pytest.raises(PlanningError, match="mystery-terms is not allowed"):
         check_upload_licence(rules, "mystery-terms", "")
+
+
+def test_check_upload_licence_unknown_id_names_an_override_file(settings: Settings) -> None:
+    packaged = default_rules(settings)
+    with pytest.raises(PlanningError) as packaged_err:
+        check_upload_licence(replace(packaged, origin="packaged"), "mystery-terms", "")
+    assert "platform_rules.toml" not in str(packaged_err.value)
+    override = replace(packaged, origin="/data/platform_rules.toml")
+    with pytest.raises(PlanningError, match=r"add mystery-terms to /data/platform_rules\.toml"):
+        check_upload_licence(override, "mystery-terms", "")

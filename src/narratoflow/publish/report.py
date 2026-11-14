@@ -28,7 +28,7 @@ from narratoflow.models import AspectRatio, Part, SceneKind, ScriptSource, Serie
 from narratoflow.money import format_usd
 from narratoflow.publish.checks import CheckResult, PartInputs, Severity, worst
 from narratoflow.publish.provenance import AssetRecord, asset_records
-from narratoflow.publish.rules import Rules
+from narratoflow.publish.rules import Rules, home_free
 from narratoflow.publish.technical import MediaFacts
 from narratoflow.render.variation import Variation
 
@@ -49,14 +49,6 @@ def md_cell(s: str) -> str:
     """`s` safe for a Markdown table cell or line: every newline becomes a space and
     Markdown-significant characters (including `|`) are backslash-escaped."""
     return _MD_SPECIAL.sub(r"\\\1", " ".join(s.splitlines()))
-
-
-def _home_free(s: str) -> str:
-    """`s` with a leading home-directory prefix shown as ``~``."""
-    home = str(Path.home())
-    if home not in ("", "/") and (s == home or s.startswith(home + os.sep)):
-        return "~" + s[len(home) :]
-    return s
 
 
 def _bare(name: str) -> bool:
@@ -453,7 +445,7 @@ def build_report(
         rules_version=rules.file.version,
         rules_checked=rules.file.checked,
         rules_sha256=rules.sha256,
-        rules_origin=_home_free(rules.origin),
+        rules_origin=home_free(rules.origin),
         video_file=render.video_file,
         video_sha256=facts.sha256 if facts is not None else None,
         duration_ms=duration if duration is not None else render.duration_ms,

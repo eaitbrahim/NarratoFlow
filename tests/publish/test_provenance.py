@@ -637,3 +637,71 @@ def test_several_aligned_scenes_collapse_to_one_record(
     results = provenance_checks(inputs, load_rules(PACKAGED_RULES), EMPTY)
     [warn] = [r for r in results if r.severity is Severity.WARN and "aligner" in r.reason]
     assert warn.scene_id is None
+
+
+# -- unknown licence: the remedy depends on the rules origin and the asset kind ---------
+
+
+def _packaged_origin(rules: Rules) -> Rules:
+    return replace(rules, origin="packaged")
+
+
+def test_unknown_licence_with_override_rules_names_the_file_and_says_to_add_the_id(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    rules = _voice_pass(tmp_path)
+    [reason] = _fails(
+        provenance_checks(_with_sketch(inputs, license="mystery-terms"), rules, EMPTY)
+    )
+    assert rules.origin == str((tmp_path / "platform_rules.toml").resolve())
+    assert f"add mystery-terms to {rules.origin}" in reason
+    assert "merge" in reason
+
+
+def test_unknown_licence_with_packaged_rules_keeps_the_replace_the_asset_text(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    rules = _packaged_origin(_voice_pass(tmp_path))
+    [reason] = _fails(
+        provenance_checks(_with_sketch(inputs, license="mystery-terms"), rules, EMPTY)
+    )
+    assert reason.endswith(
+        "licence mystery-terms is not allowed by platform rules 2026-11-14.1; replace the asset"
+    )
+
+
+def test_unknown_aligner_licence_says_rebuild_without_the_align_extra(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _timed(
+        make_inputs(tmp_path, library, channel), TimingSource.ALIGNED, TimingSource.ESTIMATED
+    )
+    rules = _packaged_origin(_rules(tmp_path, **{"licences.assets.ctc-forced-aligner-terms": None}))
+    [reason] = [r for r in _fails(provenance_checks(inputs, rules, EMPTY)) if "aligner" in r]
+    assert reason.endswith("; rebuild the audio without the align extra")
+    assert "replace the asset" not in reason
+
+
+def test_unknown_voice_licence_says_rebuild_with_an_allowed_voice(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    rules = _packaged_origin(_rules(tmp_path, **{"licences.voice.elevenlabs-terms": None}))
+    [reason] = [r for r in _fails(provenance_checks(inputs, rules, EMPTY)) if "voice" in r]
+    assert reason.endswith("; rebuild the audio with an allowed voice")
+    assert "replace the asset" not in reason
+
+
+def test_unknown_licence_with_an_override_under_home_shows_it_home_free(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = make_inputs(tmp_path, library, channel)
+    under_home = str(Path.home() / ".narratoflow" / "platform_rules.toml")
+    rules = replace(_voice_pass(tmp_path), origin=under_home)
+    [reason] = _fails(
+        provenance_checks(_with_sketch(inputs, license="mystery-terms"), rules, EMPTY)
+    )
+    assert "add mystery-terms to ~/.narratoflow/platform_rules.toml" in reason
+    assert str(Path.home()) not in reason

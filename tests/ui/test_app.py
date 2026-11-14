@@ -259,6 +259,20 @@ def test_callback_errors_become_gr_error(paths: StationPaths, settings: Settings
         demo.loads[0].call("nope")
 
 
+@pytest.mark.parametrize(
+    ("ms", "fraction"),
+    [(None, 0.5), (float("nan"), 0.5), (float("inf"), 0.5), (4000.0, None), (4000.0, float("nan"))],
+)
+def test_blank_timing_numbers_become_a_gradio_error(
+    paths: StationPaths, settings: Settings, ms: float | None, fraction: float | None
+) -> None:
+    gr, _ = build(paths, settings)
+    sha = series_sha256(paths.series)
+    with pytest.raises(FakeError, match="number"):
+        click(gr, "Save timing", "s1", ms, fraction, sha)
+    assert series_sha256(paths.series) == sha
+
+
 def test_page_with_no_scenes_still_builds(paths: StationPaths, settings: Settings) -> None:
     Series.load(paths.series).model_copy(update={"parts": []}).save(paths.series)
     gr, _ = build(paths, settings)

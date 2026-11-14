@@ -110,10 +110,15 @@ def _on_save_text(
 
 
 def _on_save_timing(
-    paths: StationPaths, settings: Settings, scene_id: str, ms: float, fraction: float, sha: str
+    paths: StationPaths,
+    settings: Settings,
+    scene_id: str,
+    ms: float | None,
+    fraction: float | None,
+    sha: str,
 ) -> tuple[Any, ...]:
     station.edit_timing(
-        paths, scene_id, min_duration_ms=int(ms), draw_fraction=fraction, expected_sha256=sha
+        paths, scene_id, min_duration_ms=ms, draw_fraction=fraction, expected_sha256=sha
     )
     return _show(paths, settings, scene_id, "Timing saved. Rebuild the scene to apply it.")
 

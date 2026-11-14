@@ -405,6 +405,19 @@ def test_edit_timing_bounds(world: World) -> None:
     assert _scenes(world.series())["p1-a"].min_duration_ms == 60000
 
 
+@pytest.mark.parametrize("blank", [None, float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("which", ["min_duration_ms", "draw_fraction"])
+def test_edit_timing_refuses_a_cleared_or_non_finite_number(
+    world: World, which: str, blank: float | None
+) -> None:
+    """A cleared gr.Number arrives as None: a plain PlanningError, not a TypeError."""
+    sha = world.sha()
+    numbers: dict[str, Any] = {"min_duration_ms": 2000, "draw_fraction": 0.5, which: blank}
+    with pytest.raises(PlanningError, match="number"):
+        edit_timing(world.paths, "p1-a", expected_sha256=sha, **numbers)
+    assert world.sha() == sha
+
+
 def test_edits_refuse_unknown_and_verse_scenes(world: World) -> None:
     sha = world.sha()
     with pytest.raises(PlanningError, match="unknown scene"):

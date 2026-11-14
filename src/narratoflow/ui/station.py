@@ -16,6 +16,7 @@ parts are never passed to a stage, so their files are untouched.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import tempfile
 import wave
@@ -333,15 +334,24 @@ def edit_text(
     return _edit(paths, scene_id, expected_sha256, change)
 
 
+def _finite(value: float | None, name: str) -> float:
+    """A `gr.Number` cleared in the page arrives as None; NaN and infinity are as unusable."""
+    if value is None or not math.isfinite(value):
+        raise PlanningError(f"{name} needs a number")
+    return value
+
+
 def edit_timing(
     paths: StationPaths,
     scene_id: str,
     *,
-    min_duration_ms: int,
-    draw_fraction: float,
+    min_duration_ms: float | None,
+    draw_fraction: float | None,
     expected_sha256: str,
 ) -> str:
     """Set the scene's minimum duration (1000..60000 ms) and draw fraction (0.1..1.0)."""
+    min_duration_ms = int(_finite(min_duration_ms, "minimum duration"))
+    draw_fraction = _finite(draw_fraction, "draw fraction")
     if not MIN_DURATION_MS <= min_duration_ms <= MAX_DURATION_MS:
         raise PlanningError(
             f"minimum duration must be {MIN_DURATION_MS}..{MAX_DURATION_MS} ms, "

@@ -16,7 +16,7 @@
 | C5 | Whisper word alignment, sub-millisecond | Provider spans, else CTC forced alignment, else an estimate | 4 |
 | C6 | A reshaper and a bidi package before `.ass` | Logical-order Unicode into libass; neither is used | 4, 7 |
 | C7 | Potrace outlines animated by dash offset | Centerline strokes ordered for the reveal (`visuals/strokes.py`) | 4 |
-| C8 | SDXL Turbo + LineArt ControlNet | `lineart-diffusion`: FLUX.1-schnell by default, an optional LoRA, pinned seed; "open-weights" | 4, 8 |
+| C8 | SDXL Turbo + LineArt ControlNet | `lineart-diffusion`: the documented FLUX.1-schnell (`style.image_model` is required, no code default), an optional LoRA, pinned seed; "open-weights" | 4, 8 |
 | C9 | Mishkal validates classical grammar | Dialect is flagged by CAMeL DID; the diacritizer is benchmarked (ADR 0005) | 4 |
 | C10 | `moviepy>=1.0.3`, unused and missing packages | Extras in `pyproject.toml`, `uv.lock`, `uv sync --locked` in CI | 7 |
 
@@ -121,9 +121,9 @@ The provider-selecting channel keys are `voice.provider` and `voice.fallback`, `
 - The voice **cache** key covers provider, model, voice id, spoken text and, for a local model, the model file's path, size and mtime (`pipeline/cache.py`, `_key` in `narrate.py`). `estimate_voice_cost` (`audio/build.py`) prices only the uncached characters (added with the review station).
 
 ### 4.3 Visuals (C7, C8)
-- **Source choice per scene:** a bundled Tabler icon, a reused library sketch, a generated sketch, an upload, or a text card. Candidates come from idea keys (`library/keys.py`, `planning/candidates.py`); `generate_missing` (`sketching/generate.py`) attaches, generates or quarantines.
+- **Source choice per scene:** a bundled Tabler icon, a reused library sketch, a generated sketch, an upload, or a text card. Candidates come from idea keys (`library/keys.py`, `library/candidates.py`); `generate_missing` (`sketching/generate.py`) attaches, generates or quarantines.
 - **Uploads (#28, PR #158).** `sketch upload` (`cli.py`) calls `attach_upload` (`sketching/upload.py`): the image is decoded, size-checked, turned into line art by `xdog_lineart` (`visuals/lineart.py`, scikit-image), density-checked, stored as an `uploaded` record with the creator's licence (validated against `[licences.assets]`; `own-work` for the creator's own) and source, and attached to the scene with `visual.source = image_to_sketch`. A refused image stores nothing. It is free (no vision call, status `unchecked`). `generate_missing` never generates for such a scene.
-- **Diffusion (#29, PR #162).** `LineArtDiffusionProvider` (`visuals/diffusion.py`) draws from text with a pinned model, an optional LoRA and a seed; the look comes from the pins, not a ControlNet. The pipeline is injected and built lazily, so no run imports torch or diffusers unless the channel selects `lineart-diffusion` and a scene needs a new sketch. Pins are the channel's `[style.diffusion]` table (`DiffusionStyle` in `channels/config.py`): model licence and source (mandatory), model revision, LoRA with its own licence and source, `lora_scale`, `seed`, `steps` (4), `guidance_scale` (0.0), `size` (1024), `device` (`auto`, `cpu`, `cuda`, `mps`). The default model is `black-forest-labs/FLUX.1-schnell` (Apache-2.0, a gated repository). Each drawing mixes the channel seed with the video, scene and attempt. Licences are copied into provenance and a composite is written `<model> AND <lora>`; publish checks them against `[licences.generated]` (`Apache-2.0`, `MIT` pass; `OpenRAIL++-M` warns; anything else, such as FLUX.1-dev, fails). No LoRA ships (#161).
+- **Diffusion (#29, PR #162).** `LineArtDiffusionProvider` (`visuals/diffusion.py`) draws from text with a pinned model, an optional LoRA and a seed; the look comes from the pins, not a ControlNet. The pipeline is injected and built lazily, so no run imports torch or diffusers unless the channel selects `lineart-diffusion` and a scene needs a new sketch. Pins are the channel's `[style.diffusion]` table (`DiffusionStyle` in `channels/config.py`): model licence and source (mandatory), model revision, LoRA with its own licence and source, `lora_scale`, `seed`, `steps` (4), `guidance_scale` (0.0), `size` (1024), `device` (`auto`, `cpu`, `cuda`, `mps`). The documented model (README) is `black-forest-labs/FLUX.1-schnell` (Apache-2.0, a gated repository); `style.image_model` is required and has no code default. Each drawing mixes the channel seed with the video, scene and attempt. Licences are copied into provenance and a composite is written `<model> AND <lora>`; publish checks them against `[licences.generated]` (`Apache-2.0`, `MIT` pass; `OpenRAIL++-M` warns; anything else, such as FLUX.1-dev, fails). No LoRA ships (#161).
 - **VRAM (not measured; figures from model cards, see #160):**
 
   | Model | VRAM | Status |
@@ -171,7 +171,7 @@ The provider-selecting channel keys are `voice.provider` and `voice.fallback`, `
 | NFR-5 | **Minimum hardware.** The default path is CPU-only (ADR 0002). **Recommendation, owner to confirm:** a 4-core CPU, 8 GB RAM, ffmpeg with libass; NFR-1 re-measured there. The `lineart-diffusion` path needs a GPU whose VRAM is not measured (#160). | PRD 8, answer 4 |
 | NFR-6 | **Disk.** Not budgeted by the code. **Recommendation, owner to confirm:** budget per part for its FLAC, lossless intermediate segments and MP4; measure on the benchmark part before setting a figure. | none yet |
 | NFR-7 | **No network in tests**, no GPU in tests, no paid call in tests. | `tests/`, CI (`.github/workflows/ci.yml`) |
-| NFR-8 | **Quality gate.** CI runs `uv sync --locked`, Ruff, the format check, mypy (strict) and the test suite with a coverage report; the delivery gate holds the coverage total at 97% or more. | `pyproject.toml`, CI |
+| NFR-8 | **Quality gate.** CI runs `uv sync --locked`, Ruff, the format check, mypy (strict) and the test suite with a coverage report; CI does not enforce a coverage threshold (no `fail_under`); the delivery gate in the plan holds the coverage total at 97% or more. | `.github/workflows/ci.yml`, the plan's delivery gate |
 | NFR-9 | **Privacy.** Publish check reasons never carry the user's directories (`bare_paths` in `publish/checks.py`); a voice retry is logged without the text. | `tests/publish/test_checks.py`, `test_retry_logged_without_text` (`tests/tts/test_retry.py`) |
 
 ---
@@ -182,7 +182,7 @@ Each row is a trigger, what the system does, the error raised or flag set, and a
 
 | Trigger | Behaviour | Error or flag | Test |
 | :--- | :--- | :--- | :--- |
-| edge outage or a failing voice | retry a transient error up to 3 times; then re-voice the whole part with the next voice in `voice.fallback` (Piper); the reason is recorded | `TransientProviderError`, then `fallback_from` and `fallback_reasons` in the timeline | `test_primary_failure_revoices_whole_part_and_records_fallback`, `tests/tts/test_retry.py` |
+| edge outage or a failing voice | retry a transient error up to three attempts; then re-voice the whole part with the next voice in `voice.fallback` (Piper); the reason is recorded | `TransientProviderError`, then `fallback_from` and `fallback_reasons` in the timeline | `test_primary_failure_revoices_whole_part_and_records_fallback`, `tests/tts/test_retry.py` |
 | voice extra not installed | counts as a failed voice and the chain moves on | `ExtraMissingError` naming the extra | `test_missing_extra_counts_as_failed_voice` |
 | a reciter recording cannot be resolved | no TTS fallback for a verse | `ReciterError` | `test_recitation_provider_error_never_falls_back_to_tts` |
 | invalid or rewritten LLM output | one retry with a note naming the offset or violation; then the stage fails | `SegmentationError` (segmenting), `PlanningError` (idea rejected) | `test_rewrite_rejected_after_one_retry`, `test_rewrite_fixed_on_retry_names_offset` |
@@ -191,7 +191,7 @@ Each row is a trigger, what the system does, the error raised or flag set, and a
 | a diacritizer changes the words | keep the source text | flag `tashkeel_rejected` | `test_word_change_rejected_and_flagged` |
 | a sketch or audio timeline no longer matches the library | refuse before any frame; the message says to rebuild the audio | `StaleTimelineError` | `test_stale_sketch_id_refused_before_any_frame` |
 | an optional extra is missing | refuse with an install hint | `ExtraMissingError` (`AlignerUnavailableError` for the aligner) | `test_missing_extra_raises_aligner_unavailable`, `test_piper_missing_extra` |
-| a series, timeline, report or stroke file has another schema version | refuse; re-plan or rebuild | `PlanningError`, `StrokeDataError` | `tests/test_models.py` |
+| a series, timeline, report or stroke file has another schema version | refuse; re-plan or rebuild | `PlanningError` (project, series), `AudioError` (timeline, `audio/timeline.py`), `RenderError` (render report, `render/report.py`), `PublishError` (publish report and series summary, `publish/report.py`), `StrokeDataError` (stroke file, field `version`, `visuals/strokes.py`) | `test_project_load_rejects_other_or_missing_schema`, `test_load_rejects_non_int_schema_version` (`tests/test_models.py`); `test_load_unknown_version_raises_audio_error` (`tests/audio/test_timeline.py`); `test_report_roundtrip_and_strict` (`tests/render/test_report.py`); `test_report_roundtrip_and_strict`, `test_summary_marks_unchecked_and_earlier_parts` (`tests/publish/test_report.py`); `test_from_json_rejects_bad_data` (`tests/visuals/test_strokes.py`) |
 | an in-copyright third-party script | block before any spend | `ScriptBlockedError` | `tests/planning/test_pipeline.py` |
 | ffmpeg lacks libass or does not join Arabic | refuse with an install hint | `RenderError` | `test_check_arabic_shaping_rejects_unjoined` (`tests/render/test_assets.py`) |
 | a part fails a publish check | block that part | `PublishCheckFailedError` | `tests/publish` |
@@ -202,7 +202,7 @@ Each row is a trigger, what the system does, the error raised or flag set, and a
 ## 7. Dependency policy (C10)
 
 - **Extras** in `pyproject.toml`: `arabic` (`mishkal`, `camel-tools`), `tts-edge` (`edge-tts`), `tts-local` (`piper-tts`), `align` (`ctc-forced-aligner`, `unidecode`), `diffusion` (`torch`, `diffusers`, `transformers`), `ui` (`gradio`), and `all`. The base install needs none of them and imports none of them.
-- **Locked.** `uv.lock` is committed and CI runs `uv sync --locked`; a PR runs `uv lock --check`.
+- **Locked.** `uv.lock` is committed and CI runs `uv sync --locked`; `uv lock --check` is part of the delivery gate, not CI.
 - **No unused dependencies.** `controlnet-aux` was removed with the diffusion provider.
 - **Not used:** MoviePy (the compositor is NumPy/Pillow and ffmpeg), faster-whisper (alignment is provider spans, CTC or an estimate), Streamlit (the station is Gradio), cairosvg (icons are rasterized at fetch time), `arabic-reshaper` and `python-bidi` (libass shapes), Remotion (source-available).
 - **System tools:** ffmpeg and ffprobe built with libass and HarfBuzz (`NARRATOFLOW_FFMPEG` overrides the path), found by `render/ffmpeg.py`.
@@ -256,7 +256,7 @@ Every runtime dependency, extra, model and bundled asset. "Commercial-safe" is *
 
 | Component | Licence | Commercial-safe | Source checked | Date |
 | :--- | :--- | :--- | :--- | :--- |
-| FLUX.1-schnell (default `lineart-diffusion` model) | Apache-2.0 (gated repository: accept the terms on Hugging Face) | yes (`Apache-2.0` passes at publish) | https://huggingface.co/api/models/black-forest-labs/FLUX.1-schnell | 2026-11-13 |
+| FLUX.1-schnell (documented `lineart-diffusion` model, README) | Apache-2.0 (gated repository: accept the terms on Hugging Face) | yes (`Apache-2.0` passes at publish) | https://huggingface.co/api/models/black-forest-labs/FLUX.1-schnell | 2026-11-13 |
 | FLUX.1-dev | FLUX.1 [dev] Non-Commercial License | no (fails at publish) | https://huggingface.co/api/models/black-forest-labs/FLUX.1-dev | 2026-11-13 |
 | Stable Diffusion XL base 1.0 | OpenRAIL++-M (open-weights, use-based restrictions) | warn (`OpenRAIL++-M` warns at publish) | https://huggingface.co/api/models/stabilityai/stable-diffusion-xl-base-1.0 | 2026-11-13 |
 | Line-art LoRA for FLUX.1-schnell | none ships; a commercial-safe one was not found (#161) | n/a | README | 2026-11-13 |

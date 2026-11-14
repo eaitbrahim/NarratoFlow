@@ -11,7 +11,14 @@ from PIL import Image
 
 from narratoflow.errors import SketchRejectedError
 from narratoflow.visuals import lineart
-from narratoflow.visuals.lineart import binarize, check_density
+from narratoflow.visuals.lineart import (
+    binarize,
+    check_density,
+    ink_to_png,
+    xdog_lineart,
+)
+from narratoflow.visuals.strokes import PACING_STROKES, StrokeSet, extract_strokes
+from visuals.lineart_samples import SAMPLES, sample_png
 
 
 def test_line_drawing_passes() -> None:
@@ -268,3 +275,92 @@ def test_tiny_image_has_no_hatch_frequencies() -> None:
     assert report.dense_tiles == 64
     assert report.block_periodicity > 0.0
     assert report.second_orientation_ratio == 0.0
+
+
+@pytest.mark.parametrize("name", [sample.name for sample in SAMPLES])
+def test_xdog_sample_set_feeds_strokes(name: str) -> None:
+    raw = sample_png(name)
+    mask = xdog_lineart(raw)
+    png = ink_to_png(mask)
+    with Image.open(io.BytesIO(png)) as image:
+        assert image.mode == "L"
+        pixels = np.asarray(image)
+    assert set(np.unique(pixels).tolist()) <= {0, 255}
+    if name == "camera":
+        assert pixels[0, 0] == 255
+    assert np.array_equal(binarize(png), mask)
+    assert check_density(mask).ok
+    strokes = extract_strokes(mask)
+    assert 1 <= len(strokes.strokes) <= PACING_STROKES
+    assert StrokeSet.from_json(strokes.to_json()) == strokes
+    assert ink_to_png(xdog_lineart(raw)) == png
+
+
+@pytest.mark.parametrize("colour", [255, 0, 128])
+def test_xdog_flat_images_are_empty(colour: int) -> None:
+    flat = Image.new("L", (256, 256), colour)
+    buffer = io.BytesIO()
+    flat.save(buffer, format="PNG")
+    with pytest.raises(SketchRejectedError, match=r"^empty$"):
+        xdog_lineart(buffer.getvalue())
+
+
+@pytest.mark.parametrize(("size", "message"), [((16, 16), "too small"), ((9000, 10), "too large")])
+def test_xdog_size_limits(size: tuple[int, int], message: str) -> None:
+    buffer = io.BytesIO()
+    Image.new("L", size, 255).save(buffer, format="PNG")
+    with pytest.raises(SketchRejectedError, match=message):
+        xdog_lineart(buffer.getvalue())
+
+
+def test_xdog_undecodable() -> None:
+    with pytest.raises(SketchRejectedError, match=r"^undecodable image$"):
+        xdog_lineart(b"not an image")
+
+
+def test_xdog_rgba_composited_on_white() -> None:
+    mask = xdog_lineart(images.line_drawing_scroll_rgba())
+    assert mask.any()
+    assert check_density(mask).ok
+
+
+def test_xdog_upscales_small_images() -> None:
+    small = Image.open(io.BytesIO(images.line_drawing_scroll())).convert("L").resize((100, 80))
+    buffer = io.BytesIO()
+    small.save(buffer, format="PNG")
+    mask = xdog_lineart(buffer.getvalue())
+    assert max(mask.shape) == lineart.XDOG_LONG_SIDE_PX
+
+
+def test_ink_to_png_rejects_non_2d() -> None:
+    with pytest.raises(ValueError, match="2-D"):
+        ink_to_png(np.zeros((4, 4, 3), bool))
+
+
+def test_xdog_sample_licences_recorded() -> None:
+    assert len(SAMPLES) == 7
+    for sample in SAMPLES:
+        assert sample.licence in {"CC0-1.0", "public-domain"}
+        assert sample.source
+
+
+def test_xdog_smooth_gradient_has_no_edges() -> None:
+    ramp = np.tile(np.linspace(0, 255, 256).astype(np.uint8), (256, 1))
+    buffer = io.BytesIO()
+    Image.fromarray(ramp).save(buffer, format="PNG")
+    with pytest.raises(SketchRejectedError, match=r"^empty$"):
+        xdog_lineart(buffer.getvalue())
+
+
+def test_xdog_decompression_bomb_is_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    buffer = io.BytesIO()
+    Image.new("L", (400, 400), 255).save(buffer, format="PNG")
+    with pytest.raises(SketchRejectedError, match=r"^too large$"):
+        xdog_lineart(buffer.getvalue())
+
+
+def test_xdog_image_at_working_size_is_not_resized() -> None:
+    scroll = Image.open(io.BytesIO(images.line_drawing_scroll())).convert("L")
+    assert max(scroll.size) == lineart.XDOG_LONG_SIDE_PX
+    assert xdog_lineart(images.line_drawing_scroll()).shape == scroll.size[::-1]

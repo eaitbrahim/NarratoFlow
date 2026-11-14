@@ -384,16 +384,24 @@ def test_lineart_provider_needs_diffusion_table(channel_file: Path) -> None:
         load_channel(channel_file)
 
 
+# the fixture's ref.png is encoded by Pillow, whose bytes differ across platforms (zlib);
+# fixed bytes keep the pinned fingerprint the same on every machine
+_FIXED_REFERENCE = b"reference sketch, fixed bytes"
+_FINGERPRINT_BEFORE_DIFFUSION = "d42b24caebdae25e"
+
+
 def test_fingerprint_unchanged_without_diffusion(channel_file: Path) -> None:
     # pinned before the diffusion field existed: existing channels keep their style version
-    assert style_fingerprint(load_channel(channel_file).style) == "fdeb268808ab7569"
+    (channel_file.parent / "ref.png").write_bytes(_FIXED_REFERENCE)
+    assert style_fingerprint(load_channel(channel_file).style) == _FINGERPRINT_BEFORE_DIFFUSION
 
 
 def test_fingerprint_changes_with_seed_and_lora(channel_file: Path) -> None:
+    (channel_file.parent / "ref.png").write_bytes(_FIXED_REFERENCE)
     style = load_channel(_with_diffusion(channel_file)).style
     assert style.diffusion is not None
     base = style_fingerprint(style)
-    assert base != "fdeb268808ab7569"
+    assert base != _FINGERPRINT_BEFORE_DIFFUSION
     lora = {"lora": "a/b", "lora_license": "MIT", "lora_source": "s"}
     for change in ({"seed": 5}, {"lora_scale": 0.5}, lora):
         other = style.model_copy(update={"diffusion": style.diffusion.model_copy(update=change)})

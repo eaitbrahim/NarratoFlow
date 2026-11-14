@@ -128,7 +128,9 @@ pronunciation entries show the stale-review WARN once, until `narratoflow review
 The platform rules live in `src/narratoflow/data/platform_rules.toml` (copy it to
 `$NARRATOFLOW_DATA_DIR/platform_rules.toml` to override). Updating it is a manual task: every value
 not fixed by the spec has a `verify` note with a source; re-check each one, then bump `version` and
-`checked`. A rules file checked more than 180 days ago gives a warning.
+`checked`. A rules file checked more than 180 days ago gives a warning. An override is not
+updated by an upgrade: merge it with the packaged file afterwards, or any licence id added since
+you copied it fails publish as unknown.
 
 ### Voices
 

@@ -22,6 +22,13 @@ from narratoflow.visuals.strokes import extract_strokes
 UPLOAD_REASON = "uploaded: vision not run"
 
 
+def _upload_remedy(rules: Rules, licence: str) -> str:
+    remedy = "pass the licence of your image (use own-work for your own)"
+    if rules.origin == "packaged":
+        return remedy
+    return f"{remedy}, or add {licence} to {rules.origin} (merge it with the packaged rules)"
+
+
 def check_upload_licence(rules: Rules, licence: str, attribution: str) -> None:
     """`PlanningError` unless `licence` is in the rules' `[licences.assets]` (an upload
     is checked as an icon at publish) and has the attribution that licence needs."""
@@ -29,7 +36,7 @@ def check_upload_licence(rules: Rules, licence: str, attribution: str) -> None:
     if rule is None:
         raise PlanningError(
             f"licence {licence} is not allowed by platform rules {rules.file.version}; "
-            "pass the licence of your image (use own-work for your own)"
+            f"{_upload_remedy(rules, licence)}"
         )
     if rule.attribution and not attribution.strip():
         raise PlanningError(f"{licence} needs an attribution; pass --attribution")

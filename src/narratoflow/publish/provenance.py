@@ -233,6 +233,22 @@ def _record_findings(record: AssetRecord, rules: Rules) -> list[CheckResult]:
     return out
 
 
+_REBUILD_REMEDY = {
+    "voice": "rebuild the audio with an allowed voice",
+    "aligner": "rebuild the audio without the align extra",
+}
+
+
+def _unknown_licence_remedy(record: AssetRecord, rules: Rules, licence: str) -> str:
+    remedy = _REBUILD_REMEDY.get(record.kind, "replace the asset")
+    if rules.origin == "packaged":
+        return remedy
+    return (
+        f"add {licence} to {rules.origin} (merge it with the packaged rules "
+        f"after an upgrade), or {remedy}"
+    )
+
+
 def _licence_findings(
     record: AssetRecord, rules: Rules, table: dict[str, LicenceRule], licence: str
 ) -> list[CheckResult]:
@@ -242,7 +258,7 @@ def _licence_findings(
         return [
             _fail(
                 f"{label}: licence {licence} is not allowed by platform rules "
-                f"{rules.file.version}; replace the asset",
+                f"{rules.file.version}; {_unknown_licence_remedy(record, rules, licence)}",
                 scene,
             )
         ]

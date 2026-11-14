@@ -125,7 +125,7 @@ def test_upload_refusals_store_nothing(
             s, scene_id, channel, image, licence="own-work", source="photo", library=library
         )
     assert library.idea_keys(version) == before[0]
-    assert library.find_reusable(version, "thing-1|roman") == []
+    assert library.get_sketch(1) is None  # idea_keys and find_reusable skip uploads
     assert s == before[1]
 
 

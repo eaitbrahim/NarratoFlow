@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import sys
 from collections.abc import Sequence
@@ -669,8 +670,9 @@ def test_cli_sketch_upload_requires_license_and_source(
 
 def test_sketch_upload_help_lists_its_options() -> None:
     out = runner.invoke(cli.app, ["sketch", "upload", "--help"], env={"COLUMNS": "200"})
+    text = re.sub(r"\x1b\[[0-9;]*m", "", out.output)  # rich colours it under GITHUB_ACTIONS
     for option in ("--license", "--source", "--attribution", "--channel"):
-        assert option in out.output
+        assert option in text
 
 
 @pytest.mark.parametrize(

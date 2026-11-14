@@ -429,6 +429,10 @@ class _Run:
         idea_key = _idea_to_draw(scene)
         if idea_key is None:
             return scene
+        uploaded = scene.visual.source is VisualSource.IMAGE_TO_SKETCH
+        if uploaded:
+            # every run lists it, so the CLI keeps printing the upload hint
+            self.result.uploaded.append(scene.id)
         if QUARANTINED_FLAG in scene.flags:
             # the creator resolves a quarantined scene; nothing is attached or
             # regenerated automatically (spec 6.3)
@@ -436,12 +440,10 @@ class _Run:
             return scene
         key = parse_idea_key(idea_key)
         current = self._attached_record(scene, key)
-        if scene.visual.source is VisualSource.IMAGE_TO_SKETCH:
-            self.result.uploaded.append(scene.id)
-            if current is None:
-                # the creator's image is never generated: upload it (spec 6.3)
-                self.result.quarantined.append(scene.id)
-                return _quarantined(scene)
+        if uploaded and current is None:
+            # the creator's image is never generated: upload it (spec 6.3)
+            self.result.quarantined.append(scene.id)
+            return _quarantined(scene)
         if current is not None:
             return self._keep(scene, current)
         return self._attach_new(scene, key, tracker)

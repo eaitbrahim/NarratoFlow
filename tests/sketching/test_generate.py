@@ -573,6 +573,17 @@ def test_image_to_sketch_scene_never_generated(
         assert sc.visual.source is VisualSource.IMAGE_TO_SKETCH
 
 
+def test_image_to_sketch_scene_stays_listed_as_uploaded_on_later_runs(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s = series([scene(1, visual={"source": "image_to_sketch"})])
+    first, _ = run(s, channel, settings, library, FakeImages(), FakeLLM([]))
+    images = FakeImages()
+    _, result = run(first, channel, settings, library, images, FakeLLM([]))
+    assert images.requests == []
+    assert result.quarantined == ["s001"] and result.uploaded == ["s001"]
+
+
 def _uploaded(
     channel: ChannelConfig, library: SketchLibrary, key: str = "mine|roman"
 ) -> tuple[Series, int]:

@@ -17,6 +17,7 @@ from narratoflow.images import GeneratedImage, ImageProvider, ImageRequest
 from narratoflow.images.local_diffusion import LocalDiffusionProvider
 from narratoflow.images.openai_images import OpenAIImageProvider
 from narratoflow.settings import Settings
+from narratoflow.visuals.diffusion import DiffusionSpec, LineArtDiffusionProvider
 
 logger = logging.getLogger(__name__)
 KEY_ENV_VAR = "NARRATOFLOW_IMAGE_API_KEY"
@@ -88,6 +89,8 @@ def build_image_provider(channel: ChannelConfig, settings: Settings) -> ImagePro
         inner = OpenAIImageProvider(api_key=key, model=style.image_model)
     elif provider == "local-diffusion":
         inner = LocalDiffusionProvider(style.image_model)
+    elif provider == "lineart-diffusion":
+        inner = LineArtDiffusionProvider(DiffusionSpec.from_style(style))
     else:
         raise ChannelConfigError(f"unsupported image provider {style.image_provider!r}")
     return inner

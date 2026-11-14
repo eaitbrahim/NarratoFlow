@@ -74,7 +74,7 @@ from narratoflow.sketching.resolve import (
     regenerate,
     regenerate_estimate,
 )
-from narratoflow.sketching.upload import attach_upload, check_upload_licence
+from narratoflow.sketching.upload import attach_upload, check_upload_licence, find_scene
 from narratoflow.tts import VoiceChoice
 
 SERIES_CHANGED = "series.json changed on disk since this view was loaded; reload"
@@ -183,17 +183,9 @@ def _load(paths: StationPaths, expected_sha256: str | None = None) -> Series:
     return Series.load(paths.series)
 
 
-def _locate(series: Series, scene_id: str) -> tuple[int, int, Scene]:
-    for p, part in enumerate(series.parts):
-        for i, scene in enumerate(part.scenes):
-            if scene.id == scene_id:
-                return p, i, scene
-    raise PlanningError(f"unknown scene {scene_id}")
-
-
 def _narration(series: Series, scene_id: str) -> tuple[int, int, Scene]:
     """Where a scene the station may edit sits; verses are the reciter's, not editable."""
-    located = _locate(series, scene_id)
+    located = find_scene(series, scene_id)
     if located[2].kind is SceneKind.VERSE:
         raise PlanningError(f"scene {scene_id} is a verse; the station does not edit verses")
     return located
@@ -278,7 +270,7 @@ def scene_view(
     """Texts, timing, sketch image and audio clip of one scene."""
     sha = series_sha256(paths.series)
     series = _load(paths)
-    p, _, scene = _locate(series, scene_id)
+    p, _, scene = find_scene(series, scene_id)
     png: bytes | None = None
     if scene.sketch_id is not None:
         lib = library if library is not None else default_library(settings or get_settings())
@@ -489,7 +481,7 @@ def rebuild_scene(
     settings = settings if settings is not None else get_settings()
     series = _load(paths, expected_sha256)
     channel = load_channel(paths.channel)
-    p, _, scene = _locate(series, scene_id)
+    p, _, scene = find_scene(series, scene_id)
     part = series.parts[p].index
     prices = prices if prices is not None else default_prices(settings)
     estimate = estimate_voice_cost(

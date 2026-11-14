@@ -670,6 +670,8 @@ def export(
     )
     exported = {p.index: p.export_path for p in published.parts}
     if ratio is AspectRatio.PORTRAIT:
+        for index in exported:  # the 16:9 copies derive from 9:16 files that just changed
+            (paths.export_dir / landscape_name(index)).unlink(missing_ok=True)
         return [path for path in exported.values() if path is not None]
     reports = {b.index: b.report for b in rendered.parts}
     out: list[Path] = []

@@ -884,5 +884,25 @@ def test_export_of_a_failing_part_produces_neither_file(
     assert not (paths.export_dir / "part-01.mp4").exists()
 
 
+def test_portrait_export_removes_the_now_stale_landscape_copy(
+    publishable: tuple[StationPaths, dict[str, Any]],
+) -> None:
+    paths, kit = publishable
+    [old] = export(paths, AspectRatio.LANDSCAPE, **kit)
+    assert old.is_file()
+    assert export(paths, AspectRatio.PORTRAIT, **kit) == [paths.export_dir / "part-01.mp4"]
+    assert not old.exists()  # it would show the previous cut next to the new 9:16 file
+
+
+def test_portrait_export_of_a_failing_part_removes_the_landscape_copy(
+    publishable: tuple[StationPaths, dict[str, Any]],
+) -> None:
+    paths, kit = publishable
+    [old] = export(paths, AspectRatio.LANDSCAPE, **kit)
+    Series.load(paths.series).model_copy(update={"ai_disclosure": False}).save(paths.series)
+    assert export(paths, AspectRatio.PORTRAIT, **kit) == []
+    assert not old.exists()
+
+
 def test_series_sha256_is_the_files_sha256(world: World) -> None:
     assert world.sha() == hashlib.sha256(world.paths.series.read_bytes()).hexdigest()

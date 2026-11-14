@@ -1340,7 +1340,7 @@ def test_lineart_provenance_records_licences(
     assert p.usage_terms == (
         "Model black-forest-labs/FLUX.1-schnell@741f7c3 (Apache-2.0, "
         "https://huggingface.co/black-forest-labs/FLUX.1-schnell); "
-        "LoRA someone/lineart (MIT, https://hf.co/someone)"
+        "LoRA someone/lineart@r1 (MIT, https://hf.co/someone)"
     )
 
 

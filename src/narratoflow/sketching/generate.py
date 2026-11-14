@@ -161,7 +161,7 @@ def _diffusion_terms(pins: DiffusionStyle, model: str) -> tuple[str, str]:
     terms = f"Model {model}@{pins.model_revision} ({pins.model_license}, {pins.model_source})"
     if not pins.lora:
         return pins.model_license, terms
-    lora = f"LoRA {pins.lora} ({pins.lora_license}, {pins.lora_source})"
+    lora = f"LoRA {pins.lora}@{pins.lora_revision} ({pins.lora_license}, {pins.lora_source})"
     return f"{pins.model_license}{COMPOSITE_SEPARATOR}{pins.lora_license}", f"{terms}; {lora}"
 
 

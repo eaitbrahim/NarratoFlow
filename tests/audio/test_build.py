@@ -23,6 +23,7 @@ from narratoflow.audio.build import (
     AudioBuildResult,
     AudioInterruptedError,
     build_audio,
+    check_scene_text,
 )
 from narratoflow.audio.io import Loudness, Samples
 from narratoflow.audio.narrate import ALIGN_EXTRA_WARNING
@@ -1039,3 +1040,13 @@ def test_channel_pronunciation_reaches_the_voice_and_the_estimate(
     _, result = run(s, lexed, settings, tmp_path, voices=[voice], library=library, pack=pack)
     assert [r.text for r in voice.requests] == ["en ay es ay rocks"]
     assert result.spent_usd == cost("en ay es ay rocks")
+
+
+def test_check_scene_text_messages_unchanged() -> None:
+    check_scene_text(narr("s1", "alpha beta", tts="alpha beta", caption="x y"))
+    with pytest.raises(PlanningError) as skeleton:
+        check_scene_text(narr("s1", "alpha beta", tts="alpha gamma"))
+    assert str(skeleton.value).startswith("scene s1: tts_text changes the author's words (")
+    with pytest.raises(PlanningError) as caption:
+        check_scene_text(narr("s1", "alpha beta gamma", caption="alpha beta"))
+    assert str(caption.value) == "scene s1: caption has 2 words but the source text has 3"

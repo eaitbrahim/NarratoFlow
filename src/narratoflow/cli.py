@@ -12,9 +12,9 @@ from rich.console import Console
 from rich.markup import escape
 
 from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, build_audio
-from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint, vision_model
+from narratoflow.channels.config import load_channel, style_fingerprint
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
-from narratoflow.costs.prices import PriceTable, default_prices
+from narratoflow.costs.prices import default_prices
 from narratoflow.costs.tracker import require_generation_prices
 from narratoflow.errors import (
     CorruptInputError,
@@ -54,11 +54,11 @@ from narratoflow.sketching.generate import (
 from narratoflow.sketching.resolve import (
     check_regenerable,
     regenerate,
+    regenerate_estimate,
     swap_idea,
     use_text_card,
 )
 from narratoflow.sketching.upload import attach_upload, check_upload_licence
-from narratoflow.sketching.vision import estimate_check_cost
 from narratoflow.text.dialect import check_dialect as run_dialect_check
 from narratoflow.text.dialect import load_camel_model
 from narratoflow.text.quality import require_clean
@@ -381,16 +381,6 @@ def sketch_upload(
     _out.print(f"{escape(scene_id)}: uploaded sketch {record.id} (unchecked)", highlight=False)
 
 
-def _regenerate_estimate(idea_key: str, channel: ChannelConfig, prices: PriceTable) -> Decimal:
-    """Image price plus the vision check (none when vision is off) for one sketch."""
-    style = channel.style
-    estimate = prices.image(style.image_provider, style.image_model)
-    ident = vision_model(channel)
-    if ident is not None:
-        estimate += estimate_check_cost(style, idea_key, prices, *ident, with_reference=True)
-    return estimate
-
-
 @sketch_app.command("resolve")
 def sketch_resolve(
     series_json: Path,
@@ -447,7 +437,7 @@ def sketch_resolve(
     prices = default_prices(settings)
     require_generation_prices(channel, prices, vision=True)
     if not yes:
-        estimate = _regenerate_estimate(idea_key, channel, prices)
+        estimate = regenerate_estimate(idea_key, channel, prices)
         if not typer.confirm(
             f"Regenerate the sketch for {scene_id}? Estimated cost {format_usd(estimate)}"
         ):

@@ -133,26 +133,32 @@ def _check_sketches(parts: list[Part]) -> None:
                 )
 
 
+def check_scene_text(scene: Scene) -> None:
+    """The author's words: tts_text keeps the skeleton, captions keep the word count.
+
+    `PlanningError` otherwise. A scene without narration texts passes.
+    """
+    narration = scene.narration
+    if narration.tts_text is not None:
+        try:
+            assert_skeleton_preserved(narration.source_text, narration.tts_text)
+        except SkeletonMismatchError as exc:
+            raise PlanningError(
+                f"scene {scene.id}: tts_text changes the author's words ({exc})"
+            ) from exc
+    if narration.caption_text is not None:
+        shown = len(tokens(narration.caption_text))
+        written = len(tokens(narration.source_text))
+        if shown != written:
+            raise PlanningError(
+                f"scene {scene.id}: caption has {shown} words but the source text has {written}"
+            )
+
+
 def _check_texts(parts: list[Part]) -> None:
-    """The author's words: tts_text keeps the skeleton, captions keep the word count."""
     for part in parts:
         for scene in _narration(part):
-            narration = scene.narration
-            if narration.tts_text is not None:
-                try:
-                    assert_skeleton_preserved(narration.source_text, narration.tts_text)
-                except SkeletonMismatchError as exc:
-                    raise PlanningError(
-                        f"scene {scene.id}: tts_text changes the author's words ({exc})"
-                    ) from exc
-            if narration.caption_text is not None:
-                shown = len(tokens(narration.caption_text))
-                written = len(tokens(narration.source_text))
-                if shown != written:
-                    raise PlanningError(
-                        f"scene {scene.id}: caption has {shown} words "
-                        f"but the source text has {written}"
-                    )
+            check_scene_text(scene)
 
 
 def _verses(part: Part) -> list[Scene]:

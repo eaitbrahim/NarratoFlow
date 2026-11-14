@@ -9,6 +9,7 @@ from narratoflow.channels.config import (
     style_fingerprint,
 )
 from narratoflow.channels.keys import ProviderKind, check_provider_keys, required_key_env_vars
+from narratoflow.costs.prices import default_prices
 from narratoflow.errors import ChannelConfigError, MissingApiKeyError
 from narratoflow.models import AspectRatio
 from narratoflow.settings import get_settings
@@ -331,3 +332,76 @@ def test_end_card_config(channel_file: Path) -> None:
     assert load_channel(channel_file).end_card is None
     channel_file.write_text('end_card = ""\n' + base, encoding="utf-8")
     assert load_channel(channel_file).end_card == ""
+
+
+_DIFFUSION_TOML = """
+[style.diffusion]
+model_license = "Apache-2.0"
+model_source = "https://huggingface.co/black-forest-labs/FLUX.1-schnell"
+"""
+_LORA_TOML = """
+lora = "someone/lineart-lora"
+lora_license = "MIT"
+lora_source = "https://huggingface.co/someone/lineart-lora"
+"""
+
+
+def _with_diffusion(
+    channel_file: Path, extra: str = "", provider: str = "lineart-diffusion"
+) -> Path:
+    text = channel_file.read_text(encoding="utf-8").replace(
+        'image_provider = "openai"', f'image_provider = "{provider}"'
+    )
+    channel_file.write_text(text + _DIFFUSION_TOML + extra, encoding="utf-8")
+    return channel_file
+
+
+def test_diffusion_style_defaults(channel_file: Path) -> None:
+    diffusion = load_channel(_with_diffusion(channel_file)).style.diffusion
+    assert diffusion is not None
+    assert (diffusion.steps, diffusion.guidance_scale, diffusion.seed) == (4, 0.0, 0)
+    assert (diffusion.size, diffusion.lora_scale, diffusion.device) == (1024, 1.0, "auto")
+    assert (diffusion.lora, diffusion.model_revision) == (None, None)
+
+
+def test_no_diffusion_table_means_none(channel_file: Path) -> None:
+    assert load_channel(channel_file).style.diffusion is None
+
+
+@pytest.mark.parametrize("missing", ["lora_license", "lora_source"])
+def test_lora_needs_licence_and_source(channel_file: Path, missing: str) -> None:
+    lines = [ln for ln in _LORA_TOML.splitlines() if not ln.startswith(missing)]
+    with pytest.raises(ChannelConfigError, match=missing):
+        load_channel(_with_diffusion(channel_file, "\n".join(lines)))
+
+
+def test_lineart_provider_needs_diffusion_table(channel_file: Path) -> None:
+    text = channel_file.read_text(encoding="utf-8").replace(
+        'image_provider = "openai"', 'image_provider = "lineart-diffusion"'
+    )
+    channel_file.write_text(text, encoding="utf-8")
+    with pytest.raises(ChannelConfigError, match=r"style\.diffusion"):
+        load_channel(channel_file)
+
+
+def test_fingerprint_unchanged_without_diffusion(channel_file: Path) -> None:
+    # pinned before the diffusion field existed: existing channels keep their style version
+    assert style_fingerprint(load_channel(channel_file).style) == "fdeb268808ab7569"
+
+
+def test_fingerprint_changes_with_seed_and_lora(channel_file: Path) -> None:
+    style = load_channel(_with_diffusion(channel_file)).style
+    assert style.diffusion is not None
+    base = style_fingerprint(style)
+    assert base != "fdeb268808ab7569"
+    lora = {"lora": "a/b", "lora_license": "MIT", "lora_source": "s"}
+    for change in ({"seed": 5}, {"lora_scale": 0.5}, lora):
+        other = style.model_copy(update={"diffusion": style.diffusion.model_copy(update=change)})
+        assert style_fingerprint(other) != base
+
+
+def test_lineart_diffusion_is_free_and_keyless(channel_file: Path) -> None:
+    ch = load_channel(_with_diffusion(channel_file))
+    prices = default_prices(get_settings())
+    assert prices.image("lineart-diffusion", "black-forest-labs/FLUX.1-schnell") == 0
+    assert ProviderKind.IMAGE not in required_key_env_vars(ch)

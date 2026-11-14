@@ -17,7 +17,7 @@ class ProviderKind(StrEnum):
 
 
 FREE_PROVIDERS: frozenset[str] = frozenset(
-    {"ollama", "local-diffusion", "edge", "piper", "mishkal"}
+    {"ollama", "local-diffusion", "lineart-diffusion", "edge", "piper", "mishkal"}
 )
 
 

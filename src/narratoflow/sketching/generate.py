@@ -413,7 +413,7 @@ def _quarantined(scene: Scene) -> Scene:
     return scene.model_copy(update={"sketch_id": None, "match": "new", "flags": flags})
 
 
-def _idea_to_draw(scene: Scene) -> str | None:
+def idea_to_draw(scene: Scene) -> str | None:
     """The idea key, or None for a verse, a scene without a key or a text card."""
     if scene.kind is SceneKind.VERSE or scene.visual.source is VisualSource.TEXT_CARD:
         return None
@@ -448,7 +448,7 @@ class _Run:
 
     def scene(self, scene: Scene, tracker: SpendTracker) -> Scene:
         self.stored = []
-        idea_key = _idea_to_draw(scene)
+        idea_key = idea_to_draw(scene)
         if idea_key is None:
             return scene
         uploaded = scene.visual.source is VisualSource.IMAGE_TO_SKETCH

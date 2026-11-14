@@ -364,3 +364,41 @@ def test_xdog_image_at_working_size_is_not_resized() -> None:
     scroll = Image.open(io.BytesIO(images.line_drawing_scroll())).convert("L")
     assert max(scroll.size) == lineart.XDOG_LONG_SIDE_PX
     assert xdog_lineart(images.line_drawing_scroll()).shape == scroll.size[::-1]
+
+
+def _jpeg_with_orientation(size: tuple[int, int], orientation: int) -> bytes:
+    """A JPEG stored at `size` (w, h) whose EXIF Orientation tag is `orientation`."""
+    image = Image.new("L", size, 255)
+    stripe = Image.new("L", (size[0] // 2, size[1] // 5), 0)
+    image.paste(stripe, (0, 0))
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=95, exif=exif)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("orientation", "stored", "shape"),
+    [(1, (40, 100), (512, 205)), (6, (40, 100), (205, 512)), (8, (40, 100), (205, 512))],
+)
+def test_xdog_applies_exif_orientation(
+    orientation: int, stored: tuple[int, int], shape: tuple[int, int]
+) -> None:
+    mask = xdog_lineart(_jpeg_with_orientation(stored, orientation))
+    assert mask.shape == shape
+
+
+def test_xdog_exif_rotates_the_ink_not_only_the_shape() -> None:
+    plain = xdog_lineart(_jpeg_with_orientation((100, 40), 1))
+    turned = xdog_lineart(_jpeg_with_orientation((40, 100), 6))
+    # Orientation 6 = rotate 90 degrees clockwise to display: the stripe that sat
+    # in the top-left of the stored image ends up in the top-right.
+    rows, cols = np.nonzero(turned)
+    assert cols.mean() > turned.shape[1] / 2
+    assert rows.mean() < turned.shape[0] / 2
+    assert plain.shape[::-1] == (turned.shape[1], turned.shape[0])
+
+
+def test_binarize_applies_exif_orientation() -> None:
+    assert binarize(_jpeg_with_orientation((40, 100), 6)).shape == (40, 100)

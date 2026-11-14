@@ -22,7 +22,7 @@ from typing import Literal
 
 import cv2
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from skimage.morphology import skeletonize
 
 from narratoflow.errors import SketchRejectedError
@@ -30,6 +30,7 @@ from narratoflow.errors import SketchRejectedError
 XDOG_LONG_SIDE_PX = 512
 XDOG_PERCENTILES = (1.0, 99.0)
 MIN_UPLOAD_SIDE_PX = 32
+_EXIF_ORIENTATION = 0x0112
 MAX_UPLOAD_SIDE_PX = 8192
 _FLAT_GREY_LEVELS = 1.0
 _PAPER = 255
@@ -220,8 +221,22 @@ class DensityReport:
     reason: str | None
 
 
+def _upright(raster: bytes) -> bytes:
+    """The raster with its EXIF Orientation applied; bytes without a tag pass through."""
+    try:
+        with Image.open(BytesIO(raster)) as image:
+            if image.getexif().get(_EXIF_ORIENTATION, 1) == 1:
+                return raster
+            upright = ImageOps.exif_transpose(image)
+            buffer = BytesIO()
+            upright.save(buffer, format="PNG")
+            return buffer.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError):
+        return raster  # the decode below reports it
+
+
 def _to_gray(png: bytes) -> np.ndarray:
-    data = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
+    data = cv2.imdecode(np.frombuffer(_upright(png), np.uint8), cv2.IMREAD_UNCHANGED)
     if data is None:
         raise SketchRejectedError("undecodable image")
     if data.dtype != np.uint8:

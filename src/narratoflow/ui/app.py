@@ -12,7 +12,6 @@ from __future__ import annotations
 import io
 from collections.abc import Callable
 from decimal import Decimal
-from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,7 @@ from narratoflow.models import AspectRatio
 from narratoflow.money import format_usd
 from narratoflow.settings import Settings
 from narratoflow.ui import station
-from narratoflow.ui.station import SceneView, StationPaths
+from narratoflow.ui.station import StationPaths
 
 SAVE_TEXT = "Save text"
 SAVE_TIMING = "Save timing"
@@ -53,106 +52,127 @@ def _read(path: str) -> bytes:
         raise CorruptInputError(f"cannot read image {path}: {exc}") from exc
 
 
+def _estimate(paths: StationPaths, settings: Settings, scene_id: str) -> str:
+    try:
+        return _estimate_text(station.regenerate_cost(paths, scene_id, settings=settings))
+    except NarratoFlowError as exc:
+        return f"No estimate: {exc}"
+
+
+def _show(
+    paths: StationPaths, settings: Settings, scene_id: str, status: str = ""
+) -> tuple[Any, ...]:
+    """The values of every view component for one scene, then the status line."""
+    view = station.scene_view(paths, scene_id, settings=settings)
+    return (
+        view.source_text,
+        view.tts_text,
+        view.caption_text,
+        None if view.audio_clip is None else str(view.audio_clip),
+        _sketch_image(view.sketch_png),
+        view.min_duration_ms,
+        view.draw_fraction,
+        view.sha256,
+        _estimate(paths, settings, scene_id),
+        status,
+    )
+
+
+def _on_select(paths: StationPaths, settings: Settings, scene_id: str) -> tuple[Any, ...]:
+    return _show(paths, settings, scene_id)
+
+
+def _on_save_text(
+    paths: StationPaths, settings: Settings, scene_id: str, tts: str, caption: str, sha: str
+) -> tuple[Any, ...]:
+    station.edit_text(
+        paths, scene_id, tts_text=tts or "", caption_text=caption or "", expected_sha256=sha
+    )
+    return _show(paths, settings, scene_id, "Text saved. Rebuild the scene to hear and see it.")
+
+
+def _on_save_timing(
+    paths: StationPaths, settings: Settings, scene_id: str, ms: float, fraction: float, sha: str
+) -> tuple[Any, ...]:
+    station.edit_timing(
+        paths, scene_id, min_duration_ms=int(ms), draw_fraction=fraction, expected_sha256=sha
+    )
+    return _show(paths, settings, scene_id, "Timing saved. Rebuild the scene to apply it.")
+
+
+def _on_upload(
+    paths: StationPaths,
+    settings: Settings,
+    scene_id: str,
+    file: str | None,
+    licence: str,
+    source: str,
+    attribution: str,
+    sha: str,
+) -> tuple[Any, ...]:
+    if not file:
+        raise CorruptInputError("choose an image to upload")
+    station.upload_visual(
+        paths,
+        scene_id,
+        _read(file),
+        licence=licence or "",
+        source=source or "",
+        attribution=attribution or "",
+        expected_sha256=sha,
+        settings=settings,
+    )
+    return _show(
+        paths, settings, scene_id, "Image attached as line art. Rebuild the scene to render it."
+    )
+
+
+def _on_regenerate(
+    paths: StationPaths, settings: Settings, scene_id: str, confirm: bool, sha: str
+) -> tuple[Any, ...]:
+    done = station.regenerate_visual(
+        paths, scene_id, confirm=bool(confirm), expected_sha256=sha, settings=settings
+    )
+    return _show(paths, settings, scene_id, f"Sketch redrawn, spent {format_usd(done.spent_usd)}.")
+
+
+def _on_text_card(
+    paths: StationPaths, settings: Settings, scene_id: str, card_text: str, sha: str
+) -> tuple[Any, ...]:
+    station.use_text_card(paths, scene_id, card_text or "", expected_sha256=sha)
+    return _show(paths, settings, scene_id, "The scene now shows a text card.")
+
+
+def _on_rebuild(
+    paths: StationPaths, settings: Settings, scene_id: str, confirm: bool, sha: str
+) -> tuple[Any, ...]:
+    done = station.rebuild_scene(
+        paths, scene_id, confirm=bool(confirm), expected_sha256=sha, settings=settings
+    )
+    parts = ", ".join(str(n) for n in done.rendered_parts) or "none (unchanged)"
+    status = f"Rebuilt; rendered part(s): {parts}; spent {format_usd(done.spent_usd)}."
+    return _show(paths, settings, scene_id, status)
+
+
+def _on_export(
+    paths: StationPaths, settings: Settings, ratio: AspectRatio, note: str
+) -> tuple[list[str], str]:
+    files = station.export(paths, ratio, settings=settings)
+    names = ", ".join(f.name for f in files) or "nothing (a part failed its checks)"
+    return [str(f) for f in files], f"Exported {names}. {note}".strip()
+
+
 def build_app(paths: StationPaths, settings: Settings, gr: Any) -> Any:
     """The Blocks page for one series; the caller launches it."""
 
-    def guarded[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
-        @wraps(fn)
-        def run(*args: P.args, **kwargs: P.kwargs) -> R:
+    def bind(fn: Callable[..., Any], *fixed: Any) -> Callable[..., Any]:
+        """`fn` with the paths, settings and `fixed` already given, errors as `gr.Error`."""
+
+        def run(*values: Any) -> Any:
             try:
-                return fn(*args, **kwargs)
+                return fn(paths, settings, *fixed, *values)
             except NarratoFlowError as exc:
                 raise gr.Error(str(exc)) from exc
-
-        return run
-
-    def estimate(scene_id: str) -> str:
-        try:
-            return _estimate_text(station.regenerate_cost(paths, scene_id, settings=settings))
-        except NarratoFlowError as exc:
-            return f"No estimate: {exc}"
-
-    def shown(view: SceneView, status: str, scene_id: str) -> tuple[Any, ...]:
-        return (
-            view.source_text,
-            view.tts_text,
-            view.caption_text,
-            None if view.audio_clip is None else str(view.audio_clip),
-            _sketch_image(view.sketch_png),
-            view.min_duration_ms,
-            view.draw_fraction,
-            view.sha256,
-            estimate(scene_id),
-            status,
-        )
-
-    def show(scene_id: str, status: str = "") -> tuple[Any, ...]:
-        return shown(station.scene_view(paths, scene_id, settings=settings), status, scene_id)
-
-    @guarded
-    def on_select(scene_id: str) -> tuple[Any, ...]:
-        return show(scene_id)
-
-    @guarded
-    def on_save_text(scene_id: str, tts: str, caption: str, sha: str) -> tuple[Any, ...]:
-        station.edit_text(
-            paths, scene_id, tts_text=tts or "", caption_text=caption or "", expected_sha256=sha
-        )
-        return show(scene_id, "Text saved. Rebuild the scene to hear and see it.")
-
-    @guarded
-    def on_save_timing(scene_id: str, ms: float, fraction: float, sha: str) -> tuple[Any, ...]:
-        station.edit_timing(
-            paths, scene_id, min_duration_ms=int(ms), draw_fraction=fraction, expected_sha256=sha
-        )
-        return show(scene_id, "Timing saved. Rebuild the scene to apply it.")
-
-    @guarded
-    def on_upload(
-        scene_id: str, file: str | None, licence: str, source: str, attribution: str, sha: str
-    ) -> tuple[Any, ...]:
-        if not file:
-            raise CorruptInputError("choose an image to upload")
-        station.upload_visual(
-            paths,
-            scene_id,
-            _read(file),
-            licence=licence or "",
-            source=source or "",
-            attribution=attribution or "",
-            expected_sha256=sha,
-            settings=settings,
-        )
-        return show(scene_id, "Image attached as line art. Rebuild the scene to render it.")
-
-    @guarded
-    def on_regenerate(scene_id: str, confirm: bool, sha: str) -> tuple[Any, ...]:
-        done = station.regenerate_visual(
-            paths, scene_id, confirm=bool(confirm), expected_sha256=sha, settings=settings
-        )
-        return show(scene_id, f"Sketch redrawn, spent {format_usd(done.spent_usd)}.")
-
-    @guarded
-    def on_text_card(scene_id: str, card_text: str, sha: str) -> tuple[Any, ...]:
-        station.use_text_card(paths, scene_id, card_text or "", expected_sha256=sha)
-        return show(scene_id, "The scene now shows a text card.")
-
-    @guarded
-    def on_rebuild(scene_id: str, confirm: bool, sha: str) -> tuple[Any, ...]:
-        done = station.rebuild_scene(
-            paths, scene_id, confirm=bool(confirm), expected_sha256=sha, settings=settings
-        )
-        parts = ", ".join(str(n) for n in done.rendered_parts) or "none (unchanged)"
-        return show(
-            scene_id, f"Rebuilt; rendered part(s): {parts}; spent {format_usd(done.spent_usd)}."
-        )
-
-    def exporter(ratio: AspectRatio, note: str) -> Callable[[], tuple[list[str], str]]:
-        @guarded
-        def run() -> tuple[list[str], str]:
-            files = station.export(paths, ratio, settings=settings)
-            names = ", ".join(f.name for f in files) or "nothing (a part failed its checks)"
-            return [str(f) for f in files], f"Exported {names}. {note}".strip()
 
         return run
 
@@ -178,21 +198,21 @@ def build_app(paths: StationPaths, settings: Settings, gr: Any) -> Any:
         card_text = gr.Textbox(label="Text card text")
         exports = gr.File(label="Exported files", file_count="multiple", interactive=False)
         view = [source, tts, caption, audio, image, minimum, fraction, sha, estimate_md, status]
-        gr.Button(SAVE_TEXT).click(on_save_text, [scene, tts, caption, sha], view)
-        gr.Button(SAVE_TIMING).click(on_save_timing, [scene, minimum, fraction, sha], view)
+        gr.Button(SAVE_TEXT).click(bind(_on_save_text), [scene, tts, caption, sha], view)
+        gr.Button(SAVE_TIMING).click(bind(_on_save_timing), [scene, minimum, fraction, sha], view)
         gr.Button(UPLOAD).click(
-            on_upload, [scene, upload_file, licence, origin, attribution, sha], view
+            bind(_on_upload), [scene, upload_file, licence, origin, attribution, sha], view
         )
-        gr.Button(REGENERATE).click(on_regenerate, [scene, confirm, sha], view)
-        gr.Button(TEXT_CARD).click(on_text_card, [scene, card_text, sha], view)
-        gr.Button(REBUILD).click(on_rebuild, [scene, confirm, sha], view)
+        gr.Button(REGENERATE).click(bind(_on_regenerate), [scene, confirm, sha], view)
+        gr.Button(TEXT_CARD).click(bind(_on_text_card), [scene, card_text, sha], view)
+        gr.Button(REBUILD).click(bind(_on_rebuild), [scene, confirm, sha], view)
         with gr.Row():
             gr.Button(EXPORT_PORTRAIT).click(
-                exporter(AspectRatio.PORTRAIT, ""), [], [exports, status]
+                bind(_on_export, AspectRatio.PORTRAIT, ""), [], [exports, status]
             )
             gr.Button(EXPORT_LANDSCAPE).click(
-                exporter(AspectRatio.LANDSCAPE, PILLARBOX_NOTE), [], [exports, status]
+                bind(_on_export, AspectRatio.LANDSCAPE, PILLARBOX_NOTE), [], [exports, status]
             )
-        scene.change(on_select, [scene], view)
-        demo.load(on_select, [scene], view)
+        scene.change(bind(_on_select), [scene], view)
+        demo.load(bind(_on_select), [scene], view)
     return demo

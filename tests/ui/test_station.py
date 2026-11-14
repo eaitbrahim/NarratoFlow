@@ -753,11 +753,22 @@ def _concurrent_caption(world: World, scene_id: str, caption: str) -> None:
     )
 
 
+def _external_caption(world: World, scene_id: str, caption: str) -> None:
+    """What the CLI (not a station handler, so no lock to honour) saves meanwhile."""
+    series = world.series()
+    for part in series.parts:
+        for i, scene in enumerate(part.scenes):
+            if scene.id == scene_id:
+                narration = scene.narration.model_copy(update={"caption_text": caption})
+                part.scenes[i] = scene.model_copy(update={"narration": narration})
+    series.save(world.paths.series)
+
+
 def test_rebuild_refuses_to_overwrite_an_edit_saved_during_the_audio_stage(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def slow_audio(*args: Any, **kw: Any) -> Any:
-        _concurrent_caption(world, "p1-a", "alpha beta")
+        _external_caption(world, "p1-a", "alpha beta")
         return build_audio(*args, **kw)
 
     monkeypatch.setattr(station, "build_audio", slow_audio)
@@ -779,7 +790,7 @@ def test_regenerate_refuses_to_overwrite_an_edit_saved_during_the_draw(
     real = regenerate
 
     def slow_draw(*args: Any, **kw: Any) -> Any:
-        _concurrent_caption(world, "p1-a", "alpha beta")
+        _external_caption(world, "p1-a", "alpha beta")
         return real(*args, **kw)
 
     monkeypatch.setattr(station, "regenerate", slow_draw)
@@ -815,6 +826,195 @@ def test_upload_refuses_to_overwrite_an_edit_saved_during_the_conversion(
             **world.kit("settings", "library"),
         )
     assert _scenes(world.series())["p1-a"].narration.caption_text == "alpha beta"
+
+
+# -- one paid run at a time ----------------------------------------------------
+
+
+def _lock(world: World) -> Path:
+    return world.paths.series.with_name("series.json.lock")
+
+
+class SpyImages(FakeImages):
+    """An image model that, while it draws, tries what a second browser tab would."""
+
+    def __init__(self, world: World) -> None:
+        super().__init__()
+        self.world = world
+        self.lock_seen = False
+        self.refusals: list[str] = []
+
+    def generate(self, req: Any) -> Any:
+        self.lock_seen = _lock(self.world).is_file()
+        with pytest.raises(PlanningError) as refused:
+            _concurrent_caption(self.world, "p1-a", "alpha beta")
+        self.refusals.append(str(refused.value))
+        return super().generate(req)
+
+
+def test_a_save_during_a_paid_rebuild_is_refused_and_the_spend_is_kept(world: World) -> None:
+    _fresh_idea(world, "p1-b", drop_sketch=True)
+    spy = SpyImages(world)
+    kit = world.rebuild_kit()
+    kit["images"] = spy
+    report = rebuild_scene(world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), **kit)
+    assert spy.lock_seen and len(spy.refusals) == 1 and "paid action" in spy.refusals[0]
+    assert report.spent_usd == IMAGE_PRICE and report.sha256 == world.sha()
+    assert _scenes(world.series())["p1-a"].narration.caption_text is None
+    assert _scenes(world.series())["p1-b"].sketch_id is not None
+    assert not _lock(world).exists()
+
+
+def test_a_save_during_a_paid_regenerate_is_refused(world: World) -> None:
+    _fresh_idea(world, "p1-b")
+    spy = SpyImages(world)
+    kit = world.kit("settings", "library", "vision", "prices")
+    done = regenerate_visual(
+        world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), images=spy, **kit
+    )
+    assert spy.lock_seen and "paid action" in spy.refusals[0]
+    assert done.sha256 == world.sha() and not _lock(world).exists()
+
+
+class CrashingImages(FakeImages):
+    def __init__(self, world: World) -> None:
+        super().__init__()
+        self.world = world
+        self.lock_seen = False
+
+    def generate(self, req: Any) -> Any:
+        self.lock_seen = _lock(self.world).is_file()
+        raise RuntimeError("boom")
+
+
+def test_the_lock_is_removed_when_a_paid_run_crashes(world: World) -> None:
+    _fresh_idea(world, "p1-b", drop_sketch=True)
+    kit = world.rebuild_kit()
+    crashing = CrashingImages(world)
+    kit["images"] = crashing
+    with pytest.raises(RuntimeError, match="boom"):
+        rebuild_scene(world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), **kit)
+    assert crashing.lock_seen and not _lock(world).exists()
+    _fresh_idea(world, "p1-b")
+    kit2 = world.kit("settings", "library", "vision", "prices")
+    crashing.lock_seen = False
+    with pytest.raises(RuntimeError, match="boom"):
+        regenerate_visual(
+            world.paths,
+            "p1-b",
+            confirm=True,
+            expected_sha256=world.sha(),
+            images=crashing,
+            **kit2,
+        )
+    assert crashing.lock_seen and not _lock(world).exists()
+
+
+def test_every_series_writer_refuses_while_the_lock_is_held(world: World) -> None:
+    lock = _lock(world)
+    lock.write_text("someone else's run")
+    sha = world.sha()
+    refusals: list[Any] = [
+        lambda: edit_text(world.paths, "p1-a", tts_text="", caption_text="x", expected_sha256=sha),
+        lambda: edit_timing(
+            world.paths, "p1-a", min_duration_ms=2000, draw_fraction=0.5, expected_sha256=sha
+        ),
+        lambda: use_text_card(world.paths, "p1-a", "Hi", expected_sha256=sha),
+        lambda: upload_visual(
+            world.paths,
+            "p1-a",
+            sample_png("camera"),
+            licence="own-work",
+            source="photo",
+            expected_sha256=sha,
+            **world.kit("settings", "library"),
+        ),
+        lambda: regenerate_visual(
+            world.paths,
+            "p1-a",
+            confirm=True,
+            expected_sha256=sha,
+            **world.kit("settings", "library", "images", "vision", "prices"),
+        ),
+        lambda: rebuild_scene(
+            world.paths, "p1-a", confirm=True, expected_sha256=sha, **world.rebuild_kit()
+        ),
+    ]
+    for attempt in refusals:
+        with pytest.raises(PlanningError, match=r"paid action.*series\.json\.lock"):
+            attempt()
+    assert lock.read_text() == "someone else's run"  # a refusal never removes another's lock
+    assert world.sha() == sha and world.images.requests == []
+
+
+class ChangedElsewhereImages(BrokenImages):
+    """Fails like BrokenImages after the CLI saved another edit to the file."""
+
+    def __init__(self, world: World) -> None:
+        super().__init__()
+        self.world = world
+
+    def generate(self, req: Any) -> Any:
+        _external_caption(self.world, "p1-a", "alpha beta")
+        return super().generate(req)
+
+
+def test_an_interrupted_regenerate_keeps_its_own_error_when_the_file_changed(
+    world: World,
+) -> None:
+    from narratoflow.sketching.generate import GenerationInterruptedError
+
+    _fresh_idea(world, "p1-b")
+    kit = world.kit("settings", "library", "vision", "prices")
+    with pytest.raises(GenerationInterruptedError, match="image service down") as caught:
+        regenerate_visual(
+            world.paths,
+            "p1-b",
+            confirm=True,
+            expected_sha256=world.sha(),
+            images=ChangedElsewhereImages(world),
+            **kit,
+        )
+    assert any("not saved" in note for note in caught.value.__notes__)
+    assert _scenes(world.series())["p1-a"].narration.caption_text == "alpha beta"
+
+
+def test_an_interrupted_rebuild_keeps_its_own_error_when_the_file_changed(world: World) -> None:
+    from narratoflow.sketching.generate import GenerationInterruptedError
+
+    _fresh_idea(world, "p1-b", drop_sketch=True)
+    kit = world.rebuild_kit()
+    kit["images"] = ChangedElsewhereImages(world)
+    with pytest.raises(GenerationInterruptedError) as caught:
+        rebuild_scene(world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), **kit)
+    assert any("not saved" in note for note in caught.value.__notes__)
+    assert not _lock(world).exists()
+
+
+def test_an_interrupted_voice_stage_keeps_its_own_error_when_the_file_changed(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from narratoflow.audio.build import AudioInterruptedError
+
+    series = world.series()
+    narration = series.parts[0].scenes[1].narration
+    series.parts[0].scenes[1].narration = narration.model_copy(
+        update={"source_text": "gamma  delta!"}
+    )
+    series.save(world.paths.series)
+    world.voice.fail_on = "gamma"
+    real = build_audio
+
+    def changed_then_run(*args: Any, **kw: Any) -> Any:
+        _external_caption(world, "p1-a", "alpha beta")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(station, "build_audio", changed_then_run)
+    with pytest.raises(AudioInterruptedError) as caught:
+        rebuild_scene(
+            world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), **world.rebuild_kit()
+        )
+    assert any("not saved" in note for note in caught.value.__notes__)
 
 
 # -- export --------------------------------------------------------------------

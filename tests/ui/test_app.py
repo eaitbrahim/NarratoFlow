@@ -153,7 +153,7 @@ def test_every_handler_unticks_the_confirm_box(
 
 def test_unestimatable_scene_still_loads(paths: StationPaths, settings: Settings) -> None:
     series = Series.load(paths.series)
-    series.parts[0].scenes[1].visual.source = VisualSource.TEXT_CARD
+    series.parts[0].scenes[1].idea_key = None  # nothing to draw, so no estimate
     series.save(paths.series)
     _, demo = build(paths, settings)
     estimate = demo.loads[0].call("s2")[8]

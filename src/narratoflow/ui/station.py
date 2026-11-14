@@ -20,7 +20,8 @@ import math
 import os
 import tempfile
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -178,6 +179,53 @@ def series_sha256(path: Path) -> str:
         raise PlanningError(f"cannot read series file {path}: {exc}") from exc
 
 
+def lock_path(paths: StationPaths) -> Path:
+    """The per-series lock a paid run holds: `series.json.lock` next to the series file."""
+    return paths.series.with_name(paths.series.name + ".lock")
+
+
+def _locked_message(paths: StationPaths) -> str:
+    return (
+        f"a paid action is running on {paths.series.name}; wait for it to finish "
+        f"(if none is, delete {lock_path(paths)})"
+    )
+
+
+def _refuse_while_locked(paths: StationPaths) -> None:
+    """Writing handlers do not edit the series while a paid run holds its lock."""
+    if lock_path(paths).exists():
+        raise PlanningError(_locked_message(paths))
+
+
+@contextmanager
+def _paid_run(paths: StationPaths) -> Iterator[None]:
+    """Exclusive lock for a paid run (Gradio runs buttons concurrently): created with
+    O_EXCL, removed in `finally`. Refuses when another run holds it, and then leaves
+    that run's lock alone."""
+    lock = lock_path(paths)
+    try:
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError as exc:
+        raise PlanningError(_locked_message(paths)) from exc
+    except OSError as exc:
+        raise PlanningError(f"cannot lock {paths.series.name}: {exc}") from exc
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _save_partial(
+    paths: StationPaths, partial: Series, written_sha256: str, error: BaseException
+) -> None:
+    """Save what an interrupted stage finished. When the file changed meanwhile the
+    original error still wins; the note says the progress was not saved."""
+    try:
+        _write(paths, partial, written_sha256)
+    except PlanningError as refused:
+        error.add_note(f"partial progress not saved: {refused}")
+
+
 def _load(paths: StationPaths, expected_sha256: str | None = None) -> Series:
     if expected_sha256 is not None and series_sha256(paths.series) != expected_sha256:
         raise PlanningError(SERIES_CHANGED)
@@ -199,6 +247,7 @@ def _edit(
     change: Callable[[Scene], Scene],
 ) -> str:
     """Apply `change` to one narration scene of the file and save; the new sha256."""
+    _refuse_while_locked(paths)
     series = _load(paths, expected_sha256)
     p, i, scene = _narration(series, scene_id)
     series.parts[p].scenes[i] = change(scene)
@@ -389,6 +438,7 @@ def upload_visual(
     """Attach the creator's own image to the scene as line art (free: no spend)."""
     settings = settings if settings is not None else get_settings()
     check_upload_licence(default_rules(settings), licence, attribution)
+    _refuse_while_locked(paths)
     series = _load(paths, expected_sha256)
     updated, record = attach_upload(
         series,
@@ -437,27 +487,28 @@ def regenerate_visual(
     prices: PriceTable | None = None,
 ) -> RegenerateReport:
     """Draw a new sketch for the scene (paid): refuses without `confirm` when it costs."""
-    settings = settings if settings is not None else get_settings()
-    series = _load(paths, expected_sha256)
-    channel = load_channel(paths.channel)
-    prices = prices if prices is not None else default_prices(settings)
-    _confirmed(_regenerate_cost(series, channel, scene_id, prices), confirm)
-    try:
-        updated, result = regenerate(
-            series,
-            scene_id,
-            channel,
-            settings,
-            images=images,
-            vision=vision,
-            library=library,
-            prices=prices,
-            require_quarantine=False,
-        )
-    except GenerationInterruptedError as exc:
-        _write(paths, exc.partial[0], expected_sha256)
-        raise
-    return RegenerateReport(_write(paths, updated, expected_sha256), result, result.spent_usd)
+    with _paid_run(paths):
+        settings = settings if settings is not None else get_settings()
+        series = _load(paths, expected_sha256)
+        channel = load_channel(paths.channel)
+        prices = prices if prices is not None else default_prices(settings)
+        _confirmed(_regenerate_cost(series, channel, scene_id, prices), confirm)
+        try:
+            updated, result = regenerate(
+                series,
+                scene_id,
+                channel,
+                settings,
+                images=images,
+                vision=vision,
+                library=library,
+                prices=prices,
+                require_quarantine=False,
+            )
+        except GenerationInterruptedError as exc:
+            _save_partial(paths, exc.partial[0], expected_sha256, exc)
+            raise
+        return RegenerateReport(_write(paths, updated, expected_sha256), result, result.spent_usd)
 
 
 def use_text_card(
@@ -467,6 +518,7 @@ def use_text_card(
     `regenerate_visual` brings a sketch back."""
     if not card_text.strip():
         raise PlanningError("a text card needs text")
+    _refuse_while_locked(paths)
     series = _load(paths, expected_sha256)
     _narration(series, scene_id)
     updated = resolve.use_text_card(series, scene_id, card_text, require_quarantine=False)
@@ -550,72 +602,80 @@ def rebuild_scene(
     sketch the scene lacks, plus the voice characters its part's TTS cache lacks) is
     checked before any call; each stage's progress is saved even when a later one fails.
     """
-    settings = settings if settings is not None else get_settings()
-    series = _load(paths, expected_sha256)
-    channel = load_channel(paths.channel)
-    prices = prices if prices is not None else default_prices(settings)
-    library = library if library is not None else default_library(settings)
-    part = series.parts[find_scene(series, scene_id)[0]].index
-    estimate = _rebuild_cost(
-        series, channel, scene_id, settings, paths, library=library, voices=voices, prices=prices
-    )
-    _confirmed(estimate, confirm)
-    sha = expected_sha256
-    try:
-        series, generated = generate_missing(
+    with _paid_run(paths):
+        settings = settings if settings is not None else get_settings()
+        series = _load(paths, expected_sha256)
+        channel = load_channel(paths.channel)
+        prices = prices if prices is not None else default_prices(settings)
+        library = library if library is not None else default_library(settings)
+        part = series.parts[find_scene(series, scene_id)[0]].index
+        estimate = _rebuild_cost(
             series,
             channel,
+            scene_id,
             settings,
-            images=images,
-            vision=vision,
+            paths,
             library=library,
-            prices=prices,
-            only=frozenset({scene_id}),
-        )
-    except GenerationInterruptedError as exc:
-        _write(paths, exc.partial[0], sha)
-        raise
-    sha = _write(paths, series, sha)
-    try:
-        series, audio = build_audio(
-            series,
-            channel,
-            settings,
-            out_dir=paths.audio_dir,
-            cache_root=paths.cache_root,
-            parts=[part],
             voices=voices,
-            aligner=aligner,
-            corpus=corpus,
-            library=library,
             prices=prices,
         )
-    except AudioInterruptedError as exc:
-        _write(paths, exc.partial[0], sha)
-        raise
-    sha = _write(paths, series, sha)
-    rendered = build_render(
-        series,
-        channel,
-        settings,
-        audio_dir=paths.audio_dir,
-        out_dir=paths.render_dir,
-        parts=[part],
-        workers=workers,
-        canvas=canvas,
-        tools=tools,
-        library=library,
-        corpus=corpus,
-    )
-    return RebuildReport(
-        scene_id=scene_id,
-        part=part,
-        generated=generated,
-        audio_parts=[b.index for b in audio.parts],
-        rendered_parts=[b.index for b in rendered.parts if b.index not in rendered.skipped],
-        spent_usd=generated.spent_usd + audio.spent_usd,
-        sha256=sha,
-    )
+        _confirmed(estimate, confirm)
+        sha = expected_sha256
+        try:
+            series, generated = generate_missing(
+                series,
+                channel,
+                settings,
+                images=images,
+                vision=vision,
+                library=library,
+                prices=prices,
+                only=frozenset({scene_id}),
+            )
+        except GenerationInterruptedError as exc:
+            _save_partial(paths, exc.partial[0], sha, exc)
+            raise
+        sha = _write(paths, series, sha)
+        try:
+            series, audio = build_audio(
+                series,
+                channel,
+                settings,
+                out_dir=paths.audio_dir,
+                cache_root=paths.cache_root,
+                parts=[part],
+                voices=voices,
+                aligner=aligner,
+                corpus=corpus,
+                library=library,
+                prices=prices,
+            )
+        except AudioInterruptedError as exc:
+            _save_partial(paths, exc.partial[0], sha, exc)
+            raise
+        sha = _write(paths, series, sha)
+        rendered = build_render(
+            series,
+            channel,
+            settings,
+            audio_dir=paths.audio_dir,
+            out_dir=paths.render_dir,
+            parts=[part],
+            workers=workers,
+            canvas=canvas,
+            tools=tools,
+            library=library,
+            corpus=corpus,
+        )
+        return RebuildReport(
+            scene_id=scene_id,
+            part=part,
+            generated=generated,
+            audio_parts=[b.index for b in audio.parts],
+            rendered_parts=[b.index for b in rendered.parts if b.index not in rendered.skipped],
+            spent_usd=generated.spent_usd + audio.spent_usd,
+            sha256=sha,
+        )
 
 
 def export(

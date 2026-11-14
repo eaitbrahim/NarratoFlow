@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from decimal import Decimal
 from pathlib import Path
@@ -764,6 +765,15 @@ def publish(
         )
 
 
+def _is_loopback(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 @app.command()
 def ui(
     series_json: Path,
@@ -788,6 +798,13 @@ def ui(
     from narratoflow.ui.station import StationPaths
 
     paths = StationPaths.derive(series_json, channel_toml, audio_dir=audio, export_dir=export)
+    if not _is_loopback(host):
+        _err.print(
+            f"[yellow]warning: the station has no authentication; anyone who can reach "
+            f"{escape(host)}:{port} can upload files and spend your image and TTS budget. "
+            "Use 127.0.0.1 unless the network is trusted.[/yellow]",
+            highlight=False,
+        )
     # Gradio serves a returned file only under cwd, its temp dir or allowed_paths.
     served = [str(paths.audio_dir.resolve()), str(paths.export_dir.resolve())]
     build_app(paths, get_settings(), gr).launch(

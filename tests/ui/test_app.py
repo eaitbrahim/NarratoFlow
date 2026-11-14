@@ -312,6 +312,45 @@ def test_cli_ui_serves_audio_and_export_outside_the_launch_directory(
     assert fake.blocks.launched["allowed_paths"] == [str(audio.resolve()), str(export.resolve())]
 
 
+def _launch_on(
+    host: str,
+    paths: StationPaths,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> str:
+    monkeypatch.setitem(sys.modules, "gradio", FakeGradio())
+    monkeypatch.setenv("NARRATOFLOW_DATA_DIR", str(settings.data_dir))
+    code = run_main(
+        monkeypatch, "ui", str(paths.series), "--channel", str(paths.channel), "--host", host
+    )
+    assert code == 0
+    return capsys.readouterr().err
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.1", "::", "example.test"])  # noqa: S104
+def test_cli_ui_warns_on_a_non_loopback_host(
+    host: str,
+    paths: StationPaths,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    err = _launch_on(host, paths, settings, monkeypatch, capsys)
+    assert "no authentication" in err and host in err
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "127.0.0.2"])
+def test_cli_ui_is_quiet_on_loopback(
+    host: str,
+    paths: StationPaths,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert "authentication" not in _launch_on(host, paths, settings, monkeypatch, capsys)
+
+
 def test_real_gradio_builds(paths: StationPaths, settings: Settings) -> None:
     # a bare leftover `gradio/` directory imports as a namespace package: ask for a real module
     pytest.importorskip("gradio.blocks")

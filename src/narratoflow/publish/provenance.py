@@ -179,21 +179,28 @@ def _licence_table(rules: Rules, record: AssetRecord) -> dict[str, LicenceRule] 
     return licences.assets
 
 
+def _generated_field_findings(record: AssetRecord) -> list[CheckResult]:
+    out: list[CheckResult] = []
+    for field in _GENERATED_FIELDS:
+        value = getattr(record, field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            out.append(
+                _fail(
+                    f"{_label(record)}: generated image has no {field} recorded; "
+                    "regenerate the sketch",
+                    _scene(record),
+                )
+            )
+    return out
+
+
 def _record_findings(record: AssetRecord, rules: Rules) -> list[CheckResult]:
     label, scene = _label(record), _scene(record)
     out: list[CheckResult] = []
     if not record.source.strip():
         out.append(_fail(f"{label}: no source is recorded; record where it came from", scene))
     if record.kind == "sketch":
-        for field in _GENERATED_FIELDS:
-            value = getattr(record, field)
-            if value is None or (isinstance(value, str) and not value.strip()):
-                out.append(
-                    _fail(
-                        f"{label}: generated image has no {field} recorded; regenerate the sketch",
-                        scene,
-                    )
-                )
+        out.extend(_generated_field_findings(record))
     licence = record.license.strip()
     if not licence:
         out.append(_fail(f"{label}: no licence is recorded; record its licence", scene))

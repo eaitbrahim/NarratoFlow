@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from narratoflow.audio.timeline import TimingSource
 from narratoflow.errors import ScriptBlockedError
 from narratoflow.library.schemas import COMPOSITE_SEPARATOR, SketchOrigin, SketchRecord
 from narratoflow.models import SceneKind
@@ -15,7 +16,7 @@ from narratoflow.publish.rules import LicenceRule, Rules
 from narratoflow.quran.reciters import ReciterIndex
 from narratoflow.script.source import check_rights
 
-AssetKind = Literal["sketch", "icon", "sfx", "font", "hand", "voice", "recitation"]
+AssetKind = Literal["sketch", "icon", "sfx", "font", "hand", "voice", "recitation", "aligner"]
 
 _GENERATED_FIELDS = ("provider", "model", "created_at", "usage_terms")
 
@@ -141,9 +142,25 @@ def _recitation_records(inputs: PartInputs) -> list[AssetRecord]:
     return list(out.values())
 
 
+def _aligner_records(inputs: PartInputs) -> list[AssetRecord]:
+    """The CTC aligner, once, when any scene's word times came from it (the only `Aligner`)."""
+    scenes = [s.scene_id for s in inputs.timeline.scenes if s.timing_source is TimingSource.ALIGNED]
+    if not scenes:
+        return []
+    return [
+        AssetRecord(
+            kind="aligner",
+            asset_id="ctc-forced-aligner",
+            source="ctc-forced-aligner 1.0.2 + deskpai/ctc_forced_aligner",
+            license="ctc-forced-aligner-terms",
+            scene_ids=scenes,
+        )
+    ]
+
+
 def asset_records(inputs: PartInputs) -> list[AssetRecord]:
     """One record per distinct asset: sketches/icons (scene order), SFX, fonts, hand,
-    voice, recitations. A sketch missing from the library has no record."""
+    voice, recitations, aligner. A sketch missing from the library has no record."""
     return [
         *_sketch_records(inputs),
         *_sfx_records(inputs),
@@ -151,6 +168,7 @@ def asset_records(inputs: PartInputs) -> list[AssetRecord]:
         *_render_records(inputs, "hand"),
         *_voice_records(inputs),
         *_recitation_records(inputs),
+        *_aligner_records(inputs),
     ]
 
 

@@ -4,8 +4,8 @@
 # listed sources, then bump `version` and `checked`. A copy named
 # platform_rules.toml in the data directory overrides this packaged file.
 
-version = "2026-11-13.2"
-checked = 2026-11-13
+version = "2026-11-14.1"
+checked = 2026-11-14
 
 [loudness]
 # No platform publishes a rejection limit; these are NarratoFlow's mastering targets.
@@ -57,6 +57,8 @@ verify = "600 s is the in-app recording limit; uploads reportedly allow up to 60
 "OFL-1.1" = { verdict = "pass" }
 "CC-BY-4.0" = { verdict = "pass", attribution = true, note = "passes only with a recorded attribution" }
 "own-work" = { verdict = "pass", note = "the creator declares they made the image" }
+# the CTC aligner behind word timings (kind "aligner"): see docs/SRD.md section 8
+"ctc-forced-aligner-terms" = { verdict = "warn", note = "word timings from the align extra (DOSL package licence, CC-BY-NC-4.0 default model): not cleared for commercial use" }
 
 [licences.generated]
 "openai-terms" = { verdict = "pass" }

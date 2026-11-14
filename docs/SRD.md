@@ -244,8 +244,8 @@ Every runtime dependency, extra, model and bundled asset. "Commercial-safe" is *
 | `tts-edge`: edge-tts | 7.3.1 | LGPLv3 client, plus Microsoft's service terms | warn: the client is LGPL; the Microsoft read-aloud service grants no explicit commercial licence (`edge-tts-terms` warns at publish) | https://pypi.org/pypi/edge-tts/7.3.1/json | 2026-11-13 |
 | `tts-local`: piper-tts | 1.8.0 | GPL-3.0-or-later | warn: GPL; an optional extra | https://pypi.org/pypi/piper-tts/json | 2026-11-13 |
 | Piper voice models | per model | each model has its own licence, declared in the channel file (`voice.piper_model_license`) | warn until declared (`piper-model-license`) | channel file | - |
-| `align`: ctc-forced-aligner | 1.0.2 | the sdist's LICENSE is the "Deskpai Open Source License (DOSL) Version 1.0", not OSI-approved | **no: not commercial-safe** (below) | https://pypi.org/pypi/ctc-forced-aligner/1.0.2/json (sdist LICENSE) | 2026-11-13 |
-| `align`: its default model `deskpai/ctc_forced_aligner` (ONNX), fetched from `MODEL_URL` in the package | 77d85f9 | **CC-BY-NC-4.0** | **no: non-commercial.** The `align` extra is not commercial-safe; follow-up #166 | https://huggingface.co/api/models/deskpai/ctc_forced_aligner | 2026-11-13 |
+| `align`: ctc-forced-aligner | 1.0.2 | the sdist's LICENSE is the "Deskpai Open Source License (DOSL) Version 1.0", not OSI-approved | documented non-commercial only; publish warns (`ctc-forced-aligner-terms`) (below) | https://pypi.org/pypi/ctc-forced-aligner/1.0.2/json (sdist LICENSE) | 2026-11-13 |
+| `align`: its default model `deskpai/ctc_forced_aligner` (ONNX), fetched from `MODEL_URL` in the package | 77d85f9 | **CC-BY-NC-4.0** | documented non-commercial only; publish warns (`ctc-forced-aligner-terms`) when any scene's word times are `ALIGNED` (#166) | https://huggingface.co/api/models/deskpai/ctc_forced_aligner | 2026-11-13 |
 | `align`: unidecode | 1.4.0 | GPL (GPLv2 or later) | warn: GPL; an optional extra | https://pypi.org/pypi/unidecode/json | 2026-11-13 |
 | `diffusion`: torch | 2.15.0 | BSD-style; PyPI lists Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND ISC AND MIT AND Zlib | yes | https://pypi.org/pypi/torch/json | 2026-11-13 |
 | `diffusion`: diffusers | 0.42.1 | Apache-2.0 | yes | https://pypi.org/pypi/diffusers/json | 2026-11-13 |
@@ -290,6 +290,6 @@ Every runtime dependency, extra, model and bundled asset. "Commercial-safe" is *
 
 ### Findings
 
-- **The `align` extra is not commercial-safe** (DOSL package licence; CC-BY-NC-4.0 default model; GPL `unidecode`). Follow-up: #166. No code changes here.
+- **The `align` extra is documented non-commercial only** (DOSL package licence; CC-BY-NC-4.0 default model; GPL `unidecode`); publish warns (rule id `ctc-forced-aligner-terms`) when any scene's word times came from the CTC aligner (#166). No aligner or model was swapped.
 - **`pyarabic` is GPL and sits in the core dependencies** of an Apache-2.0 project. This was not in the review. Recommendation, owner to confirm: decide whether to replace it, move it behind the `arabic` extra, or accept GPL obligations for distributed builds.
 - Three extras are GPL (`arabic`, `tts-local`, `align`); the matrix states the boundary in section 7.

@@ -340,6 +340,15 @@ it has one.
 | Prices / platform rules | `data/prices.toml` / `data/platform_rules.toml`, each overridable in `NARRATOFLOW_DATA_DIR` | |
 | Output contract | code constants pinned by Plans 4-6 | 1080x1920, 30 fps, -14 LUFS |
 
+## Review station
+
+`narratoflow ui SERIES_JSON --channel CHANNEL.toml` opens a local Gradio page (install the extra first: `uv sync --extra ui`; options `--audio`, `--export`, `--host`, `--port`). It holds no state: every button reads `series.json`, edits it and writes it back, and a stale page (the file changed since it was shown) is refused with "reload".
+
+- Per scene: hear the audio clip, see the sketch, edit the vocalized text and the caption (the author's words stay read-only), set the minimum duration and draw fraction, upload your own image (licence and source required), regenerate the sketch or use a text card.
+- **Rebuild scene** re-runs only what that scene needs: its sketch, the voice for its part (the TTS cache serves every other scene, so no provider call for them) and the render of its part. Other parts are not touched. Rendering still redraws every scene of the edited part; a per-scene segment cache is follow-up #164.
+- Paid actions (regenerate, a rebuild that needs new voice or a new sketch) show the estimate and need the confirm box.
+- **Export 9:16** checks and exports every part like `narratoflow publish`. **Export 16:9** writes `part-NN.16x9.mp4` next to it: a pillarboxed copy of the 9:16 video (the compositor draws 9:16 only); a native 16:9 layout is follow-up #163.
+
 ## Layout
 
 ```

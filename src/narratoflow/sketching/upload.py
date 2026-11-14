@@ -35,7 +35,8 @@ def check_upload_licence(rules: Rules, licence: str, attribution: str) -> None:
         raise PlanningError(f"{licence} needs an attribution; pass --attribution")
 
 
-def _find(series: Series, scene_id: str) -> tuple[int, int, Scene]:
+def find_scene(series: Series, scene_id: str) -> tuple[int, int, Scene]:
+    """(part position, scene position, scene) of `scene_id`, else `PlanningError`."""
     for p, part in enumerate(series.parts):
         for i, scene in enumerate(part.scenes):
             if scene.id == scene_id:
@@ -64,7 +65,7 @@ def attach_upload(
     series is not mutated.
     """
     require_series_channel(series, channel)
-    p, i, scene = _find(series, scene_id)
+    p, i, scene = find_scene(series, scene_id)
     if (
         scene.kind is SceneKind.VERSE
         or scene.idea_key is None

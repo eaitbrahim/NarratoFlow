@@ -12,12 +12,13 @@ from rich.console import Console
 from rich.markup import escape
 
 from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, build_audio
-from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint, vision_model
+from narratoflow.channels.config import load_channel, style_fingerprint
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
-from narratoflow.costs.prices import PriceTable, default_prices
+from narratoflow.costs.prices import default_prices
 from narratoflow.costs.tracker import require_generation_prices
 from narratoflow.errors import (
     CorruptInputError,
+    ExtraMissingError,
     LibraryError,
     NarratoFlowError,
     PlanningError,
@@ -30,6 +31,12 @@ from narratoflow.llm.factory import build_llm_client, vision_llm_config
 from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
+from narratoflow.pipeline.paths import (
+    default_audio_dir,
+    default_cache_root,
+    default_export_dir,
+    default_render_dir,
+)
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.ideas import render_candidates
 from narratoflow.planning.pipeline import plan_series
@@ -54,11 +61,11 @@ from narratoflow.sketching.generate import (
 from narratoflow.sketching.resolve import (
     check_regenerable,
     regenerate,
+    regenerate_estimate,
     swap_idea,
     use_text_card,
 )
 from narratoflow.sketching.upload import attach_upload, check_upload_licence
-from narratoflow.sketching.vision import estimate_check_cost
 from narratoflow.text.dialect import check_dialect as run_dialect_check
 from narratoflow.text.dialect import load_camel_model
 from narratoflow.text.quality import require_clean
@@ -381,16 +388,6 @@ def sketch_upload(
     _out.print(f"{escape(scene_id)}: uploaded sketch {record.id} (unchecked)", highlight=False)
 
 
-def _regenerate_estimate(idea_key: str, channel: ChannelConfig, prices: PriceTable) -> Decimal:
-    """Image price plus the vision check (none when vision is off) for one sketch."""
-    style = channel.style
-    estimate = prices.image(style.image_provider, style.image_model)
-    ident = vision_model(channel)
-    if ident is not None:
-        estimate += estimate_check_cost(style, idea_key, prices, *ident, with_reference=True)
-    return estimate
-
-
 @sketch_app.command("resolve")
 def sketch_resolve(
     series_json: Path,
@@ -447,7 +444,7 @@ def sketch_resolve(
     prices = default_prices(settings)
     require_generation_prices(channel, prices, vision=True)
     if not yes:
-        estimate = _regenerate_estimate(idea_key, channel, prices)
+        estimate = regenerate_estimate(idea_key, channel, prices)
         if not typer.confirm(
             f"Regenerate the sketch for {scene_id}? Estimated cost {format_usd(estimate)}"
         ):
@@ -523,14 +520,14 @@ def audio_build(
     """Narrate, mix and master every part of an approved series to a FLAC plus a timeline."""
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
-    target = out if out is not None else series_json.parent / "audio"
+    target = out if out is not None else default_audio_dir(series_json)
     try:
         updated, result = build_audio(
             series,
             channel,
             get_settings(),
             out_dir=target,
-            cache_root=series_json.parent / ".cache",
+            cache_root=default_cache_root(series_json),
             parts=part or None,
         )
     except AudioInterruptedError as exc:
@@ -609,7 +606,7 @@ def render(
     """Render every part of an approved series to a 1080x1920 MP4 plus a render report."""
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
-    audio_dir = audio if audio is not None else series_json.parent / "audio"
+    audio_dir = audio if audio is not None else default_audio_dir(series_json)
     done: list[PartVideo] = []
     try:
         result = build_render(
@@ -617,7 +614,7 @@ def render(
             channel,
             get_settings(),
             audio_dir=audio_dir,
-            out_dir=out if out is not None else audio_dir,
+            out_dir=out if out is not None else default_render_dir(audio_dir),
             parts=part or None,
             workers=workers,
             on_part=done.append,
@@ -748,14 +745,14 @@ def publish(
     """
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
-    audio_dir = audio if audio is not None else series_json.parent / "audio"
+    audio_dir = audio if audio is not None else default_audio_dir(series_json)
     result = build_publish(
         series,
         channel,
         get_settings(),
-        render_dir=render_dir if render_dir is not None else audio_dir,
+        render_dir=render_dir if render_dir is not None else default_render_dir(audio_dir),
         audio_dir=audio_dir,
-        export_dir=export if export is not None else series_json.parent / "export",
+        export_dir=export if export is not None else default_export_dir(series_json),
         parts=part or None,
     )
     _print_publish(result)
@@ -765,6 +762,33 @@ def publish(
             f"export blocked for part(s) {listed}: "
             "fix every FAIL above and run narratoflow publish again"
         )
+
+
+@app.command()
+def ui(
+    series_json: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    audio: Annotated[
+        Path | None,
+        typer.Option("--audio", help="Audio directory (default: audio/ next to SERIES_JSON)."),
+    ] = None,
+    export: Annotated[
+        Path | None,
+        typer.Option("--export", help="Export directory (default: export/ next to SERIES_JSON)."),
+    ] = None,
+    host: Annotated[str, typer.Option("--host", help="Address to listen on.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to listen on.")] = 7860,
+) -> None:
+    """Open the review station: edit scenes of SERIES_JSON, rebuild one, export 9:16 or 16:9."""
+    try:
+        import gradio as gr
+    except ImportError as exc:
+        raise ExtraMissingError("install the 'ui' extra: uv sync --extra ui") from exc
+    from narratoflow.ui.app import build_app
+    from narratoflow.ui.station import StationPaths
+
+    paths = StationPaths.derive(series_json, channel_toml, audio_dir=audio, export_dir=export)
+    build_app(paths, get_settings(), gr).launch(server_name=host, server_port=port)
 
 
 def main() -> None:

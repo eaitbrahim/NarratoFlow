@@ -44,7 +44,7 @@ from narratoflow.errors import (
     PlanningError,
 )
 from narratoflow.library.repository import SketchLibrary, default_library
-from narratoflow.models import Part, Scene, SceneKind, Series, VerseRef, VisualSource
+from narratoflow.models import Language, Part, Scene, SceneKind, Series, VerseRef, VisualSource
 from narratoflow.pipeline.cache import StageCache
 from narratoflow.quran.corpus import QuranCorpus, default_corpus
 from narratoflow.quran.reciters import Reciter, ReciterIndex, default_reciters, select_reciter
@@ -133,26 +133,32 @@ def _check_sketches(parts: list[Part]) -> None:
                 )
 
 
+def check_scene_text(scene: Scene) -> None:
+    """The author's words: tts_text keeps the skeleton, captions keep the word count.
+
+    `PlanningError` otherwise. A scene without narration texts passes.
+    """
+    narration = scene.narration
+    if narration.tts_text is not None:
+        try:
+            assert_skeleton_preserved(narration.source_text, narration.tts_text)
+        except SkeletonMismatchError as exc:
+            raise PlanningError(
+                f"scene {scene.id}: tts_text changes the author's words ({exc})"
+            ) from exc
+    if narration.caption_text is not None:
+        shown = len(tokens(narration.caption_text))
+        written = len(tokens(narration.source_text))
+        if shown != written:
+            raise PlanningError(
+                f"scene {scene.id}: caption has {shown} words but the source text has {written}"
+            )
+
+
 def _check_texts(parts: list[Part]) -> None:
-    """The author's words: tts_text keeps the skeleton, captions keep the word count."""
     for part in parts:
         for scene in _narration(part):
-            narration = scene.narration
-            if narration.tts_text is not None:
-                try:
-                    assert_skeleton_preserved(narration.source_text, narration.tts_text)
-                except SkeletonMismatchError as exc:
-                    raise PlanningError(
-                        f"scene {scene.id}: tts_text changes the author's words ({exc})"
-                    ) from exc
-            if narration.caption_text is not None:
-                shown = len(tokens(narration.caption_text))
-                written = len(tokens(narration.source_text))
-                if shown != written:
-                    raise PlanningError(
-                        f"scene {scene.id}: caption has {shown} words "
-                        f"but the source text has {written}"
-                    )
+            check_scene_text(scene)
 
 
 def _verses(part: Part) -> list[Scene]:
@@ -209,14 +215,7 @@ def _preflight(
     require_ffmpeg()
     prices = prices if prices is not None else default_prices(settings)
     prices.voice(channel.voice.provider, channel.voice.model)
-    if voices is None:
-        chain = build_voice_chain(channel, settings)
-        for choice in chain:
-            close = getattr(choice.provider, "close", None)
-            if callable(close):
-                stack.callback(close)
-    else:
-        chain = voices
+    chain = voices if voices is not None else _voice_chain(channel, settings, stack)
     if not chain:
         raise ChannelConfigError("no voice to narrate with")
     for choice in chain:
@@ -246,6 +245,18 @@ def _preflight(
         library = default_library(settings)
     strokes = _load_strokes(selected, library)
     return _Plan(selected, chain, prices, strokes, reciter, corpus, channel_lexicon(channel))
+
+
+def _voice_chain(
+    channel: ChannelConfig, settings: Settings, stack: contextlib.ExitStack
+) -> list[VoiceChoice]:
+    """The channel's voice chain; its providers are closed when `stack` exits."""
+    chain = build_voice_chain(channel, settings)
+    for choice in chain:
+        close = getattr(choice.provider, "close", None)
+        if callable(close):
+            stack.callback(close)
+    return chain
 
 
 def _resolve_aligner(aligner: Aligner | Literal["auto"] | None) -> tuple[Aligner | None, bool]:
@@ -297,6 +308,55 @@ def _assets(mix: MixResult, pack: SfxPack) -> list[AssetUse]:
     return out
 
 
+def _part_estimate(
+    part: Part,
+    primary: VoiceChoice,
+    cache: StageCache,
+    *,
+    language: Language,
+    lexicon: Lexicon,
+    prices: PriceTable,
+) -> Decimal:
+    """USD to voice the part's uncached narration with the primary voice."""
+    chars = uncached_chars(part, primary, cache, language=language, lexicon=lexicon)
+    return estimate_speech_cost(prices, primary.provider.name, primary.provider.model, chars)
+
+
+def estimate_voice_cost(
+    series: Series,
+    channel: ChannelConfig,
+    settings: Settings,
+    parts: Sequence[int] | None,
+    *,
+    cache_root: Path,
+    voices: list[VoiceChoice] | None = None,
+    prices: PriceTable | None = None,
+) -> Decimal:
+    """What `build_audio` would spend on narration for `parts` (None = all): the primary
+    voice's price for the characters its TTS cache lacks. No call, no spend; 0 when
+    everything is cached or free. Refuses an unknown part or a voice without a price.
+    """
+    prices = prices if prices is not None else default_prices(settings)
+    selected = _selected(series, parts)
+    with contextlib.ExitStack() as stack:
+        chain = voices if voices is not None else _voice_chain(channel, settings, stack)
+        if not chain:
+            raise ChannelConfigError("no voice to narrate with")
+        primary = chain[0]
+        prices.voice(primary.provider.name, primary.provider.model)
+        cache = StageCache(cache_root)
+        lexicon = channel_lexicon(channel)
+        return sum(
+            (
+                _part_estimate(
+                    p, primary, cache, language=series.language, lexicon=lexicon, prices=prices
+                )
+                for p in selected
+            ),
+            Decimal(0),
+        )
+
+
 @dataclass
 class _Run:
     series: Series
@@ -319,12 +379,16 @@ class _Run:
             clips[scene.id] = clip
             verse_warnings.extend(warnings)
         primary = plan.chain[0]
-        name, model = primary.provider.name, primary.provider.model
-        chars = uncached_chars(
-            part, primary, self.cache, language=self.series.language, lexicon=plan.lexicon
+        estimate = _part_estimate(
+            part,
+            primary,
+            self.cache,
+            language=self.series.language,
+            lexicon=plan.lexicon,
+            prices=plan.prices,
         )
-        estimate = estimate_speech_cost(plan.prices, name, model, chars)
         if estimate > 0:  # verse-only, fully cached or free: nothing to refuse
+            name, model = primary.provider.name, primary.provider.model
             tracker.ensure_room(estimate, f"voice {name}/{model} part {part.index}")
         narration = narrate_part(
             part,

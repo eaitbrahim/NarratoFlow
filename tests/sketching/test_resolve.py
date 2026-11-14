@@ -8,7 +8,7 @@ from fakes.images import FakeImages
 from fakes.llm import FakeLLM
 from fixtures import images as img
 
-from narratoflow.channels.config import ChannelConfig
+from narratoflow.channels.config import ChannelConfig, VisionConfig
 from narratoflow.errors import BudgetExceededError, PlanningError, ProviderError
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.models import Series, VisualSource
@@ -16,11 +16,13 @@ from narratoflow.settings import Settings
 from narratoflow.sketching.generate import (
     QUARANTINED_FLAG,
     GenerationInterruptedError,
+    GenerationResult,
     generate_missing,
 )
 from narratoflow.sketching.resolve import (
     check_regenerable,
     regenerate,
+    regenerate_estimate,
     swap_idea,
     use_text_card,
 )
@@ -329,3 +331,67 @@ def test_swap_idea_resets_an_uploaded_scene_to_icon() -> None:
     [sc] = scenes_of(swap_idea(_uploaded_scene(), "s001", "lamp|roman", "an oil lamp"))
     assert sc.visual.source is VisualSource.ICON
     assert sc.sketch_id is None and QUARANTINED_FLAG not in sc.flags
+
+
+def test_regenerate_unflagged_scene_when_allowed(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s = series([scene(1)])
+    images = FakeImages([img.scroll(size=256)])
+
+    def run(*, require_quarantine: bool = True) -> tuple[Series, GenerationResult]:
+        return regenerate(
+            s,
+            "s001",
+            channel,
+            settings,
+            images=images,
+            vision=None,
+            library=library,
+            prices=PRICES,
+            require_quarantine=require_quarantine,
+        )
+
+    with pytest.raises(PlanningError, match="not quarantined"):
+        run()
+    assert images.requests == []
+    out, result = run(require_quarantine=False)
+    [sc] = scenes_of(out)
+    assert sc.sketch_attempt == 1 and sc.sketch_id is not None
+    assert result.generated == 1 and len(images.requests) == 1
+
+
+def test_check_regenerable_unflagged_scene_when_allowed() -> None:
+    s = series([scene(1)])
+    with pytest.raises(PlanningError, match="not quarantined"):
+        check_regenerable(s, "s001")
+    assert check_regenerable(s, "s001", require_quarantine=False) == "thing-1|roman"
+    text_card = series([scene(1, visual={"source": "text_card"})])
+    with pytest.raises(PlanningError, match="nothing to generate"):
+        check_regenerable(text_card, "s001", require_quarantine=False)
+
+
+def test_swap_idea_unflagged_scene_when_allowed() -> None:
+    s = series([scene(1, visual={"source": "image_to_sketch"})])
+    with pytest.raises(PlanningError, match="not quarantined"):
+        swap_idea(s, "s001", "lamp|roman", "an oil lamp")
+    [sc] = scenes_of(swap_idea(s, "s001", "lamp|roman", "an oil lamp", require_quarantine=False))
+    assert sc.idea_key == "lamp|roman" and sc.sketch_id is None
+    assert sc.visual.source is VisualSource.ICON
+
+
+def test_use_text_card_unflagged_scene_when_allowed() -> None:
+    s = series([scene(1)])
+    with pytest.raises(PlanningError, match="not quarantined"):
+        use_text_card(s, "s001", "Hi")
+    [sc] = scenes_of(use_text_card(s, "s001", "Hi", require_quarantine=False))
+    assert sc.visual.source is VisualSource.TEXT_CARD and sc.card_text == "Hi"
+    with pytest.raises(PlanningError, match="unknown scene"):
+        use_text_card(s, "s999", require_quarantine=False)
+
+
+def test_regenerate_estimate_matches_cli(channel: ChannelConfig) -> None:
+    # PER_SKETCH is the image price plus the candidate and reference vision checks
+    assert regenerate_estimate("scroll|generic", channel, PRICES) == PER_SKETCH
+    off = channel.model_copy(update={"vision": VisionConfig(provider="none")})
+    assert regenerate_estimate("scroll|generic", off, PRICES) == Decimal("0.04")

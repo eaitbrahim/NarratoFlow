@@ -8,9 +8,10 @@ never mutated.
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any, Literal
 
-from narratoflow.channels.config import ChannelConfig
+from narratoflow.channels.config import ChannelConfig, vision_model
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import PlanningError
 from narratoflow.images import ImageProvider
@@ -26,6 +27,7 @@ from narratoflow.sketching.generate import (
     GenerationResult,
     generate_missing,
 )
+from narratoflow.sketching.vision import estimate_check_cost
 
 
 def _resolved(
@@ -34,16 +36,17 @@ def _resolved(
     change: Callable[[Scene], dict[str, Any]],
     *,
     settled: Callable[[Scene], bool] = lambda _: False,
+    require_quarantine: bool = True,
 ) -> Series:
     """A copy of `series` whose quarantined scene `scene_id` is updated by `change`
     (the quarantine flag is always cleared). An unflagged scene is refused unless
-    `settled` accepts it."""
+    `settled` accepts it or `require_quarantine` is False (the review station)."""
     out = series.model_copy(deep=True)
     for part in out.parts:
         for i, scene in enumerate(part.scenes):
             if scene.id != scene_id:
                 continue
-            if QUARANTINED_FLAG not in scene.flags and not settled(scene):
+            if require_quarantine and QUARANTINED_FLAG not in scene.flags and not settled(scene):
                 raise PlanningError(f"scene {scene_id} is not quarantined")
             flags = [f for f in scene.flags if f != QUARANTINED_FLAG]
             part.scenes[i] = scene.model_copy(update={**change(scene), "flags": flags})
@@ -92,17 +95,17 @@ def _regenerated(scene: Scene) -> dict[str, Any]:
     }
 
 
-def check_regenerable(series: Series, scene_id: str) -> str:
+def check_regenerable(series: Series, scene_id: str, *, require_quarantine: bool = True) -> str:
     """The scene's idea key if `regenerate` accepts the scene (it exists, is
-    quarantined and has an idea to draw), else `PlanningError`. No spend; the
-    series is not changed."""
+    quarantined unless `require_quarantine` is False, and has an idea to draw), else
+    `PlanningError`. No spend; the series is not changed."""
     keys: list[str] = []
 
     def change(scene: Scene) -> dict[str, Any]:
         keys.append(_drawable_key(scene))
         return {}
 
-    _resolved(series, scene_id, change)
+    _resolved(series, scene_id, change, require_quarantine=require_quarantine)
     return keys[0]
 
 
@@ -116,8 +119,10 @@ def regenerate(
     vision: LLMClient | Literal["auto"] | None = "auto",
     library: SketchLibrary | None = None,
     prices: PriceTable | None = None,
+    require_quarantine: bool = True,
 ) -> tuple[Series, GenerationResult]:
     """Generate a new sketch for one quarantined scene (a paid call: confirm first).
+    `require_quarantine=False` also accepts an unflagged scene (the review station).
 
     The scene's attempt counter goes up so the image seed differs from the earlier
     one. Returns the new series and the run's result: when the new sketch fails too
@@ -126,7 +131,7 @@ def regenerate(
     `check_regenerable` refuses. May raise `GenerationInterruptedError` like
     `generate_missing`.
     """
-    prepared = _resolved(series, scene_id, _regenerated)
+    prepared = _resolved(series, scene_id, _regenerated, require_quarantine=require_quarantine)
     try:
         out, result = generate_missing(
             prepared,
@@ -153,7 +158,14 @@ def regenerate(
     return out, result
 
 
-def swap_idea(series: Series, scene_id: str, new_key: str, description: str) -> Series:
+def swap_idea(
+    series: Series,
+    scene_id: str,
+    new_key: str,
+    description: str,
+    *,
+    require_quarantine: bool = True,
+) -> Series:
     """Give a quarantined scene another idea; the next `sketch generate` matches it."""
     violations = validate_idea(
         IdeaOut(
@@ -176,10 +188,16 @@ def swap_idea(series: Series, scene_id: str, new_key: str, description: str) -> 
             "visual": _styled(scene).visual,
         }
 
-    return _resolved(series, scene_id, change)
+    return _resolved(series, scene_id, change, require_quarantine=require_quarantine)
 
 
-def use_text_card(series: Series, scene_id: str, card_text: str | None = None) -> Series:
+def use_text_card(
+    series: Series,
+    scene_id: str,
+    card_text: str | None = None,
+    *,
+    require_quarantine: bool = True,
+) -> Series:
     """Show a text card instead of a sketch; `card_text` is what the card says.
 
     A scene already resolved as a text card accepts a new `card_text` (its text is
@@ -196,4 +214,16 @@ def use_text_card(series: Series, scene_id: str, card_text: str | None = None) -
     def is_card(scene: Scene) -> bool:
         return card_text is not None and scene.visual.source is VisualSource.TEXT_CARD
 
-    return _resolved(series, scene_id, change, settled=is_card)
+    return _resolved(
+        series, scene_id, change, settled=is_card, require_quarantine=require_quarantine
+    )
+
+
+def regenerate_estimate(idea_key: str, channel: ChannelConfig, prices: PriceTable) -> Decimal:
+    """Image price plus the vision check (none when vision is off) for one sketch."""
+    style = channel.style
+    estimate = prices.image(style.image_provider, style.image_model)
+    ident = vision_model(channel)
+    if ident is not None:
+        estimate += estimate_check_cost(style, idea_key, prices, *ident, with_reference=True)
+    return estimate

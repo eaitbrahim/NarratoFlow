@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from fixtures import images as img
 from visuals.lineart_samples import sample_png
@@ -7,7 +9,7 @@ from visuals.lineart_samples import sample_png
 from narratoflow.channels.config import ChannelConfig, style_fingerprint
 from narratoflow.errors import PlanningError, SketchRejectedError
 from narratoflow.library.repository import SketchLibrary
-from narratoflow.library.schemas import SketchOrigin, SketchStatus
+from narratoflow.library.schemas import Provenance, SketchOrigin, SketchStatus
 from narratoflow.models import Narration, Scene, SceneKind, Series, VerseRef, VisualSource
 from narratoflow.publish.rules import default_rules
 from narratoflow.settings import Settings
@@ -154,6 +156,41 @@ def test_upload_onto_a_quarantined_earlier_upload_is_refused(
     library.quarantine(sketch_id, "creator rejected it")
     with pytest.raises(SketchRejectedError, match="quarantined: creator rejected it"):
         _attach(series([scene(1)]), "s001", channel, library, raw)
+
+
+def test_reupload_with_other_provenance_is_refused_not_silently_deduped(
+    channel: ChannelConfig, library: SketchLibrary
+) -> None:
+    raw = sample_png("camera")
+    _attach(series([scene(1)]), "s001", channel, library, raw)
+    with pytest.raises(PlanningError, match=r"already stored.*different"):
+        attach_upload(
+            series([scene(1)]), "s001", channel, raw,
+            licence="CC0-1.0", source="another photo", library=library,
+        )  # fmt: skip
+
+
+def test_reupload_of_identical_provenance_is_idempotent(
+    channel: ChannelConfig, library: SketchLibrary
+) -> None:
+    raw = sample_png("camera")
+    _, first = _attach(series([scene(1)]), "s001", channel, library, raw)
+    _, second = _attach(series([scene(1)]), "s001", channel, library, raw)
+    assert first == second
+
+
+def test_upload_matching_a_non_uploaded_record_is_refused(
+    channel: ChannelConfig, library: SketchLibrary
+) -> None:
+    raw = sample_png("camera")
+    s = series([scene(1)])
+    library.add_sketch(
+        _version(library, channel), scenes_of(s)[0].idea_key or "", ink_to_png(xdog_lineart(raw)),
+        ".png", SketchOrigin.GENERATED, SketchStatus.PASSED, True,
+        Provenance(source="model", license="own-work", created_at=datetime.now(UTC)),
+    )  # fmt: skip
+    with pytest.raises(PlanningError, match="not an upload"):
+        _attach(s, "s001", channel, library, raw)
 
 
 def test_upload_blank_source_is_refused(channel: ChannelConfig, library: SketchLibrary) -> None:

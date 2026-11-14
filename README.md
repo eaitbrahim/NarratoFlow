@@ -216,7 +216,9 @@ upgrading, and a paid voice bills them once more.
 Word timings come from the voice when it reports them. The optional `align` extra
 (`ctc-forced-aligner`) refines or supplies them: it downloads a model on first use and, being
 source-only on PyPI, needs a C++ compiler to install. Without it the timeline falls back to
-estimated word timings and each part warns once.
+estimated word timings and each part warns once. The `align` extra is non-commercial only (DOSL
+package licence, CC-BY-NC-4.0 default model): `narratoflow publish` warns (`ctc-forced-aligner-terms`)
+when any scene's word times came from it.
 
 ### Qur'an recitation
 

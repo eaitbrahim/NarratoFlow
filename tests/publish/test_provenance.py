@@ -18,7 +18,14 @@ from fixtures.parts import (
 )
 from fixtures.publish import PACKAGED_RULES, dumps_toml, make_inputs, write_rules
 
-from narratoflow.audio.timeline import AssetUse, RecitationUsed, SfxHit, VoiceUsed
+from narratoflow.audio.timeline import (
+    AssetUse,
+    PartTimeline,
+    RecitationUsed,
+    SfxHit,
+    TimingSource,
+    VoiceUsed,
+)
 from narratoflow.channels.config import ChannelConfig
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord
@@ -171,7 +178,7 @@ def test_unknown_generated_terms_fail_and_local_model_warns(
     rules = _voice_pass(tmp_path)
     unknown = _with_sketch(inputs, license="mystery-terms")
     [reason] = _fails(provenance_checks(unknown, rules, EMPTY))
-    assert "licence mystery-terms is not allowed by platform rules 2026-11-13.2" in reason
+    assert "licence mystery-terms is not allowed by platform rules 2026-11-14.1" in reason
     local = _with_sketch(inputs, license="local-model-license")
     results = provenance_checks(local, rules, EMPTY)
     assert _fails(results) == []
@@ -572,3 +579,61 @@ def test_unknown_composite_part_names_only_that_part(
     assert len(reasons) == 2
     assert "licence mystery-a is not allowed" in reasons[0]
     assert "licence mystery-b is not allowed" in reasons[1]
+
+
+# -- aligner (ctc-forced-aligner is non-commercial) -------------------------------------
+
+
+def _timed(inputs: PartInputs, *sources: TimingSource) -> PartInputs:
+    """`inputs` whose narration scenes take `sources` in order."""
+    scenes = [
+        scene.model_copy(update={"timing_source": src})
+        for scene, src in zip(inputs.timeline.scenes, sources, strict=True)
+    ]
+    timeline: PartTimeline = inputs.timeline.model_copy(update={"scenes": scenes})
+    return replace(inputs, timeline=timeline)
+
+
+def test_aligned_scene_records_aligner_and_warns(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _timed(
+        make_inputs(tmp_path, library, channel), TimingSource.ALIGNED, TimingSource.ESTIMATED
+    )
+    [aligner] = [r for r in asset_records(inputs) if r.kind == "aligner"]
+    assert aligner.asset_id == "ctc-forced-aligner"
+    assert aligner.license == "ctc-forced-aligner-terms"
+    assert aligner.source == "ctc-forced-aligner 1.0.2 + deskpai/ctc_forced_aligner"
+    assert aligner.scene_ids == ["s1"]
+    results = provenance_checks(inputs, load_rules(PACKAGED_RULES), EMPTY)
+    assert _fails(results) == []
+    [warn] = [r for r in results if r.severity is Severity.WARN and "aligner" in r.reason]
+    assert warn.scene_id == "s1"
+    assert warn.reason == (
+        "aligner ctc-forced-aligner: licence ctc-forced-aligner-terms: word timings from "
+        "the align extra (DOSL package licence, CC-BY-NC-4.0 default model): "
+        "not cleared for commercial use"
+    )
+
+
+@pytest.mark.parametrize("source", [TimingSource.PROVIDER, TimingSource.ESTIMATED])
+def test_no_aligned_scene_no_aligner_record(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig, source: TimingSource
+) -> None:
+    inputs = _timed(make_inputs(tmp_path, library, channel), source, source)
+    assert [r for r in asset_records(inputs) if r.kind == "aligner"] == []
+    results = provenance_checks(inputs, load_rules(PACKAGED_RULES), EMPTY)
+    assert not any("aligner" in r.reason for r in results)
+
+
+def test_several_aligned_scenes_collapse_to_one_record(
+    tmp_path: Path, library: SketchLibrary, channel: ChannelConfig
+) -> None:
+    inputs = _timed(
+        make_inputs(tmp_path, library, channel), TimingSource.ALIGNED, TimingSource.ALIGNED
+    )
+    [aligner] = [r for r in asset_records(inputs) if r.kind == "aligner"]
+    assert aligner.scene_ids == ["s1", "s2"]
+    results = provenance_checks(inputs, load_rules(PACKAGED_RULES), EMPTY)
+    [warn] = [r for r in results if r.severity is Severity.WARN and "aligner" in r.reason]
+    assert warn.scene_id is None

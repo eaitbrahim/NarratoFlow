@@ -24,6 +24,7 @@ from narratoflow.audio.build import (
     AudioInterruptedError,
     build_audio,
     check_scene_text,
+    estimate_voice_cost,
 )
 from narratoflow.audio.io import Loudness, Samples
 from narratoflow.audio.narrate import ALIGN_EXTRA_WARNING
@@ -1050,3 +1051,27 @@ def test_check_scene_text_messages_unchanged() -> None:
     with pytest.raises(PlanningError) as caption:
         check_scene_text(narr("s1", "alpha beta gamma", caption="alpha beta"))
     assert str(caption.value) == "scene s1: caption has 2 words but the source text has 3"
+
+
+def test_estimate_voice_cost_prices_only_uncached_selected_parts(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    pack: SfxPack,
+    tmp_path: Path,
+) -> None:
+    s = make_series([narr("s1", "alpha beta")], [narr("s2", "gamma delta")])
+    voices = [VoiceChoice(FakeVoice(), "v1")]
+    cache_root = tmp_path / "series" / ".cache"
+
+    def estimate(parts: list[int] | None) -> Decimal:
+        return estimate_voice_cost(
+            s, channel, settings, parts, cache_root=cache_root, voices=voices, prices=PRICES
+        )
+
+    assert estimate(None) == cost("alpha beta", "gamma delta")
+    assert estimate([2]) == cost("gamma delta")
+    with pytest.raises(PlanningError, match="no part 3"):
+        estimate([3])
+    run(s, channel, settings, tmp_path, voices=[FakeVoice()], library=library, pack=pack)
+    assert estimate(None) == 0  # the TTS cache now serves both parts

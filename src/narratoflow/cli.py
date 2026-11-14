@@ -30,6 +30,12 @@ from narratoflow.llm.factory import build_llm_client, vision_llm_config
 from narratoflow.logging_setup import setup_logging
 from narratoflow.models import Language, Project, Series
 from narratoflow.money import format_usd
+from narratoflow.pipeline.paths import (
+    default_audio_dir,
+    default_cache_root,
+    default_export_dir,
+    default_render_dir,
+)
 from narratoflow.planning.approval import needs_approval, render_approval_list
 from narratoflow.planning.ideas import render_candidates
 from narratoflow.planning.pipeline import plan_series
@@ -513,14 +519,14 @@ def audio_build(
     """Narrate, mix and master every part of an approved series to a FLAC plus a timeline."""
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
-    target = out if out is not None else series_json.parent / "audio"
+    target = out if out is not None else default_audio_dir(series_json)
     try:
         updated, result = build_audio(
             series,
             channel,
             get_settings(),
             out_dir=target,
-            cache_root=series_json.parent / ".cache",
+            cache_root=default_cache_root(series_json),
             parts=part or None,
         )
     except AudioInterruptedError as exc:
@@ -599,7 +605,7 @@ def render(
     """Render every part of an approved series to a 1080x1920 MP4 plus a render report."""
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
-    audio_dir = audio if audio is not None else series_json.parent / "audio"
+    audio_dir = audio if audio is not None else default_audio_dir(series_json)
     done: list[PartVideo] = []
     try:
         result = build_render(
@@ -607,7 +613,7 @@ def render(
             channel,
             get_settings(),
             audio_dir=audio_dir,
-            out_dir=out if out is not None else audio_dir,
+            out_dir=out if out is not None else default_render_dir(audio_dir),
             parts=part or None,
             workers=workers,
             on_part=done.append,
@@ -738,14 +744,14 @@ def publish(
     """
     channel = load_channel(channel_toml)
     series = Series.load(series_json)
-    audio_dir = audio if audio is not None else series_json.parent / "audio"
+    audio_dir = audio if audio is not None else default_audio_dir(series_json)
     result = build_publish(
         series,
         channel,
         get_settings(),
-        render_dir=render_dir if render_dir is not None else audio_dir,
+        render_dir=render_dir if render_dir is not None else default_render_dir(audio_dir),
         audio_dir=audio_dir,
-        export_dir=export if export is not None else series_json.parent / "export",
+        export_dir=export if export is not None else default_export_dir(series_json),
         parts=part or None,
     )
     _print_publish(result)

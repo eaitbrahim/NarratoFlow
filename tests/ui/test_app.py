@@ -264,6 +264,9 @@ def test_cli_ui_launches_on_host_and_port(
 
 
 def test_real_gradio_builds(paths: StationPaths, settings: Settings) -> None:
-    gradio = pytest.importorskip("gradio")
+    # a bare leftover `gradio/` directory imports as a namespace package: ask for a real module
+    pytest.importorskip("gradio.blocks")
+    import gradio
+
     demo = build_app(paths, settings, gradio)
     assert isinstance(demo, gradio.Blocks)

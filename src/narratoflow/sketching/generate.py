@@ -94,6 +94,8 @@ class GenerationResult:
     """Scene ids left without a sketch because theirs FAILED or the scene is flagged."""
     unchecked: list[str] = field(default_factory=list)
     """Scene ids whose sketch (new, bundled, reused or kept) is UNCHECKED (no vision)."""
+    uploaded: list[str] = field(default_factory=list)
+    """Scene ids whose visual is the creator's upload (IMAGE_TO_SKETCH), kept or not."""
     spent_usd: Decimal = Decimal(0)
     """This run's spend; each `Part.spent_usd` holds the part's cumulative spend."""
 
@@ -389,6 +391,13 @@ def _quarantined(scene: Scene) -> Scene:
     return scene.model_copy(update={"sketch_id": None, "match": "new", "flags": flags})
 
 
+def _idea_to_draw(scene: Scene) -> str | None:
+    """The idea key, or None for a verse, a scene without a key or a text card."""
+    if scene.kind is SceneKind.VERSE or scene.visual.source is VisualSource.TEXT_CARD:
+        return None
+    return scene.idea_key
+
+
 @dataclass
 class _Run:
     channel: ChannelConfig
@@ -417,29 +426,43 @@ class _Run:
 
     def scene(self, scene: Scene, tracker: SpendTracker) -> Scene:
         self.stored = []
-        if scene.kind is SceneKind.VERSE or scene.idea_key is None:
+        idea_key = _idea_to_draw(scene)
+        if idea_key is None:
             return scene
-        if scene.visual.source is VisualSource.TEXT_CARD:
-            # the creator chose a text card: nothing to draw, nothing to spend
-            return scene
+        uploaded = scene.visual.source is VisualSource.IMAGE_TO_SKETCH
+        if uploaded:
+            # every run lists it, so the CLI keeps printing the upload hint
+            self.result.uploaded.append(scene.id)
         if QUARANTINED_FLAG in scene.flags:
             # the creator resolves a quarantined scene; nothing is attached or
             # regenerated automatically (spec 6.3)
             self.result.quarantined.append(scene.id)
             return scene
-        rtl = self.channel.language is Language.ARABIC
-        key = parse_idea_key(scene.idea_key)
+        key = parse_idea_key(idea_key)
         current = self._attached_record(scene, key)
+        if uploaded and current is None:
+            # the creator's image is never generated: upload it (spec 6.3)
+            self.result.quarantined.append(scene.id)
+            return _quarantined(scene)
         if current is not None:
-            if current.status is SketchStatus.FAILED:
-                # quarantined after it was attached: no regeneration, no spend
-                self.result.quarantined.append(scene.id)
-                return _quarantined(scene)
-            # stable re-runs: keep the sketch and the scene's match as they are
-            _ensure_strokes(self.library, current, rtl=rtl)
-            self.result.kept += 1
-            self._note_unchecked(scene, current)
-            return scene
+            return self._keep(scene, current)
+        return self._attach_new(scene, key, tracker)
+
+    def _keep(self, scene: Scene, current: SketchRecord) -> Scene:
+        """The scene whose attached sketch (from an earlier run) is kept, or flagged."""
+        if current.status is SketchStatus.FAILED:
+            # quarantined after it was attached: no regeneration, no spend
+            self.result.quarantined.append(scene.id)
+            return _quarantined(scene)
+        # stable re-runs: keep the sketch and the scene's match as they are
+        _ensure_strokes(self.library, current, rtl=self.channel.language is Language.ARABIC)
+        self.result.kept += 1
+        self._note_unchecked(scene, current)
+        return scene
+
+    def _attach_new(self, scene: Scene, key: IdeaKey, tracker: SpendTracker) -> Scene:
+        """Reuse, copy a bundled icon or generate a sketch for a scene without one."""
+        rtl = self.channel.language is Language.ARABIC
         found = match_idea(self.library, self.version, key, self.bundled)
         if found.kind is MatchKind.REUSED:
             passed = [r for r in found.candidates if r.status is SketchStatus.PASSED]
@@ -491,10 +514,19 @@ class _Run:
 
     def _attached_record(self, scene: Scene, key: IdeaKey) -> SketchRecord | None:
         """The record an earlier run attached, unless it is stale (unknown id, or
-        another style version or idea key), in which case the scene is matched again."""
+        another style version or idea key), in which case the scene is matched again.
+
+        A creator's upload on an IMAGE_TO_SKETCH scene is never stale: the image is not
+        styled, so any style version and idea key will do."""
         if scene.sketch_id is None:
             return None
         record = self.library.get_sketch(scene.sketch_id)
+        if (
+            record is not None
+            and record.origin is SketchOrigin.UPLOADED
+            and scene.visual.source is VisualSource.IMAGE_TO_SKETCH
+        ):
+            return record
         if record is None or record.style_version_id != self.version or record.idea_key != str(key):
             logger.info("scene %s: stale sketch id %d; matching again", scene.id, scene.sketch_id)
             return None

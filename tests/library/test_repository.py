@@ -386,3 +386,44 @@ def test_find_by_content_matches_version_key_and_bytes(library: SketchLibrary) -
     assert library.find_by_content(v, "eye|generic", b"B") is None
     assert library.find_by_content(v, "lamp|generic", b"A") is None
     assert library.find_by_content(other, "eye|generic", b"A") is None
+
+
+def _upload(library: SketchLibrary, v: int, key: str, data: bytes) -> SketchRecord:
+    return library.add_sketch(
+        v,
+        key,
+        data,
+        ".png",
+        SketchOrigin.UPLOADED,
+        SketchStatus.UNCHECKED,
+        False,
+        prov(),
+        "uploaded: vision not run",
+    )
+
+
+def test_uploaded_origin_round_trips(library: SketchLibrary) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    record = _upload(library, v, "eye|generic", b"U")
+    fetched = library.get_sketch(record.id)
+    assert fetched is not None
+    assert fetched.origin is SketchOrigin.UPLOADED
+    assert fetched.status is SketchStatus.UNCHECKED
+    assert fetched.provenance.attribution == ""
+
+
+def test_uploaded_records_are_never_reusable(library: SketchLibrary) -> None:
+    v = library.ensure_style_version("history", "fp1")
+    _upload(library, v, "mine|generic", b"U")
+    generated = _add(library, v, "eye|generic", b"A")
+    assert library.find_reusable(v, "mine|generic") == []
+    assert library.idea_keys(v) == ["eye|generic"]
+    assert library.idea_catalog(v) == [("eye|generic", "")]
+    assert [r.id for r in library.find_reusable(v, "eye|generic")] == [generated.id]
+
+
+def test_copy_keeps_uploaded_origin(library: SketchLibrary) -> None:
+    v1 = library.ensure_style_version("history", "fp1")
+    v2 = library.ensure_style_version("history", "fp2")
+    src = _upload(library, v1, "mine|generic", b"U")
+    assert library.copy_to(src.id, v2).origin is SketchOrigin.UPLOADED

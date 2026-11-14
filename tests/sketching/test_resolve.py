@@ -300,3 +300,32 @@ def test_check_regenerable_accepts_only_a_quarantined_drawable_scene() -> None:
     text_card = scene(1, flags=[QUARANTINED_FLAG], visual={"source": "text_card"})
     with pytest.raises(PlanningError, match="nothing to generate"):
         check_regenerable(series([text_card]), "s001")
+
+
+def _uploaded_scene() -> Series:
+    return series([scene(1, flags=[QUARANTINED_FLAG], visual={"source": "image_to_sketch"})])
+
+
+def test_regenerate_resets_an_uploaded_scene_to_icon(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    images = FakeImages([img.scroll(size=256)])
+    out, result = regenerate(
+        _uploaded_scene(),
+        "s001",
+        channel,
+        settings,
+        images=images,
+        vision=None,
+        library=library,
+        prices=PRICES,
+    )
+    [sc] = scenes_of(out)
+    assert sc.visual.source is VisualSource.ICON
+    assert sc.sketch_id is not None and result.generated == 1 and len(images.requests) == 1
+
+
+def test_swap_idea_resets_an_uploaded_scene_to_icon() -> None:
+    [sc] = scenes_of(swap_idea(_uploaded_scene(), "s001", "lamp|roman", "an oil lamp"))
+    assert sc.visual.source is VisualSource.ICON
+    assert sc.sketch_id is None and QUARANTINED_FLAG not in sc.flags

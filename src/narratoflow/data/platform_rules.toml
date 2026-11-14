@@ -4,8 +4,8 @@
 # listed sources, then bump `version` and `checked`. A copy named
 # platform_rules.toml in the data directory overrides this packaged file.
 
-version = "2026-11-12.1"
-checked = 2026-11-12
+version = "2026-11-13.1"
+checked = 2026-11-13
 
 [loudness]
 # No platform publishes a rejection limit; these are NarratoFlow's mastering targets.
@@ -56,6 +56,7 @@ verify = "600 s is the in-app recording limit; uploads reportedly allow up to 60
 "Apache-2.0" = { verdict = "pass" }
 "OFL-1.1" = { verdict = "pass" }
 "CC-BY-4.0" = { verdict = "pass", attribution = true, note = "passes only with a recorded attribution" }
+"own-work" = { verdict = "pass", note = "the creator declares they made the image" }
 
 [licences.generated]
 "openai-terms" = { verdict = "pass" }

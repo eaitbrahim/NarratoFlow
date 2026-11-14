@@ -57,6 +57,7 @@ from narratoflow.sketching.resolve import (
     swap_idea,
     use_text_card,
 )
+from narratoflow.sketching.upload import attach_upload, check_upload_licence
 from narratoflow.sketching.vision import estimate_check_cost
 from narratoflow.text.dialect import check_dialect as run_dialect_check
 from narratoflow.text.dialect import load_camel_model
@@ -299,8 +300,20 @@ def _print_generation(result: GenerationResult, series_json: Path, channel_toml:
         soft_wrap=True,
     )
     for scene_id in result.quarantined:
+        if scene_id in result.uploaded:
+            _print_upload_hint(scene_id, series_json, channel_toml)
         _print_resolve_hint(scene_id, "quarantined", series_json, channel_toml)
     _print_unchecked(result)
+
+
+def _print_upload_hint(scene_id: str, series_json: Path, channel_toml: Path) -> None:
+    _out.print(
+        f"{escape(scene_id)}: no usable upload - attach one with: narratoflow sketch upload "
+        f"{escape(str(series_json))} {escape(scene_id)} IMAGE --channel "
+        f"{escape(str(channel_toml))} --license ID --source TEXT",
+        highlight=False,
+        soft_wrap=True,
+    )
 
 
 def _print_unchecked(result: GenerationResult) -> None:
@@ -329,6 +342,43 @@ def sketch_generate(
         raise
     updated.save(series_json)
     _print_generation(result, series_json, channel_toml)
+
+
+@sketch_app.command("upload")
+def sketch_upload(
+    series_json: Path,
+    scene_id: str,
+    image: Path,
+    channel_toml: Annotated[Path, typer.Option("--channel", help="Channel TOML file.")],
+    licence: Annotated[
+        str, typer.Option("--license", help="Licence of the image (own-work for your own).")
+    ],
+    source: Annotated[str, typer.Option("--source", help="Where the image came from.")],
+    attribution: Annotated[
+        str, typer.Option("--attribution", help="Credit line (needed for CC-BY-4.0).")
+    ] = "",
+) -> None:
+    """Attach your own image to a scene as line art (free: no vision call, no spend)."""
+    channel = load_channel(channel_toml)
+    series = Series.load(series_json)
+    settings = get_settings()
+    check_upload_licence(default_rules(settings), licence, attribution)
+    try:
+        data = image.read_bytes()
+    except OSError as exc:
+        raise CorruptInputError(f"cannot read image {image}: {exc}") from exc
+    updated, record = attach_upload(
+        series,
+        scene_id,
+        channel,
+        data,
+        licence=licence,
+        source=source,
+        attribution=attribution,
+        library=default_library(settings),
+    )
+    updated.save(series_json)
+    _out.print(f"{escape(scene_id)}: uploaded sketch {record.id} (unchecked)", highlight=False)
 
 
 def _regenerate_estimate(idea_key: str, channel: ChannelConfig, prices: PriceTable) -> Decimal:

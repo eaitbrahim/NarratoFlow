@@ -349,13 +349,16 @@ def test_idea_embedding_unique_and_fk(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_orm_checks_mirror_migration_0002() -> None:
+def test_orm_checks_mirror_migrations() -> None:
     import importlib
 
     from sqlalchemy import CheckConstraint
 
     migration = importlib.import_module(
         "narratoflow.library.migrations.versions.0002_embeddings_checks"
+    )
+    uploaded = importlib.import_module(
+        "narratoflow.library.migrations.versions.0004_uploaded_origin"
     )
     checks = {
         c.name: str(c.sqltext)
@@ -364,7 +367,7 @@ def test_orm_checks_mirror_migration_0002() -> None:
     }
     assert checks == {
         "ck_sketch_status": migration._STATUS_CHECK,
-        "ck_sketch_origin": migration._ORIGIN_CHECK,
+        "ck_sketch_origin": uploaded._ORIGIN_CHECK,
     }
 
 
@@ -397,3 +400,34 @@ def test_0003_adds_nullable_strokes_hash_and_downgrades(tmp_path: Path) -> None:
 
     _alembic(path, "upgrade", "head")
     _assert_sketch_table_intact(path)
+
+
+def test_migration_0004_upgrade_downgrade(tmp_path: Path) -> None:
+    path = tmp_path / "library.db"
+    _alembic(path, "upgrade", "0003")
+    conn = _connect(path)
+    _seed_0001(conn)
+    with pytest.raises(sqlite3.IntegrityError, match="ck_sketch_origin"):
+        conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", "uploaded", "unchecked"))
+    conn.close()
+
+    _alembic(path, "upgrade", "head")
+    _assert_sketch_table_intact(path)
+    conn = _connect(path)
+    conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", "uploaded", "unchecked"))
+    conn.close()
+
+    with pytest.raises(RuntimeError, match=r"cannot downgrade: 1 uploaded sketches exist"):
+        _alembic(path, "downgrade", "0003")
+    conn = _connect(path)
+    conn.execute("DELETE FROM sketch WHERE origin = 'uploaded'")
+    conn.close()
+
+    _alembic(path, "downgrade", "0003")
+    _assert_sketch_table_intact(path)
+    conn = _connect(path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="ck_sketch_origin"):
+            conn.execute(_SKETCH_INSERT, (1, "object|a", "h3", "uploaded", "unchecked"))
+    finally:
+        conn.close()

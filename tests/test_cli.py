@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import sys
 from collections.abc import Sequence
@@ -10,7 +11,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fixtures import images as img
 from typer.testing import CliRunner, Result
+from visuals.lineart_samples import sample_png
 
 from narratoflow import cli
 from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, PartAudio
@@ -35,6 +38,7 @@ from narratoflow.settings import Settings, get_settings
 from narratoflow.sketching.generate import GenerationInterruptedError, GenerationResult
 from narratoflow.text.dialect import INSTALL_HINT
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons
+from narratoflow.visuals.lineart import binarize
 
 runner = CliRunner()
 INPUTS = Path(__file__).parent / "fixtures" / "input"
@@ -614,6 +618,114 @@ def test_sketch_generate_unapproved_series_saves_nothing(
     code = run_main(monkeypatch, "sketch", "generate", str(path), "--channel", str(channel_file))
     assert code == 1
     assert path.read_text(encoding="utf-8") == before
+
+
+def _upload_args(path: Path, image: Path, channel_file: Path, *extra: str) -> list[str]:
+    return [
+        "sketch",
+        "upload",
+        str(path),
+        "s001",
+        str(image),
+        "--channel",
+        str(channel_file),
+        *extra,
+    ]
+
+
+def _camera(tmp_path: Path) -> Path:
+    image = tmp_path / "camera.png"
+    image.write_bytes(sample_png("camera"))
+    return image
+
+
+def test_cli_sketch_upload(channel_file: Path, tmp_path: Path, data_dir: Path) -> None:
+    path = _approved_series(tmp_path)
+    args = _upload_args(
+        path, _camera(tmp_path), channel_file, "--license", "own-work", "--source", "my photo"
+    )
+    out = runner.invoke(cli.app, args)
+    assert out.exit_code == 0, out.output
+    saved = Series.load(path).parts[0].scenes[0]
+    assert saved.visual.source is VisualSource.IMAGE_TO_SKETCH and saved.sketch_id is not None
+    assert f"s001: uploaded sketch {saved.sketch_id} (unchecked)" in out.output
+
+
+def test_cli_sketch_upload_requires_license_and_source(
+    channel_file: Path, tmp_path: Path, data_dir: Path
+) -> None:
+    path = _approved_series(tmp_path)
+    image = _camera(tmp_path)
+    assert (
+        runner.invoke(cli.app, _upload_args(path, image, channel_file, "--source", "x")).exit_code
+        == 2
+    )
+    assert (
+        runner.invoke(
+            cli.app, _upload_args(path, image, channel_file, "--license", "own-work")
+        ).exit_code
+        == 2
+    )
+
+
+def test_sketch_upload_help_lists_its_options() -> None:
+    out = runner.invoke(cli.app, ["sketch", "upload", "--help"], env={"COLUMNS": "200"})
+    text = re.sub(r"\x1b\[[0-9;]*m", "", out.output)  # rich colours it under GITHUB_ACTIONS
+    for option in ("--license", "--source", "--attribution", "--channel"):
+        assert option in text
+
+
+@pytest.mark.parametrize(
+    ("problem", "message"),
+    [
+        ("density", "density: dense_tiles"),
+        ("licence", "mystery-terms is not allowed"),
+        ("unreadable", "cannot read image"),
+    ],
+)
+def test_cli_sketch_upload_refusals_exit_1(
+    problem: str,
+    message: str,
+    channel_file: Path,
+    tmp_path: Path,
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _approved_series(tmp_path)
+    before = path.read_text(encoding="utf-8")
+    image = _camera(tmp_path)
+    licence = "own-work"
+    if problem == "density":
+        image.write_bytes(img.crosshatched_box())
+        monkeypatch.setattr(
+            "narratoflow.sketching.upload.xdog_lineart", lambda raster: binarize(raster)
+        )
+    if problem == "licence":
+        licence = "mystery-terms"
+    if problem == "unreadable":
+        image = tmp_path / "missing.png"
+    args = _upload_args(path, image, channel_file, "--license", licence, "--source", "x")
+    code = run_main(monkeypatch, *args)
+    assert code == 1
+    assert message in capsys.readouterr().err
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_sketch_generate_prints_the_upload_hint_for_a_scene_without_one(
+    channel_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _approved_series(tmp_path)
+    result = GenerationResult(quarantined=["s001"], uploaded=["s001"])
+    _patch_generate(monkeypatch, result)
+    out = runner.invoke(cli.app, ["sketch", "generate", str(path), "--channel", str(channel_file)])
+    text = " ".join(out.output.split())
+    assert (
+        f"s001: no usable upload - attach one with: narratoflow sketch upload {path} s001 IMAGE"
+        in text
+    )
+    assert "--license ID --source TEXT" in text
+    assert "s001: quarantined - resolve with" in text
 
 
 def _resolve(channel_file: Path, path: Path, *args: str, input: str | None = None) -> Result:

@@ -57,7 +57,7 @@ Both are **creators, not developers**: they edit a channel file and a script, ru
 
 ---
 
-## 4. Goals and success metrics
+## 4. Success metrics
 
 ### Goals
 - Turn a script into publishable 9:16 whiteboard videos with the creator editing as little as possible.
@@ -139,7 +139,7 @@ What the product does, at the level of behaviour. How is in the SRD.
 
 ---
 
-## 7. Workflow and phasing
+## 7. Phasing and workflow
 
 The pipeline is a set of commands over one file, `series.json` (SRD 1). Each milestone adds commands; the GitHub milestone is named in the last column.
 

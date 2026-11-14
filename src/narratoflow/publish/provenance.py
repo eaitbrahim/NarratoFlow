@@ -192,6 +192,8 @@ def _licence_table(rules: Rules, record: AssetRecord) -> dict[str, LicenceRule] 
         return licences.generated
     if record.kind == "voice":
         return {**licences.assets, **licences.voice}
+    if record.kind == "aligner":
+        return licences.aligner
     if record.kind == "recitation":
         return None  # checked against the reciter allow-list instead
     return licences.assets
@@ -233,6 +235,13 @@ def _record_findings(record: AssetRecord, rules: Rules) -> list[CheckResult]:
     return out
 
 
+_LICENCE_TABLE_NAME = {
+    "sketch": "[licences.generated]",
+    "voice": "[licences.voice]",
+    "aligner": "[licences.aligner]",
+}
+
+
 _REBUILD_REMEDY = {
     "voice": "rebuild the audio with an allowed voice",
     "aligner": "rebuild the audio without the align extra",
@@ -244,8 +253,9 @@ def _unknown_licence_remedy(record: AssetRecord, rules: Rules, licence: str) -> 
     if rules.origin == "packaged":
         return remedy
     return (
-        f"add {licence} to {home_free(rules.origin)} (merge it with the packaged rules "
-        f"after an upgrade), or {remedy}"
+        f"add {licence} to {home_free(rules.origin)} under "
+        f"{_LICENCE_TABLE_NAME.get(record.kind, '[licences.assets]')} (merge it with the "
+        f"packaged rules after an upgrade), or {remedy}"
     )
 
 

@@ -290,6 +290,6 @@ Every runtime dependency, extra, model and bundled asset. "Commercial-safe" is *
 
 ### Findings
 
-- **The `align` extra is documented non-commercial only** (DOSL package licence; CC-BY-NC-4.0 default model; GPL `unidecode`); publish warns (rule id `ctc-forced-aligner-terms`) when any scene's word times came from the CTC aligner (#166). No aligner or model was swapped.
+- **The `align` extra is documented non-commercial only** (DOSL package licence; CC-BY-NC-4.0 default model; GPL `unidecode`); publish warns (rule id `ctc-forced-aligner-terms`, in the `[licences.aligner]` table so it is valid for the aligner only; an override without that table fails aligned parts until merged) when any scene's word times came from the CTC aligner (#166). No aligner or model was swapped.
 - **`pyarabic` is GPL and sits in the core dependencies** of an Apache-2.0 project. This was not in the review. Recommendation, owner to confirm: decide whether to replace it, move it behind the `arabic` extra, or accept GPL obligations for distributed builds.
 - Three extras are GPL (`arabic`, `tts-local`, `align`); the matrix states the boundary in section 7.

@@ -219,8 +219,10 @@ Word timings come from the voice when it reports them. The optional `align` extr
 (`ctc-forced-aligner`) refines or supplies them: it downloads a model on first use and, being
 source-only on PyPI, needs a C++ compiler to install. Without it the timeline falls back to
 estimated word timings and each part warns once. The `align` extra is non-commercial only (DOSL
-package licence, CC-BY-NC-4.0 default model): `narratoflow publish` warns (`ctc-forced-aligner-terms`)
-when any scene's word times came from it.
+package licence, CC-BY-NC-4.0 default model): `narratoflow publish` warns (`ctc-forced-aligner-terms`, in the
+`[licences.aligner]` table, valid for nothing else: `sketch upload` refuses it) when any scene's
+word times came from it. A rules override made before that table existed has none: aligned parts
+fail until you merge the packaged `[licences.aligner]` table into it.
 
 ### Qur'an recitation
 

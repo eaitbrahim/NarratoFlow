@@ -39,6 +39,7 @@ class Licences(BaseModel):
     assets: dict[str, LicenceRule]
     generated: dict[str, LicenceRule]
     voice: dict[str, LicenceRule]
+    aligner: dict[str, LicenceRule] = {}  # optional: overrides made before it existed load
 
 
 class LoudnessRules(BaseModel):

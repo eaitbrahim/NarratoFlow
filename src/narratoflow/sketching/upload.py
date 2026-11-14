@@ -14,7 +14,7 @@ from narratoflow.errors import PlanningError, SketchRejectedError
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
 from narratoflow.models import Language, Scene, SceneKind, Series, VisualSource
-from narratoflow.publish.rules import Rules
+from narratoflow.publish.rules import Rules, home_free
 from narratoflow.sketching.generate import QUARANTINED_FLAG, require_series_channel
 from narratoflow.visuals.lineart import check_density, ink_to_png, xdog_lineart
 from narratoflow.visuals.strokes import extract_strokes
@@ -26,7 +26,10 @@ def _upload_remedy(rules: Rules, licence: str) -> str:
     remedy = "pass the licence of your image (use own-work for your own)"
     if rules.origin == "packaged":
         return remedy
-    return f"{remedy}, or add {licence} to {rules.origin} (merge it with the packaged rules)"
+    return (
+        f"{remedy}, or add {licence} to {home_free(rules.origin)} under [licences.assets] "
+        "(merge it with the packaged rules)"
+    )
 
 
 def check_upload_licence(rules: Rules, licence: str, attribution: str) -> None:

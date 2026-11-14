@@ -270,3 +270,8 @@ def test_real_gradio_builds(paths: StationPaths, settings: Settings) -> None:
 
     demo = build_app(paths, settings, gradio)
     assert isinstance(demo, gradio.Blocks)
+
+
+def test_free_regeneration_says_so() -> None:
+    assert app_module._estimate_text(Decimal(0)) == "Regenerating a sketch is free."
+    assert "$0.04" in app_module._estimate_text(Decimal("0.04"))

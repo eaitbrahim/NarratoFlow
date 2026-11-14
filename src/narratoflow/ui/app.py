@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from narratoflow.errors import CorruptInputError, NarratoFlowError
 from narratoflow.models import AspectRatio
@@ -51,7 +51,14 @@ def _rebuild_estimate_text(cost: Decimal) -> str:
 
 
 def _sketch_image(png: bytes | None) -> Image.Image | None:
-    return None if png is None else Image.open(io.BytesIO(png))
+    if png is None:
+        return None
+    try:
+        image = Image.open(io.BytesIO(png))
+        image.load()
+    except (UnidentifiedImageError, OSError) as exc:  # a damaged library blob
+        raise CorruptInputError(f"the stored sketch image cannot be read: {exc}") from exc
+    return image
 
 
 def _read(path: str) -> bytes:

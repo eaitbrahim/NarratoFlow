@@ -202,10 +202,12 @@ def _preflight(
     library: SketchLibrary | None,
     prices: PriceTable | None,
     stack: contextlib.ExitStack,
+    sketches: bool = True,
 ) -> _Plan:
     """Checks 1-11, in order, before any spend or network call; errors raise raw.
 
-    A voice chain built here (not injected) is closed when `stack` exits.
+    A voice chain built here (not injected) is closed when `stack` exits. With
+    `sketches` False the sketch checks are skipped (see `check_audio_ready`).
     """
     if not series.approved:
         raise PlanningError("approve the series first")
@@ -221,7 +223,8 @@ def _preflight(
     for choice in chain:
         prices.voice(choice.provider.name, choice.provider.model)
     selected = _selected(series, parts)
-    _check_sketches(selected)
+    if sketches:
+        _check_sketches(selected)
     _check_texts(selected)
     reciter: Reciter | None = None
     verse_scenes = [s for p in selected for s in _verses(p)]
@@ -238,13 +241,50 @@ def _preflight(
             needed_by=first,
         )
         corpus = corpus if corpus is not None else default_corpus(settings)
+    strokes = _selected_strokes(selected, library, settings) if sketches else {}
+    return _Plan(selected, chain, prices, strokes, reciter, corpus, channel_lexicon(channel))
+
+
+def _selected_strokes(
+    selected: list[Part], library: SketchLibrary | None, settings: Settings
+) -> dict[str, StrokeSet]:
+    """The stroke sets of the selected parts' drawn scenes; opens the library if needed."""
     needs_library = any(
         s.sketch_id is not None and _drawn(s) for p in selected for s in _narration(p)
     )
     if needs_library and library is None:
         library = default_library(settings)
-    strokes = _load_strokes(selected, library)
-    return _Plan(selected, chain, prices, strokes, reciter, corpus, channel_lexicon(channel))
+    return _load_strokes(selected, library)
+
+
+def check_audio_ready(
+    series: Series,
+    channel: ChannelConfig,
+    settings: Settings,
+    *,
+    parts: Sequence[int] | None = None,
+    voices: list[VoiceChoice] | None = None,
+    reciters: ReciterIndex | None = None,
+    corpus: QuranCorpus | None = None,
+    prices: PriceTable | None = None,
+) -> None:
+    """`build_audio`'s preflight except the sketch checks: approval, channel, ffmpeg,
+    voices and prices, texts and reciter. For a caller that must be sure the audio
+    stage will start before it pays for the sketches that stage needs. No spend."""
+    with contextlib.ExitStack() as stack:
+        _preflight(
+            series,
+            channel,
+            settings,
+            parts=parts,
+            voices=voices,
+            reciters=reciters,
+            corpus=corpus,
+            library=None,
+            prices=prices,
+            stack=stack,
+            sketches=False,
+        )
 
 
 def _voice_chain(

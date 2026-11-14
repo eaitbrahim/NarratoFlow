@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import wave
 from dataclasses import dataclass
 from decimal import Decimal
@@ -32,7 +33,13 @@ from narratoflow.audio.build import build_audio
 from narratoflow.audio.timeline import AssetUse, PartTimeline, VoiceUsed
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint
 from narratoflow.costs.prices import PriceTable
-from narratoflow.errors import PlanningError, ProviderError
+from narratoflow.errors import (
+    AudioError,
+    ChannelConfigError,
+    PlanningError,
+    ProviderError,
+    PublishError,
+)
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.library.schemas import SketchOrigin, SketchStatus
 from narratoflow.models import (
@@ -61,6 +68,7 @@ from narratoflow.ui.station import (
     edit_timing,
     export,
     list_scenes,
+    lock_path,
     rebuild_scene,
     regenerate_cost,
     regenerate_visual,
@@ -1015,6 +1023,53 @@ def test_an_interrupted_voice_stage_keeps_its_own_error_when_the_file_changed(
             world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), **world.rebuild_kit()
         )
     assert any("not saved" in note for note in caught.value.__notes__)
+
+
+# -- plain errors instead of raw ones (F14) ------------------------------------
+
+
+def test_rebuild_checks_the_audio_preflight_before_paying_for_a_sketch(world: World) -> None:
+    """background_music is refused by build_audio's preflight; the sketch must not be paid first."""
+    world.paths.channel.write_text(
+        "background_music = true\n" + world.paths.channel.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    _fresh_idea(world, "p1-a", drop_sketch=True)
+    sha = world.sha()
+    with pytest.raises(ChannelConfigError, match="background_music"):
+        rebuild_scene(world.paths, "p1-a", confirm=True, expected_sha256=sha, **world.rebuild_kit())
+    assert world.images.requests == [] and world.sha() == sha
+    assert not lock_path(world.paths).exists()
+
+
+def test_rebuild_preflight_refuses_a_hand_edited_bad_text_before_any_spend(world: World) -> None:
+    series = world.series()
+    narration = series.parts[0].scenes[1].narration
+    series.parts[0].scenes[1].narration = narration.model_copy(update={"caption_text": "one"})
+    series.save(world.paths.series)
+    _fresh_idea(world, "p1-a", drop_sketch=True)
+    with pytest.raises(PlanningError, match="caption has 1 words"):
+        rebuild_scene(
+            world.paths, "p1-a", confirm=True, expected_sha256=world.sha(), **world.rebuild_kit()
+        )
+    assert world.images.requests == []
+
+
+def test_an_unwritable_audio_clip_directory_is_a_plain_error(world: World) -> None:
+    clips = world.paths.audio_dir / ".ui"
+    shutil.rmtree(clips, ignore_errors=True)
+    clips.write_text("a file where the clip directory should be")
+    with pytest.raises(AudioError, match="audio clip"):
+        scene_view(world.paths, "p1-a", settings=world.settings, library=world.library)
+
+
+def test_portrait_export_cannot_remove_a_landscape_copy_is_a_plain_error(
+    publishable: tuple[StationPaths, dict[str, Any]],
+) -> None:
+    paths, kit = publishable
+    (paths.export_dir / landscape_name(1)).mkdir(parents=True)  # unlink fails on a directory
+    with pytest.raises(PublishError, match="cannot remove"):
+        export(paths, AspectRatio.PORTRAIT, **kit)
 
 
 # -- export --------------------------------------------------------------------

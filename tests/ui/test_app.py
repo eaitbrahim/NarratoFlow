@@ -273,6 +273,27 @@ def test_blank_timing_numbers_become_a_gradio_error(
     assert series_sha256(paths.series) == sha
 
 
+def test_an_empty_series_says_so_instead_of_unknown_scene_none(
+    paths: StationPaths, settings: Settings
+) -> None:
+    Series.load(paths.series).model_copy(update={"parts": []}).save(paths.series)
+    _, demo = build(paths, settings)
+    with pytest.raises(FakeError, match="no scenes") as caught:
+        demo.loads[0].call(None)
+    assert "None" not in str(caught.value)
+
+
+def test_a_corrupt_sketch_is_a_plain_error(paths: StationPaths, settings: Settings) -> None:
+    library = default_library(settings)
+    record = library.get_sketch(1)
+    assert record is not None
+    blob = library._blobs.path(record.blob_hash, record.suffix)
+    blob.write_bytes(b"this is not an image")
+    _, demo = build(paths, settings)
+    with pytest.raises(FakeError, match="sketch image"):
+        demo.loads[0].call("s1")
+
+
 def test_page_with_no_scenes_still_builds(paths: StationPaths, settings: Settings) -> None:
     Series.load(paths.series).model_copy(update={"parts": []}).save(paths.series)
     gr, _ = build(paths, settings)

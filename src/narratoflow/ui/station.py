@@ -36,13 +36,14 @@ from narratoflow.audio import io as aio
 from narratoflow.audio.build import (
     AudioInterruptedError,
     build_audio,
+    check_audio_ready,
     check_scene_text,
     estimate_voice_cost,
 )
-from narratoflow.audio.timeline import PartTimeline
+from narratoflow.audio.timeline import PartTimeline, SceneTiming
 from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.costs.prices import PriceTable, default_prices
-from narratoflow.errors import PlanningError
+from narratoflow.errors import AudioError, PlanningError, PublishError
 from narratoflow.images import ImageProvider
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.llm.base import LLMClient
@@ -312,6 +313,13 @@ def _audio_clip(paths: StationPaths, part: int, scene_id: str) -> Path | None:
     )
     if slot is None:
         return None
+    try:
+        return _cut_clip(paths, flac, part, scene_id, slot)
+    except OSError as exc:
+        raise AudioError(f"cannot prepare the audio clip of scene {scene_id}: {exc}") from exc
+
+
+def _cut_clip(paths: StationPaths, flac: Path, part: int, scene_id: str, slot: SceneTiming) -> Path:
     stat = flac.stat()
     key = f"{part}:{scene_id}:{stat.st_size}:{stat.st_mtime_ns}:{slot.start_ms}:{slot.end_ms}"
     out = paths.audio_dir / CLIP_DIR / f"{hashlib.sha256(key.encode()).hexdigest()}.wav"
@@ -323,12 +331,14 @@ def _audio_clip(paths: StationPaths, part: int, scene_id: str) -> Path | None:
 
 def scene_view(
     paths: StationPaths,
-    scene_id: str,
+    scene_id: str | None,
     *,
     settings: Settings | None = None,
     library: SketchLibrary | None = None,
 ) -> SceneView:
     """Texts, timing, sketch image and audio clip of one scene."""
+    if scene_id is None:
+        raise PlanningError("this series has no scenes to review; plan and build it first")
     sha = series_sha256(paths.series)
     series = _load(paths)
     p, _, scene = find_scene(series, scene_id)
@@ -609,6 +619,10 @@ def rebuild_scene(
         prices = prices if prices is not None else default_prices(settings)
         library = library if library is not None else default_library(settings)
         part = series.parts[find_scene(series, scene_id)[0]].index
+        # everything build_audio would refuse, before the first paid call
+        check_audio_ready(
+            series, channel, settings, parts=[part], voices=voices, corpus=corpus, prices=prices
+        )
         estimate = _rebuild_cost(
             series,
             channel,
@@ -678,6 +692,13 @@ def rebuild_scene(
         )
 
 
+def _remove(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise PublishError(f"cannot remove the old copy {path}: {exc}") from exc
+
+
 def export(
     paths: StationPaths,
     ratio: AspectRatio,
@@ -731,14 +752,14 @@ def export(
     exported = {p.index: p.export_path for p in published.parts}
     if ratio is AspectRatio.PORTRAIT:
         for index in exported:  # the 16:9 copies derive from 9:16 files that just changed
-            (paths.export_dir / landscape_name(index)).unlink(missing_ok=True)
+            _remove(paths.export_dir / landscape_name(index))
         return [path for path in exported.values() if path is not None]
     reports = {b.index: b.report for b in rendered.parts}
     out: list[Path] = []
     for index, path in exported.items():
         target = paths.export_dir / landscape_name(index)
         if path is None:
-            target.unlink(missing_ok=True)  # a failing part keeps no older copy
+            _remove(target)  # a failing part keeps no older copy
             continue
         report = reports[index]
         out.append(

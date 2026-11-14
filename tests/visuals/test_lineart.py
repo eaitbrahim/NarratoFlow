@@ -402,3 +402,38 @@ def test_xdog_exif_rotates_the_ink_not_only_the_shape() -> None:
 
 def test_binarize_applies_exif_orientation() -> None:
     assert binarize(_jpeg_with_orientation((40, 100), 6)).shape == (40, 100)
+
+
+def test_xdog_composites_alpha_at_working_size_not_full_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A big RGBA upload is shrunk before the float alpha blend (2.4 GB at 8192 px)."""
+    big = Image.new("RGBA", (3000, 2000), (255, 255, 255, 255))
+    big.paste(Image.new("RGBA", (1500, 40), (0, 0, 0, 255)), (200, 900))
+    buffer = io.BytesIO()
+    big.save(buffer, format="PNG")
+    seen: list[tuple[int, ...]] = []
+    real = cv2.cvtColor
+
+    def spy(src: np.ndarray, code: int) -> np.ndarray:
+        seen.append(src.shape)
+        return np.asarray(real(src, code))
+
+    monkeypatch.setattr(cv2, "cvtColor", spy)
+    assert xdog_lineart(buffer.getvalue()).any()
+    assert seen
+    assert max(max(shape[:2]) for shape in seen) <= lineart.XDOG_LONG_SIDE_PX
+
+
+def test_xdog_extreme_aspect_ratio_is_too_narrow() -> None:
+    buffer = io.BytesIO()
+    Image.new("L", (8192, 32), 255).save(buffer, format="PNG")
+    with pytest.raises(SketchRejectedError, match=r"^too narrow$"):
+        xdog_lineart(buffer.getvalue())
+
+
+def test_xdog_aspect_ratio_at_the_limit_is_not_narrow() -> None:
+    buffer = io.BytesIO()
+    Image.new("L", (1024, 64), 255).save(buffer, format="PNG")  # resized short side: 32 px
+    with pytest.raises(SketchRejectedError, match=r"^empty$"):
+        xdog_lineart(buffer.getvalue())

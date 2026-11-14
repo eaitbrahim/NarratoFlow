@@ -288,7 +288,28 @@ def test_cli_ui_launches_on_host_and_port(
         "--host", "192.0.2.1", "--port", "7861",
     )  # fmt: skip
     assert code == 0 and fake.blocks is not None
-    assert fake.blocks.launched == {"server_name": "192.0.2.1", "server_port": 7861}
+    served = [str(paths.audio_dir.resolve()), str(paths.export_dir.resolve())]
+    assert fake.blocks.launched == {
+        "server_name": "192.0.2.1",
+        "server_port": 7861,
+        "allowed_paths": served,
+    }
+
+
+def test_cli_ui_serves_audio_and_export_outside_the_launch_directory(
+    paths: StationPaths, settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Gradio serves only cwd, its temp dir and allowed_paths: the stage dirs must be listed."""
+    audio, export = tmp_path / "far" / "wav", tmp_path / "far" / "out"
+    fake = FakeGradio()
+    monkeypatch.setitem(sys.modules, "gradio", fake)
+    monkeypatch.setenv("NARRATOFLOW_DATA_DIR", str(settings.data_dir))
+    code = run_main(
+        monkeypatch, "ui", str(paths.series), "--channel", str(paths.channel),
+        "--audio", str(audio), "--export", str(export),
+    )  # fmt: skip
+    assert code == 0 and fake.blocks is not None and fake.blocks.launched is not None
+    assert fake.blocks.launched["allowed_paths"] == [str(audio.resolve()), str(export.resolve())]
 
 
 def test_real_gradio_builds(paths: StationPaths, settings: Settings) -> None:

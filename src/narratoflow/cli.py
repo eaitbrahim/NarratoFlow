@@ -788,7 +788,11 @@ def ui(
     from narratoflow.ui.station import StationPaths
 
     paths = StationPaths.derive(series_json, channel_toml, audio_dir=audio, export_dir=export)
-    build_app(paths, get_settings(), gr).launch(server_name=host, server_port=port)
+    # Gradio serves a returned file only under cwd, its temp dir or allowed_paths.
+    served = [str(paths.audio_dir.resolve()), str(paths.export_dir.resolve())]
+    build_app(paths, get_settings(), gr).launch(
+        server_name=host, server_port=port, allowed_paths=served
+    )
 
 
 def main() -> None:

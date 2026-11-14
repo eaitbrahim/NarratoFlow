@@ -391,6 +391,13 @@ def _quarantined(scene: Scene) -> Scene:
     return scene.model_copy(update={"sketch_id": None, "match": "new", "flags": flags})
 
 
+def _idea_to_draw(scene: Scene) -> str | None:
+    """The idea key, or None for a verse, a scene without a key or a text card."""
+    if scene.kind is SceneKind.VERSE or scene.visual.source is VisualSource.TEXT_CARD:
+        return None
+    return scene.idea_key
+
+
 @dataclass
 class _Run:
     channel: ChannelConfig
@@ -419,18 +426,15 @@ class _Run:
 
     def scene(self, scene: Scene, tracker: SpendTracker) -> Scene:
         self.stored = []
-        if scene.kind is SceneKind.VERSE or scene.idea_key is None:
-            return scene
-        if scene.visual.source is VisualSource.TEXT_CARD:
-            # the creator chose a text card: nothing to draw, nothing to spend
+        idea_key = _idea_to_draw(scene)
+        if idea_key is None:
             return scene
         if QUARANTINED_FLAG in scene.flags:
             # the creator resolves a quarantined scene; nothing is attached or
             # regenerated automatically (spec 6.3)
             self.result.quarantined.append(scene.id)
             return scene
-        rtl = self.channel.language is Language.ARABIC
-        key = parse_idea_key(scene.idea_key)
+        key = parse_idea_key(idea_key)
         current = self._attached_record(scene, key)
         if scene.visual.source is VisualSource.IMAGE_TO_SKETCH:
             self.result.uploaded.append(scene.id)
@@ -439,15 +443,24 @@ class _Run:
                 self.result.quarantined.append(scene.id)
                 return _quarantined(scene)
         if current is not None:
-            if current.status is SketchStatus.FAILED:
-                # quarantined after it was attached: no regeneration, no spend
-                self.result.quarantined.append(scene.id)
-                return _quarantined(scene)
-            # stable re-runs: keep the sketch and the scene's match as they are
-            _ensure_strokes(self.library, current, rtl=rtl)
-            self.result.kept += 1
-            self._note_unchecked(scene, current)
-            return scene
+            return self._keep(scene, current)
+        return self._attach_new(scene, key, tracker)
+
+    def _keep(self, scene: Scene, current: SketchRecord) -> Scene:
+        """The scene whose attached sketch (from an earlier run) is kept, or flagged."""
+        if current.status is SketchStatus.FAILED:
+            # quarantined after it was attached: no regeneration, no spend
+            self.result.quarantined.append(scene.id)
+            return _quarantined(scene)
+        # stable re-runs: keep the sketch and the scene's match as they are
+        _ensure_strokes(self.library, current, rtl=self.channel.language is Language.ARABIC)
+        self.result.kept += 1
+        self._note_unchecked(scene, current)
+        return scene
+
+    def _attach_new(self, scene: Scene, key: IdeaKey, tracker: SpendTracker) -> Scene:
+        """Reuse, copy a bundled icon or generate a sketch for a scene without one."""
+        rtl = self.channel.language is Language.ARABIC
         found = match_idea(self.library, self.version, key, self.bundled)
         if found.kind is MatchKind.REUSED:
             passed = [r for r in found.candidates if r.status is SketchStatus.PASSED]

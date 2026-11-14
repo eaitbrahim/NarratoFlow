@@ -73,9 +73,23 @@ def _drawable_key(scene: Scene) -> str:
     return scene.idea_key
 
 
+def _styled(scene: Scene) -> Scene:
+    """`scene` with an upload given up: a styled re-draw replaces the creator's image."""
+    if scene.visual.source is not VisualSource.IMAGE_TO_SKETCH:
+        return scene
+    return scene.model_copy(
+        update={"visual": scene.visual.model_copy(update={"source": VisualSource.ICON})}
+    )
+
+
 def _regenerated(scene: Scene) -> dict[str, Any]:
     _drawable_key(scene)
-    return {"sketch_id": None, "match": "new", "sketch_attempt": scene.sketch_attempt + 1}
+    return {
+        "sketch_id": None,
+        "match": "new",
+        "sketch_attempt": scene.sketch_attempt + 1,
+        "visual": _styled(scene).visual,
+    }
 
 
 def check_regenerable(series: Series, scene_id: str) -> str:
@@ -153,12 +167,13 @@ def swap_idea(series: Series, scene_id: str, new_key: str, description: str) -> 
         raise PlanningError("idea rejected: " + "; ".join(violations))
     key = str(parse_idea_key(new_key))
 
-    def change(_: Scene) -> dict[str, Any]:
+    def change(scene: Scene) -> dict[str, Any]:
         return {
             "idea_key": key,
             "idea_description": description,
             "match": None,
             "sketch_id": None,
+            "visual": _styled(scene).visual,
         }
 
     return _resolved(series, scene_id, change)

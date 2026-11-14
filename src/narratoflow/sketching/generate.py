@@ -94,6 +94,8 @@ class GenerationResult:
     """Scene ids left without a sketch because theirs FAILED or the scene is flagged."""
     unchecked: list[str] = field(default_factory=list)
     """Scene ids whose sketch (new, bundled, reused or kept) is UNCHECKED (no vision)."""
+    uploaded: list[str] = field(default_factory=list)
+    """Scene ids whose visual is the creator's upload (IMAGE_TO_SKETCH), kept or not."""
     spent_usd: Decimal = Decimal(0)
     """This run's spend; each `Part.spent_usd` holds the part's cumulative spend."""
 
@@ -430,6 +432,12 @@ class _Run:
         rtl = self.channel.language is Language.ARABIC
         key = parse_idea_key(scene.idea_key)
         current = self._attached_record(scene, key)
+        if scene.visual.source is VisualSource.IMAGE_TO_SKETCH:
+            self.result.uploaded.append(scene.id)
+            if current is None:
+                # the creator's image is never generated: upload it (spec 6.3)
+                self.result.quarantined.append(scene.id)
+                return _quarantined(scene)
         if current is not None:
             if current.status is SketchStatus.FAILED:
                 # quarantined after it was attached: no regeneration, no spend
@@ -491,10 +499,19 @@ class _Run:
 
     def _attached_record(self, scene: Scene, key: IdeaKey) -> SketchRecord | None:
         """The record an earlier run attached, unless it is stale (unknown id, or
-        another style version or idea key), in which case the scene is matched again."""
+        another style version or idea key), in which case the scene is matched again.
+
+        A creator's upload on an IMAGE_TO_SKETCH scene is never stale: the image is not
+        styled, so any style version and idea key will do."""
         if scene.sketch_id is None:
             return None
         record = self.library.get_sketch(scene.sketch_id)
+        if (
+            record is not None
+            and record.origin is SketchOrigin.UPLOADED
+            and scene.visual.source is VisualSource.IMAGE_TO_SKETCH
+        ):
+            return record
         if record is None or record.style_version_id != self.version or record.idea_key != str(key):
             logger.info("scene %s: stale sketch id %d; matching again", scene.id, scene.sketch_id)
             return None

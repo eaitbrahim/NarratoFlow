@@ -13,7 +13,7 @@ from fixtures import images as img
 from PIL import Image
 from pydantic import SecretStr
 
-from narratoflow.channels.config import ChannelConfig, VisionConfig
+from narratoflow.channels.config import ChannelConfig, VisionConfig, style_fingerprint
 from narratoflow.costs.prices import PriceTable
 from narratoflow.costs.tracker import SpendTracker, TrackedLLM
 from narratoflow.errors import (
@@ -33,6 +33,7 @@ from narratoflow.models import (
     SceneKind,
     Series,
     VerseRef,
+    VisualSource,
 )
 from narratoflow.settings import Settings
 from narratoflow.sketching import generate as generate_module
@@ -556,6 +557,88 @@ def test_quarantined_scene_is_not_regenerated_automatically(
     out, result = run(s, channel, settings, library, images, FakeLLM([]))
     assert images.requests == []
     assert scenes_of(out) == scenes_of(s) and result.quarantined == ["s001"]
+
+
+def test_image_to_sketch_scene_never_generated(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    upload = {"source": "image_to_sketch"}
+    s = series([scene(1, visual=upload), scene(2, visual=upload, sketch_id=999)])
+    images = FakeImages()
+    out, result = run(s, channel, settings, library, images, FakeLLM([]))
+    assert images.requests == [] and result.spent_usd == 0
+    assert result.quarantined == ["s001", "s002"] and result.uploaded == ["s001", "s002"]
+    for sc in scenes_of(out):
+        assert QUARANTINED_FLAG in sc.flags and sc.sketch_id is None
+        assert sc.visual.source is VisualSource.IMAGE_TO_SKETCH
+
+
+def _uploaded(
+    channel: ChannelConfig, library: SketchLibrary, key: str = "mine|roman"
+) -> tuple[Series, int]:
+    version = library.ensure_style_version(channel.slug, style_fingerprint(channel.style))
+    record = library.add_sketch(
+        version,
+        key,
+        img.line_drawing_scroll(),
+        ".png",
+        SketchOrigin.UPLOADED,
+        SketchStatus.UNCHECKED,
+        False,
+        Provenance.model_validate(
+            {"source": "me", "license": "own-work", "created_at": "2026-01-01T00:00:00Z"}
+        ),
+    )
+    s = series([scene(1, key, sketch_id=record.id, visual={"source": "image_to_sketch"})])
+    return s, record.id
+
+
+def test_uploaded_record_survives_style_change(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s, sketch_id = _uploaded(channel, library)
+    changed = channel.model_copy(deep=True)
+    changed.style.line_weight_px = channel.style.line_weight_px + 1
+    assert style_fingerprint(changed.style) != style_fingerprint(channel.style)
+    images = FakeImages()
+    out, result = run(s, changed, settings, library, images, FakeLLM([]))
+    assert images.requests == [] and result.spent_usd == 0
+    assert result.kept == 1 and result.quarantined == [] and result.uploaded == ["s001"]
+    assert scenes_of(out) == scenes_of(s) and scenes_of(out)[0].sketch_id == sketch_id
+    assert result.unchecked == ["s001"]
+
+
+def test_uploaded_record_kept_after_the_idea_key_changes(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s, _ = _uploaded(channel, library)
+    s.parts[0].scenes[0] = s.parts[0].scenes[0].model_copy(update={"idea_key": "other|roman"})
+    _, result = run(s, channel, settings, library, FakeImages(), FakeLLM([]))
+    assert result.kept == 1 and result.quarantined == []
+
+
+def test_uploaded_record_gets_no_style_exemption_on_an_icon_scene(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s, _ = _uploaded(channel, library)
+    icon = s.parts[0].scenes[0].model_copy(update={"visual": scene(9).visual})
+    s.parts[0].scenes[0] = icon.model_copy(update={"idea_key": "other|roman"})
+    images = FakeImages()
+    out, result = run(s, channel, settings, library, images, None)
+    assert result.kept == 0 and result.generated == 1 and len(images.requests) == 1
+    assert scenes_of(out)[0].sketch_id != s.parts[0].scenes[0].sketch_id
+
+
+def test_quarantined_upload_is_flagged_without_spend(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    s, sketch_id = _uploaded(channel, library)
+    library.quarantine(sketch_id, "creator rejected it")
+    images = FakeImages()
+    out, result = run(s, channel, settings, library, images, FakeLLM([]))
+    assert images.requests == [] and result.quarantined == ["s001"]
+    [sc] = scenes_of(out)
+    assert sc.sketch_id is None and QUARANTINED_FLAG in sc.flags
 
 
 def test_text_card_scene_is_skipped_without_spend(

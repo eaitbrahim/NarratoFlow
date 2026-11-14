@@ -88,6 +88,24 @@ so run `brew install ffmpeg-full` and set `NARRATOFLOW_FFMPEG=$(brew --prefix ff
 gave it (`sketch resolve ... --text-card --card-text TEXT`); run the same command again to change
 the text of a scene that is already a text card.
 
+### Uploading your own image
+
+Instead of a drawn sketch, a scene can use your own picture, turned into line art:
+
+```sh
+uv run narratoflow sketch upload series.json s003 photo.jpg --channel channel.toml \
+  --license own-work --source "my photo"   # CC-BY-4.0 also needs --attribution "credit line"
+```
+
+It is free: no vision call and no spend. The image is traced into black lines on white (XDoG),
+must pass the same density check as a drawn sketch, and is refused with the reason otherwise
+(undecodable, under 32 px or over 8192 px on a side, empty, too dense). The line art is stored as
+an unchecked `uploaded` sketch, which `sketch generate` keeps whatever the channel style, never
+redraws and never reuses for another scene. `--license` must be one the platform rules allow
+for assets (`own-work` means you made the image); it is checked again at publish. A scene with no
+usable upload is listed as quarantined; `sketch resolve --regenerate` or `--swap` gives the scene
+back to the styled generator.
+
 ### Publish
 
 `publish` checks each rendered part against the platform rules (technical, licences and provenance,

@@ -171,7 +171,7 @@ def test_unknown_generated_terms_fail_and_local_model_warns(
     rules = _voice_pass(tmp_path)
     unknown = _with_sketch(inputs, license="mystery-terms")
     [reason] = _fails(provenance_checks(unknown, rules, EMPTY))
-    assert "licence mystery-terms is not allowed by platform rules 2026-11-12.1" in reason
+    assert "licence mystery-terms is not allowed by platform rules 2026-11-13.1" in reason
     local = _with_sketch(inputs, license="local-model-license")
     results = provenance_checks(local, rules, EMPTY)
     assert _fails(results) == []

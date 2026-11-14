@@ -153,7 +153,7 @@ def test_every_handler_unticks_the_confirm_box(
 
 def test_unestimatable_scene_still_loads(paths: StationPaths, settings: Settings) -> None:
     series = Series.load(paths.series)
-    series.parts[0].scenes[1].visual.source = VisualSource.TEXT_CARD
+    series.parts[0].scenes[1].idea_key = None  # nothing to draw, so no estimate
     series.save(paths.series)
     _, demo = build(paths, settings)
     estimate = demo.loads[0].call("s2")[8]
@@ -259,6 +259,41 @@ def test_callback_errors_become_gr_error(paths: StationPaths, settings: Settings
         demo.loads[0].call("nope")
 
 
+@pytest.mark.parametrize(
+    ("ms", "fraction"),
+    [(None, 0.5), (float("nan"), 0.5), (float("inf"), 0.5), (4000.0, None), (4000.0, float("nan"))],
+)
+def test_blank_timing_numbers_become_a_gradio_error(
+    paths: StationPaths, settings: Settings, ms: float | None, fraction: float | None
+) -> None:
+    gr, _ = build(paths, settings)
+    sha = series_sha256(paths.series)
+    with pytest.raises(FakeError, match="number"):
+        click(gr, "Save timing", "s1", ms, fraction, sha)
+    assert series_sha256(paths.series) == sha
+
+
+def test_an_empty_series_says_so_instead_of_unknown_scene_none(
+    paths: StationPaths, settings: Settings
+) -> None:
+    Series.load(paths.series).model_copy(update={"parts": []}).save(paths.series)
+    _, demo = build(paths, settings)
+    with pytest.raises(FakeError, match="no scenes") as caught:
+        demo.loads[0].call(None)
+    assert "None" not in str(caught.value)
+
+
+def test_a_corrupt_sketch_is_a_plain_error(paths: StationPaths, settings: Settings) -> None:
+    library = default_library(settings)
+    record = library.get_sketch(1)
+    assert record is not None
+    blob = library._blobs.path(record.blob_hash, record.suffix)
+    blob.write_bytes(b"this is not an image")
+    _, demo = build(paths, settings)
+    with pytest.raises(FakeError, match="sketch image"):
+        demo.loads[0].call("s1")
+
+
 def test_page_with_no_scenes_still_builds(paths: StationPaths, settings: Settings) -> None:
     Series.load(paths.series).model_copy(update={"parts": []}).save(paths.series)
     gr, _ = build(paths, settings)
@@ -288,7 +323,67 @@ def test_cli_ui_launches_on_host_and_port(
         "--host", "192.0.2.1", "--port", "7861",
     )  # fmt: skip
     assert code == 0 and fake.blocks is not None
-    assert fake.blocks.launched == {"server_name": "192.0.2.1", "server_port": 7861}
+    served = [str(paths.audio_dir.resolve()), str(paths.export_dir.resolve())]
+    assert fake.blocks.launched == {
+        "server_name": "192.0.2.1",
+        "server_port": 7861,
+        "allowed_paths": served,
+    }
+
+
+def test_cli_ui_serves_audio_and_export_outside_the_launch_directory(
+    paths: StationPaths, settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Gradio serves only cwd, its temp dir and allowed_paths: the stage dirs must be listed."""
+    audio, export = tmp_path / "far" / "wav", tmp_path / "far" / "out"
+    fake = FakeGradio()
+    monkeypatch.setitem(sys.modules, "gradio", fake)
+    monkeypatch.setenv("NARRATOFLOW_DATA_DIR", str(settings.data_dir))
+    code = run_main(
+        monkeypatch, "ui", str(paths.series), "--channel", str(paths.channel),
+        "--audio", str(audio), "--export", str(export),
+    )  # fmt: skip
+    assert code == 0 and fake.blocks is not None and fake.blocks.launched is not None
+    assert fake.blocks.launched["allowed_paths"] == [str(audio.resolve()), str(export.resolve())]
+
+
+def _launch_on(
+    host: str,
+    paths: StationPaths,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> str:
+    monkeypatch.setitem(sys.modules, "gradio", FakeGradio())
+    monkeypatch.setenv("NARRATOFLOW_DATA_DIR", str(settings.data_dir))
+    code = run_main(
+        monkeypatch, "ui", str(paths.series), "--channel", str(paths.channel), "--host", host
+    )
+    assert code == 0
+    return capsys.readouterr().err
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.1", "::", "example.test"])  # noqa: S104
+def test_cli_ui_warns_on_a_non_loopback_host(
+    host: str,
+    paths: StationPaths,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    err = _launch_on(host, paths, settings, monkeypatch, capsys)
+    assert "no authentication" in err and host in err
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "127.0.0.2"])
+def test_cli_ui_is_quiet_on_loopback(
+    host: str,
+    paths: StationPaths,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert "authentication" not in _launch_on(host, paths, settings, monkeypatch, capsys)
 
 
 def test_real_gradio_builds(paths: StationPaths, settings: Settings) -> None:

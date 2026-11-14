@@ -22,7 +22,7 @@ from typing import Literal
 
 import cv2
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from skimage.morphology import skeletonize
 
 from narratoflow.errors import SketchRejectedError
@@ -30,6 +30,7 @@ from narratoflow.errors import SketchRejectedError
 XDOG_LONG_SIDE_PX = 512
 XDOG_PERCENTILES = (1.0, 99.0)
 MIN_UPLOAD_SIDE_PX = 32
+_EXIF_ORIENTATION = 0x0112
 MAX_UPLOAD_SIDE_PX = 8192
 _FLAT_GREY_LEVELS = 1.0
 _PAPER = 255
@@ -220,12 +221,31 @@ class DensityReport:
     reason: str | None
 
 
-def _to_gray(png: bytes) -> np.ndarray:
-    data = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
+def _upright(raster: bytes) -> bytes:
+    """The raster with its EXIF Orientation applied; bytes without a tag pass through."""
+    try:
+        with Image.open(BytesIO(raster)) as image:
+            if image.getexif().get(_EXIF_ORIENTATION, 1) == 1:
+                return raster
+            upright = ImageOps.exif_transpose(image)
+            buffer = BytesIO()
+            upright.save(buffer, format="PNG")
+            return buffer.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError):
+        return raster  # the decode below reports it
+
+
+def _to_gray(png: bytes, *, long_side: int | None = None) -> np.ndarray:
+    """Decode to uint8 gray, alpha over white; `long_side` shrinks first (before the blend)."""
+    data = cv2.imdecode(np.frombuffer(_upright(png), np.uint8), cv2.IMREAD_UNCHANGED)
     if data is None:
         raise SketchRejectedError("undecodable image")
     if data.dtype != np.uint8:
         data = cv2.convertScaleAbs(data, alpha=255.0 / 65535.0)  # 16-bit PNG
+    if long_side is not None and max(data.shape[:2]) > long_side:
+        scale = long_side / max(data.shape[:2])
+        size = (round(data.shape[1] * scale), round(data.shape[0] * scale))
+        data = np.asarray(cv2.resize(data, size, interpolation=cv2.INTER_AREA))
     if data.ndim == 2:
         return data
     if data.shape[2] == 4:
@@ -408,6 +428,8 @@ def _check_upload_size(raster: bytes) -> None:
         raise SketchRejectedError("too large")
     if min(width, height) < MIN_UPLOAD_SIDE_PX:
         raise SketchRejectedError("too small")
+    if min(width, height) * XDOG_LONG_SIDE_PX < MIN_UPLOAD_SIDE_PX * max(width, height):
+        raise SketchRejectedError("too narrow")  # the short side would fall under the minimum
 
 
 def _resized(gray: np.ndarray) -> np.ndarray:
@@ -423,11 +445,12 @@ def xdog_lineart(raster: bytes, *, params: XdogParams = XDOG_DEFAULT) -> np.ndar
     """An uploaded raster as a 2-D bool ink mask (True = ink), like `binarize`.
 
     Raises `SketchRejectedError` for an undecodable, too large (long side over
-    MAX_UPLOAD_SIDE_PX) or too small (short side under MIN_UPLOAD_SIDE_PX) image,
+    MAX_UPLOAD_SIDE_PX), too small (short side under MIN_UPLOAD_SIDE_PX) or too narrow
+    (the short side would fall under MIN_UPLOAD_SIDE_PX once resized) image,
     and "empty" when no ink is left (a flat image, or only specks).
     """
     _check_upload_size(raster)
-    gray = _resized(_to_gray(raster)).astype(np.float64)
+    gray = _resized(_to_gray(raster, long_side=XDOG_LONG_SIDE_PX)).astype(np.float64)
     low, high = np.percentile(gray, XDOG_PERCENTILES)
     if high - low < _FLAT_GREY_LEVELS:
         raise SketchRejectedError("empty")

@@ -69,6 +69,23 @@ def test_bench_script_prints_markdown(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "| identity | 3 | 0 |" in capsys.readouterr().out
 
 
+def test_bench_script_reads_gold_bytes_exactly_like_the_manifest_hash(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A CRLF gold file hashes with its carriage returns, as fetch_gold_tashkeel does."""
+    bench = _script("bench_tashkeel")
+    gold, _ = _gold_dir(tmp_path)
+    crlf = TEXT.replace("\n", "\r\n")
+    (gold / "test.txt").write_bytes(crlf.encode("utf-8"))
+    manifest = B.make_manifest(
+        crlf, source_url="https://example.test/x", commit="c", licence_notes="n", min_words=1
+    )
+    path = tmp_path / "crlf.toml"
+    path.write_text(B.manifest_toml(manifest), encoding="utf-8")
+    bench.main(["--gold", str(gold), "--manifest", str(path), "--engines", "identity"])
+    assert "| identity |" in capsys.readouterr().out
+
+
 def test_bench_script_rejects_unknown_engine(tmp_path: Path) -> None:
     bench = _script("bench_tashkeel")
     gold, manifest = _gold_dir(tmp_path)

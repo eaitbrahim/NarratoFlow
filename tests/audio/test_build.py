@@ -23,6 +23,7 @@ from narratoflow.audio.build import (
     AudioBuildResult,
     AudioInterruptedError,
     build_audio,
+    check_audio_ready,
     check_scene_text,
     estimate_voice_cost,
 )
@@ -479,6 +480,30 @@ def test_unapproved_and_missing_sketch_refused(
     other = make_series([narr("s1", "alpha beta")]).model_copy(update={"channel_slug": "other"})
     with pytest.raises(PlanningError, match="channel"):
         run(other, channel, settings, tmp_path, voices=[voice], library=library, pack=pack)
+    assert voice.requests == []
+
+
+def test_check_audio_ready_runs_the_preflight_but_not_the_sketch_checks(
+    channel: ChannelConfig, settings: Settings
+) -> None:
+    voice = FakeVoice()
+    pending = make_series([narr("s1", "alpha beta").model_copy(update={"visual": Visual()})])
+    check_audio_ready(
+        pending, channel, settings, voices=[VoiceChoice(voice, "v1")], prices=PRICES
+    )  # a sketch still to draw: fine
+    with pytest.raises(PlanningError, match="approve"):
+        check_audio_ready(
+            make_series([narr("s1", "alpha beta")], approved=False),
+            channel,
+            settings,
+            voices=[VoiceChoice(voice, "v1")],
+            prices=PRICES,
+        )
+    music = channel.model_copy(update={"background_music": True})
+    with pytest.raises(ChannelConfigError, match="background_music"):
+        check_audio_ready(
+            pending, music, settings, voices=[VoiceChoice(voice, "v1")], prices=PRICES
+        )
     assert voice.requests == []
 
 

@@ -44,6 +44,23 @@ def find_scene(series: Series, scene_id: str) -> tuple[int, int, Scene]:
     raise PlanningError(f"unknown scene {scene_id}")
 
 
+def _refuse_a_silent_dedupe(
+    record: SketchRecord, source: str, licence: str, attribution: str
+) -> None:
+    """The library dedupes identical ink onto the first record; do not let that drop
+    the new provenance or adopt a generated, bundled or copied sketch as an upload."""
+    if record.origin is not SketchOrigin.UPLOADED:
+        raise PlanningError(
+            f"identical line art is already stored as a {record.origin} sketch, not an upload"
+        )
+    stored = record.provenance
+    if (stored.source, stored.license, stored.attribution) != (source, licence, attribution):
+        raise PlanningError(
+            "this image is already stored with different source/licence/attribution "
+            f"({stored.license}, {stored.source!r}); refusing to drop the new ones"
+        )
+
+
 def attach_upload(
     series: Series,
     scene_id: str,
@@ -99,6 +116,7 @@ def attach_upload(
     )
     if record.status is SketchStatus.FAILED:
         raise SketchRejectedError(f"this image is quarantined: {record.status_reason}")
+    _refuse_a_silent_dedupe(record, source, licence, attribution)
     library.put_strokes(record.id, strokes)
     out = series.model_copy(deep=True)
     out.parts[p].scenes[i] = scene.model_copy(

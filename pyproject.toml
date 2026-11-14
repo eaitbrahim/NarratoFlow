@@ -13,7 +13,6 @@ dependencies = [
     "opencv-python-headless>=4.9",
     "pillow>=10.3",
     "scikit-image>=0.23",
-    "pyarabic>=0.6.15",
     "httpx>=0.27",
     "pydantic-settings>=2.16.2",
     "python-dotenv>=1.0",
@@ -81,7 +80,6 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 module = [
     "cv2.*",
-    "pyarabic.*",
     "mishkal.*",
     "skimage.*",
     "diffusers.*",

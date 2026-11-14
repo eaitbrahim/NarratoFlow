@@ -16,10 +16,12 @@ parts are never passed to a stage, so their files are untouched.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import tempfile
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -34,13 +36,14 @@ from narratoflow.audio import io as aio
 from narratoflow.audio.build import (
     AudioInterruptedError,
     build_audio,
+    check_audio_ready,
     check_scene_text,
     estimate_voice_cost,
 )
-from narratoflow.audio.timeline import PartTimeline
+from narratoflow.audio.timeline import PartTimeline, SceneTiming
 from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.costs.prices import PriceTable, default_prices
-from narratoflow.errors import PlanningError
+from narratoflow.errors import AudioError, PlanningError, PublishError
 from narratoflow.images import ImageProvider
 from narratoflow.library.repository import SketchLibrary, default_library
 from narratoflow.llm.base import LLMClient
@@ -177,6 +180,53 @@ def series_sha256(path: Path) -> str:
         raise PlanningError(f"cannot read series file {path}: {exc}") from exc
 
 
+def lock_path(paths: StationPaths) -> Path:
+    """The per-series lock a paid run holds: `series.json.lock` next to the series file."""
+    return paths.series.with_name(paths.series.name + ".lock")
+
+
+def _locked_message(paths: StationPaths) -> str:
+    return (
+        f"a paid action is running on {paths.series.name}; wait for it to finish "
+        f"(if none is, delete {lock_path(paths)})"
+    )
+
+
+def _refuse_while_locked(paths: StationPaths) -> None:
+    """Writing handlers do not edit the series while a paid run holds its lock."""
+    if lock_path(paths).exists():
+        raise PlanningError(_locked_message(paths))
+
+
+@contextmanager
+def _paid_run(paths: StationPaths) -> Iterator[None]:
+    """Exclusive lock for a paid run (Gradio runs buttons concurrently): created with
+    O_EXCL, removed in `finally`. Refuses when another run holds it, and then leaves
+    that run's lock alone."""
+    lock = lock_path(paths)
+    try:
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except FileExistsError as exc:
+        raise PlanningError(_locked_message(paths)) from exc
+    except OSError as exc:
+        raise PlanningError(f"cannot lock {paths.series.name}: {exc}") from exc
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _save_partial(
+    paths: StationPaths, partial: Series, written_sha256: str, error: BaseException
+) -> None:
+    """Save what an interrupted stage finished. When the file changed meanwhile the
+    original error still wins; the note says the progress was not saved."""
+    try:
+        _write(paths, partial, written_sha256)
+    except PlanningError as refused:
+        error.add_note(f"partial progress not saved: {refused}")
+
+
 def _load(paths: StationPaths, expected_sha256: str | None = None) -> Series:
     if expected_sha256 is not None and series_sha256(paths.series) != expected_sha256:
         raise PlanningError(SERIES_CHANGED)
@@ -198,6 +248,7 @@ def _edit(
     change: Callable[[Scene], Scene],
 ) -> str:
     """Apply `change` to one narration scene of the file and save; the new sha256."""
+    _refuse_while_locked(paths)
     series = _load(paths, expected_sha256)
     p, i, scene = _narration(series, scene_id)
     series.parts[p].scenes[i] = change(scene)
@@ -262,6 +313,13 @@ def _audio_clip(paths: StationPaths, part: int, scene_id: str) -> Path | None:
     )
     if slot is None:
         return None
+    try:
+        return _cut_clip(paths, flac, part, scene_id, slot)
+    except OSError as exc:
+        raise AudioError(f"cannot prepare the audio clip of scene {scene_id}: {exc}") from exc
+
+
+def _cut_clip(paths: StationPaths, flac: Path, part: int, scene_id: str, slot: SceneTiming) -> Path:
     stat = flac.stat()
     key = f"{part}:{scene_id}:{stat.st_size}:{stat.st_mtime_ns}:{slot.start_ms}:{slot.end_ms}"
     out = paths.audio_dir / CLIP_DIR / f"{hashlib.sha256(key.encode()).hexdigest()}.wav"
@@ -273,12 +331,14 @@ def _audio_clip(paths: StationPaths, part: int, scene_id: str) -> Path | None:
 
 def scene_view(
     paths: StationPaths,
-    scene_id: str,
+    scene_id: str | None,
     *,
     settings: Settings | None = None,
     library: SketchLibrary | None = None,
 ) -> SceneView:
     """Texts, timing, sketch image and audio clip of one scene."""
+    if scene_id is None:
+        raise PlanningError("this series has no scenes to review; plan and build it first")
     sha = series_sha256(paths.series)
     series = _load(paths)
     p, _, scene = find_scene(series, scene_id)
@@ -333,15 +393,24 @@ def edit_text(
     return _edit(paths, scene_id, expected_sha256, change)
 
 
+def _finite(value: float | None, name: str) -> float:
+    """A `gr.Number` cleared in the page arrives as None; NaN and infinity are as unusable."""
+    if value is None or not math.isfinite(value):
+        raise PlanningError(f"{name} needs a number")
+    return value
+
+
 def edit_timing(
     paths: StationPaths,
     scene_id: str,
     *,
-    min_duration_ms: int,
-    draw_fraction: float,
+    min_duration_ms: float | None,
+    draw_fraction: float | None,
     expected_sha256: str,
 ) -> str:
     """Set the scene's minimum duration (1000..60000 ms) and draw fraction (0.1..1.0)."""
+    min_duration_ms = int(_finite(min_duration_ms, "minimum duration"))
+    draw_fraction = _finite(draw_fraction, "draw fraction")
     if not MIN_DURATION_MS <= min_duration_ms <= MAX_DURATION_MS:
         raise PlanningError(
             f"minimum duration must be {MIN_DURATION_MS}..{MAX_DURATION_MS} ms, "
@@ -379,6 +448,7 @@ def upload_visual(
     """Attach the creator's own image to the scene as line art (free: no spend)."""
     settings = settings if settings is not None else get_settings()
     check_upload_licence(default_rules(settings), licence, attribution)
+    _refuse_while_locked(paths)
     series = _load(paths, expected_sha256)
     updated, record = attach_upload(
         series,
@@ -427,33 +497,38 @@ def regenerate_visual(
     prices: PriceTable | None = None,
 ) -> RegenerateReport:
     """Draw a new sketch for the scene (paid): refuses without `confirm` when it costs."""
-    settings = settings if settings is not None else get_settings()
-    series = _load(paths, expected_sha256)
-    channel = load_channel(paths.channel)
-    prices = prices if prices is not None else default_prices(settings)
-    _confirmed(_regenerate_cost(series, channel, scene_id, prices), confirm)
-    try:
-        updated, result = regenerate(
-            series,
-            scene_id,
-            channel,
-            settings,
-            images=images,
-            vision=vision,
-            library=library,
-            prices=prices,
-            require_quarantine=False,
-        )
-    except GenerationInterruptedError as exc:
-        _write(paths, exc.partial[0], expected_sha256)
-        raise
-    return RegenerateReport(_write(paths, updated, expected_sha256), result, result.spent_usd)
+    with _paid_run(paths):
+        settings = settings if settings is not None else get_settings()
+        series = _load(paths, expected_sha256)
+        channel = load_channel(paths.channel)
+        prices = prices if prices is not None else default_prices(settings)
+        _confirmed(_regenerate_cost(series, channel, scene_id, prices), confirm)
+        try:
+            updated, result = regenerate(
+                series,
+                scene_id,
+                channel,
+                settings,
+                images=images,
+                vision=vision,
+                library=library,
+                prices=prices,
+                require_quarantine=False,
+            )
+        except GenerationInterruptedError as exc:
+            _save_partial(paths, exc.partial[0], expected_sha256, exc)
+            raise
+        return RegenerateReport(_write(paths, updated, expected_sha256), result, result.spent_usd)
 
 
 def use_text_card(
     paths: StationPaths, scene_id: str, card_text: str, *, expected_sha256: str
 ) -> str:
-    """Show a text card instead of a sketch; the new sha256."""
+    """Show a text card instead of a sketch; the new sha256. A blank card is refused;
+    `regenerate_visual` brings a sketch back."""
+    if not card_text.strip():
+        raise PlanningError("a text card needs text")
+    _refuse_while_locked(paths)
     series = _load(paths, expected_sha256)
     _narration(series, scene_id)
     updated = resolve.use_text_card(series, scene_id, card_text, require_quarantine=False)
@@ -537,72 +612,91 @@ def rebuild_scene(
     sketch the scene lacks, plus the voice characters its part's TTS cache lacks) is
     checked before any call; each stage's progress is saved even when a later one fails.
     """
-    settings = settings if settings is not None else get_settings()
-    series = _load(paths, expected_sha256)
-    channel = load_channel(paths.channel)
-    prices = prices if prices is not None else default_prices(settings)
-    library = library if library is not None else default_library(settings)
-    part = series.parts[find_scene(series, scene_id)[0]].index
-    estimate = _rebuild_cost(
-        series, channel, scene_id, settings, paths, library=library, voices=voices, prices=prices
-    )
-    _confirmed(estimate, confirm)
-    sha = expected_sha256
-    try:
-        series, generated = generate_missing(
-            series,
-            channel,
-            settings,
-            images=images,
-            vision=vision,
-            library=library,
-            prices=prices,
-            only=frozenset({scene_id}),
+    with _paid_run(paths):
+        settings = settings if settings is not None else get_settings()
+        series = _load(paths, expected_sha256)
+        channel = load_channel(paths.channel)
+        prices = prices if prices is not None else default_prices(settings)
+        library = library if library is not None else default_library(settings)
+        part = series.parts[find_scene(series, scene_id)[0]].index
+        # everything build_audio would refuse, before the first paid call
+        check_audio_ready(
+            series, channel, settings, parts=[part], voices=voices, corpus=corpus, prices=prices
         )
-    except GenerationInterruptedError as exc:
-        _write(paths, exc.partial[0], sha)
-        raise
-    sha = _write(paths, series, sha)
-    try:
-        series, audio = build_audio(
+        estimate = _rebuild_cost(
             series,
             channel,
+            scene_id,
             settings,
-            out_dir=paths.audio_dir,
-            cache_root=paths.cache_root,
-            parts=[part],
+            paths,
+            library=library,
             voices=voices,
-            aligner=aligner,
-            corpus=corpus,
-            library=library,
             prices=prices,
         )
-    except AudioInterruptedError as exc:
-        _write(paths, exc.partial[0], sha)
-        raise
-    sha = _write(paths, series, sha)
-    rendered = build_render(
-        series,
-        channel,
-        settings,
-        audio_dir=paths.audio_dir,
-        out_dir=paths.render_dir,
-        parts=[part],
-        workers=workers,
-        canvas=canvas,
-        tools=tools,
-        library=library,
-        corpus=corpus,
-    )
-    return RebuildReport(
-        scene_id=scene_id,
-        part=part,
-        generated=generated,
-        audio_parts=[b.index for b in audio.parts],
-        rendered_parts=[b.index for b in rendered.parts if b.index not in rendered.skipped],
-        spent_usd=generated.spent_usd + audio.spent_usd,
-        sha256=sha,
-    )
+        _confirmed(estimate, confirm)
+        sha = expected_sha256
+        try:
+            series, generated = generate_missing(
+                series,
+                channel,
+                settings,
+                images=images,
+                vision=vision,
+                library=library,
+                prices=prices,
+                only=frozenset({scene_id}),
+            )
+        except GenerationInterruptedError as exc:
+            _save_partial(paths, exc.partial[0], sha, exc)
+            raise
+        sha = _write(paths, series, sha)
+        try:
+            series, audio = build_audio(
+                series,
+                channel,
+                settings,
+                out_dir=paths.audio_dir,
+                cache_root=paths.cache_root,
+                parts=[part],
+                voices=voices,
+                aligner=aligner,
+                corpus=corpus,
+                library=library,
+                prices=prices,
+            )
+        except AudioInterruptedError as exc:
+            _save_partial(paths, exc.partial[0], sha, exc)
+            raise
+        sha = _write(paths, series, sha)
+        rendered = build_render(
+            series,
+            channel,
+            settings,
+            audio_dir=paths.audio_dir,
+            out_dir=paths.render_dir,
+            parts=[part],
+            workers=workers,
+            canvas=canvas,
+            tools=tools,
+            library=library,
+            corpus=corpus,
+        )
+        return RebuildReport(
+            scene_id=scene_id,
+            part=part,
+            generated=generated,
+            audio_parts=[b.index for b in audio.parts],
+            rendered_parts=[b.index for b in rendered.parts if b.index not in rendered.skipped],
+            spent_usd=generated.spent_usd + audio.spent_usd,
+            sha256=sha,
+        )
+
+
+def _remove(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise PublishError(f"cannot remove the old copy {path}: {exc}") from exc
 
 
 def export(
@@ -657,13 +751,15 @@ def export(
     )
     exported = {p.index: p.export_path for p in published.parts}
     if ratio is AspectRatio.PORTRAIT:
+        for index in exported:  # the 16:9 copies derive from 9:16 files that just changed
+            _remove(paths.export_dir / landscape_name(index))
         return [path for path in exported.values() if path is not None]
     reports = {b.index: b.report for b in rendered.parts}
     out: list[Path] = []
     for index, path in exported.items():
         target = paths.export_dir / landscape_name(index)
         if path is None:
-            target.unlink(missing_ok=True)  # a failing part keeps no older copy
+            _remove(target)  # a failing part keeps no older copy
             continue
         report = reports[index]
         out.append(

@@ -338,11 +338,13 @@ _DIFFUSION_TOML = """
 [style.diffusion]
 model_license = "Apache-2.0"
 model_source = "https://huggingface.co/black-forest-labs/FLUX.1-schnell"
+model_revision = "741f7c3ce8b383c54771c7003378a50191e9efe9"
 """
 _LORA_TOML = """
 lora = "someone/lineart-lora"
 lora_license = "MIT"
 lora_source = "https://huggingface.co/someone/lineart-lora"
+lora_revision = "abc123"
 """
 
 
@@ -361,7 +363,47 @@ def test_diffusion_style_defaults(channel_file: Path) -> None:
     assert diffusion is not None
     assert (diffusion.steps, diffusion.guidance_scale, diffusion.seed) == (4, 0.0, 0)
     assert (diffusion.size, diffusion.lora_scale, diffusion.device) == (1024, 1.0, "auto")
-    assert (diffusion.lora, diffusion.model_revision) == (None, None)
+    assert diffusion.lora is None
+    assert diffusion.model_revision == "741f7c3ce8b383c54771c7003378a50191e9efe9"
+
+
+@pytest.mark.parametrize("field", ["model_license", "model_source", "model_revision"])
+@pytest.mark.parametrize("blank", ['""', '"   "'])
+def test_diffusion_pins_reject_blank(channel_file: Path, field: str, blank: str) -> None:
+    extra = f"\n{field} = {blank}\n"
+    lines = [ln for ln in _DIFFUSION_TOML.splitlines() if not ln.startswith(field)]
+    text = channel_file.read_text(encoding="utf-8").replace(
+        'image_provider = "openai"', 'image_provider = "lineart-diffusion"'
+    )
+    channel_file.write_text(text + "\n".join(lines) + extra, encoding="utf-8")
+    with pytest.raises(ChannelConfigError, match=field):
+        load_channel(channel_file)
+
+
+def test_diffusion_pins_are_stripped(channel_file: Path) -> None:
+    text = _DIFFUSION_TOML.replace('"Apache-2.0"', '"  Apache-2.0 "')
+    base = channel_file.read_text(encoding="utf-8").replace(
+        'image_provider = "openai"', 'image_provider = "lineart-diffusion"'
+    )
+    channel_file.write_text(base + text, encoding="utf-8")
+    diffusion = load_channel(channel_file).style.diffusion
+    assert diffusion is not None and diffusion.model_license == "Apache-2.0"
+
+
+def test_model_revision_is_required(channel_file: Path) -> None:
+    lines = [ln for ln in _DIFFUSION_TOML.splitlines() if not ln.startswith("model_revision")]
+    text = channel_file.read_text(encoding="utf-8").replace(
+        'image_provider = "openai"', 'image_provider = "lineart-diffusion"'
+    )
+    channel_file.write_text(text + "\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ChannelConfigError, match="model_revision"):
+        load_channel(channel_file)
+
+
+def test_lora_needs_a_pinned_revision(channel_file: Path) -> None:
+    lines = [ln for ln in _LORA_TOML.splitlines() if not ln.startswith("lora_revision")]
+    with pytest.raises(ChannelConfigError, match="lora needs lora_revision"):
+        load_channel(_with_diffusion(channel_file, "\n".join(lines)))
 
 
 def test_no_diffusion_table_means_none(channel_file: Path) -> None:
@@ -402,10 +444,24 @@ def test_fingerprint_changes_with_seed_and_lora(channel_file: Path) -> None:
     assert style.diffusion is not None
     base = style_fingerprint(style)
     assert base != _FINGERPRINT_BEFORE_DIFFUSION
-    lora = {"lora": "a/b", "lora_license": "MIT", "lora_source": "s"}
+    lora = {"lora": "a/b", "lora_license": "MIT", "lora_source": "s", "lora_revision": "r"}
     for change in ({"seed": 5}, {"lora_scale": 0.5}, lora):
         other = style.model_copy(update={"diffusion": style.diffusion.model_copy(update=change)})
         assert style_fingerprint(other) != base
+
+
+def test_fingerprint_ignores_the_device(channel_file: Path) -> None:
+    """cpu vs cuda does not change the style: library sketches stay reusable."""
+    (channel_file.parent / "ref.png").write_bytes(_FIXED_REFERENCE)
+    style = load_channel(_with_diffusion(channel_file)).style
+    assert style.diffusion is not None
+    prints = {
+        style_fingerprint(
+            style.model_copy(update={"diffusion": style.diffusion.model_copy(update={"device": d})})
+        )
+        for d in ("auto", "cpu", "cuda", "mps")
+    }
+    assert len(prints) == 1
 
 
 def test_lineart_diffusion_is_free_and_keyless(channel_file: Path) -> None:

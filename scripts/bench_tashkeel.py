@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         parser.error(f"unknown engine {unknown[0]!r}; choose from {', '.join(ENGINES)}")
     manifest = bench.load_manifest(args.manifest)
-    text = (args.gold / "test.txt").read_text(encoding="utf-8")
+    text = (args.gold / "test.txt").read_bytes().decode("utf-8")
     gold = bench.select_gold(text, manifest)
     results = [
         bench.not_run(n, NOT_RUN[n]) if n in NOT_RUN else bench.run_engine(n, build_engine(n), gold)

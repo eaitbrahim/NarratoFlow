@@ -267,4 +267,3 @@ def test_real_gradio_builds(paths: StationPaths, settings: Settings) -> None:
     gradio = pytest.importorskip("gradio")
     demo = build_app(paths, settings, gradio)
     assert isinstance(demo, gradio.Blocks)
-

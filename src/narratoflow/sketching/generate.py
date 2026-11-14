@@ -158,8 +158,7 @@ def _now() -> datetime:
 
 def _diffusion_terms(pins: DiffusionStyle, model: str) -> tuple[str, str]:
     """(licence, usage terms) of a lineart-diffusion image from the channel's pins."""
-    at = f"@{pins.model_revision}" if pins.model_revision else ""
-    terms = f"Model {model}{at} ({pins.model_license}, {pins.model_source})"
+    terms = f"Model {model}@{pins.model_revision} ({pins.model_license}, {pins.model_source})"
     if not pins.lora:
         return pins.model_license, terms
     lora = f"LoRA {pins.lora} ({pins.lora_license}, {pins.lora_source})"

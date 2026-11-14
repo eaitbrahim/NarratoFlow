@@ -257,7 +257,7 @@ device = "auto"       # cuda, then mps, then cpu; or "cpu" / "cuda" / "mps"
 # optional LoRA; a licence and a source are then mandatory
 # lora = "owner/name"
 # lora_weight_name = "file.safetensors"
-# lora_revision = "..."
+# lora_revision = "..."   # required with a lora (and model_revision always)
 # lora_license = "Apache-2.0"
 # lora_source = "https://huggingface.co/owner/name"
 # lora_scale = 1.0

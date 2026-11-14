@@ -218,7 +218,8 @@ def test_spec_from_style(channel_file: Path) -> None:
         text
         + '\n[style.diffusion]\nmodel_license = "Apache-2.0"\nmodel_source = "s"\n'
         + 'model_revision = "r"\nseed = 9\nsteps = 5\ndevice = "cpu"\n'
-        + 'lora = "a/b"\nlora_license = "MIT"\nlora_source = "t"\nlora_scale = 0.5\n',
+        + 'lora = "a/b"\nlora_license = "MIT"\nlora_source = "t"\nlora_revision = "q"\n'
+        + "lora_scale = 0.5\n",
         encoding="utf-8",
     )
     style = load_channel(channel_file).style
@@ -238,7 +239,9 @@ def test_factory_builds_lineart_provider(channel_file: Path) -> None:
         'image_provider = "openai"', 'image_provider = "lineart-diffusion"'
     )
     channel_file.write_text(
-        text + '\n[style.diffusion]\nmodel_license = "Apache-2.0"\nmodel_source = "s"\n',
+        text
+        + '\n[style.diffusion]\nmodel_license = "Apache-2.0"\nmodel_source = "s"\n'
+        + 'model_revision = "r"\n',
         encoding="utf-8",
     )
     channel = load_channel(channel_file)

@@ -1313,7 +1313,11 @@ def test_lineart_provenance_records_licences(
     channel: ChannelConfig, settings: Settings, library: SketchLibrary
 ) -> None:
     lineart = _lineart_channel(
-        channel, lora="someone/lineart", lora_license="MIT", lora_source="https://hf.co/someone"
+        channel,
+        lora="someone/lineart",
+        lora_license="MIT",
+        lora_source="https://hf.co/someone",
+        lora_revision="r1",
     )
     provider = LineArtDiffusionProvider(
         DiffusionSpec.from_style(lineart.style), factory=_scroll_pipeline
@@ -1340,15 +1344,10 @@ def test_lineart_provenance_records_licences(
     )
 
 
-def test_lineart_provenance_without_lora_or_revision(
+def test_lineart_provenance_without_lora(
     channel: ChannelConfig, settings: Settings, library: SketchLibrary
 ) -> None:
     lineart = _lineart_channel(channel)
-    assert lineart.style.diffusion is not None
-    unpinned = lineart.style.diffusion.model_copy(update={"model_revision": None})
-    lineart = lineart.model_copy(
-        update={"style": lineart.style.model_copy(update={"diffusion": unpinned})}
-    )
     provider = LineArtDiffusionProvider(
         DiffusionSpec.from_style(lineart.style), factory=_scroll_pipeline
     )
@@ -1365,7 +1364,7 @@ def test_lineart_provenance_without_lora_or_revision(
     [record] = library.find_reusable(1, sc.idea_key or "")
     assert record.provenance.license == "Apache-2.0"
     assert record.provenance.usage_terms == (
-        "Model black-forest-labs/FLUX.1-schnell (Apache-2.0, "
+        "Model black-forest-labs/FLUX.1-schnell@741f7c3 (Apache-2.0, "
         "https://huggingface.co/black-forest-labs/FLUX.1-schnell)"
     )
 

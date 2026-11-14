@@ -9,7 +9,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from narratoflow.errors import ChannelConfigError
 from narratoflow.llm.base import Effort
@@ -23,12 +31,15 @@ class DiffusionStyle(BaseModel):
     The model itself is `StyleConfig.image_model`. Licences and sources are mandatory
     because they are copied into every generated sketch's provenance (publish checks
     them). `model_license` and `lora_license` are ids from `[licences.generated]`.
+    Revisions are mandatory: `from_pretrained(revision=None)` would follow the hub's
+    latest push under an unchanged fingerprint. `device` is how to run, not what to
+    draw, so it stays out of the style fingerprint.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-    model_license: str = Field(min_length=1)
-    model_source: str = Field(min_length=1)
-    model_revision: str | None = None
+    model_license: str
+    model_source: str
+    model_revision: str
     lora: str | None = None
     lora_weight_name: str | None = None
     lora_revision: str | None = None
@@ -41,10 +52,17 @@ class DiffusionStyle(BaseModel):
     size: Literal[1024] = 1024
     device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
 
+    @field_validator("model_license", "model_source", "model_revision")
+    @classmethod
+    def _not_blank(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value.strip()
+
     @model_validator(mode="after")
-    def _lora_has_licence_and_source(self) -> DiffusionStyle:
+    def _lora_has_licence_source_and_revision(self) -> DiffusionStyle:
         if self.lora:
-            for field in ("lora_license", "lora_source"):
+            for field in ("lora_license", "lora_source", "lora_revision"):
                 if not (getattr(self, field) or "").strip():
                     raise ValueError(f"lora needs {field}")
         return self
@@ -244,6 +262,6 @@ def style_fingerprint(style: StyleConfig) -> str:
         "reference_sha256": reference_sha256,
     }
     if style.diffusion is not None:
-        payload["diffusion"] = style.diffusion.model_dump(mode="json")
+        payload["diffusion"] = style.diffusion.model_dump(mode="json", exclude={"device"})
     blob = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]

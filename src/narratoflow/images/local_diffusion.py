@@ -16,6 +16,17 @@ NEGATIVE_PROMPT = ", ".join(NEGATIVE_TERMS) + ", people, faces, human figures, t
 _EXTRA_HINT = "install the 'diffusion' extra: uv sync --extra diffusion"
 
 
+def pick_device(torch: Any, device: str) -> str:
+    """`device` itself, or for "auto" the best of cuda, mps and cpu that `torch` offers."""
+    if device != "auto":
+        return device
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class LocalDiffusionProvider:
     name: str = "local-diffusion"
 
@@ -43,13 +54,7 @@ class LocalDiffusionProvider:
         )
 
     def _pick_device(self, device: str) -> str:
-        if device != "auto":
-            return device
-        if self._torch.cuda.is_available():
-            return "cuda"
-        if self._torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+        return pick_device(self._torch, device)
 
     def generate(self, req: ImageRequest) -> GeneratedImage:
         kwargs: dict[str, Any] = {"prompt": req.prompt, "negative_prompt": NEGATIVE_PROMPT}

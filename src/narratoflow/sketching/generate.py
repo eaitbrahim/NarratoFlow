@@ -24,6 +24,7 @@ from PIL import Image, UnidentifiedImageError
 
 from narratoflow.channels.config import (
     ChannelConfig,
+    DiffusionStyle,
     StyleConfig,
     style_fingerprint,
     vision_model,
@@ -48,13 +49,20 @@ from narratoflow.images.prompt import build_prompt
 from narratoflow.library.keys import IdeaKey, parse_idea_key
 from narratoflow.library.matching import MatchKind, match_idea
 from narratoflow.library.repository import SketchLibrary, default_library
-from narratoflow.library.schemas import Provenance, SketchOrigin, SketchRecord, SketchStatus
+from narratoflow.library.schemas import (
+    COMPOSITE_SEPARATOR,
+    Provenance,
+    SketchOrigin,
+    SketchRecord,
+    SketchStatus,
+)
 from narratoflow.llm.base import LLMClient
 from narratoflow.llm.factory import build_llm_client, vision_llm_config
 from narratoflow.models import Language, Scene, SceneKind, Series, VisualSource
 from narratoflow.settings import Settings
 from narratoflow.sketching.vision import check_sketch, estimate_check_cost
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons, default_bundled_icons
+from narratoflow.visuals.diffusion import PROVIDER_NAME as LINEART_PROVIDER
 from narratoflow.visuals.lineart import binarize, check_density
 from narratoflow.visuals.marker import marker_seed, video_id
 from narratoflow.visuals.strokes import extract_strokes
@@ -148,11 +156,25 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _provenance(image: GeneratedImage) -> Provenance:
+def _diffusion_terms(pins: DiffusionStyle, model: str) -> tuple[str, str]:
+    """(licence, usage terms) of a lineart-diffusion image from the channel's pins."""
+    at = f"@{pins.model_revision}" if pins.model_revision else ""
+    terms = f"Model {model}{at} ({pins.model_license}, {pins.model_source})"
+    if not pins.lora:
+        return pins.model_license, terms
+    lora = f"LoRA {pins.lora} ({pins.lora_license}, {pins.lora_source})"
+    return f"{pins.model_license}{COMPOSITE_SEPARATOR}{pins.lora_license}", f"{terms}; {lora}"
+
+
+def _provenance(image: GeneratedImage, channel: ChannelConfig) -> Provenance:
     provider = image.provider.strip().lower()
-    license_id, terms = _TERMS.get(
-        provider, (f"{provider}-terms", "Output use is subject to the provider's terms.")
-    )
+    pins = channel.style.diffusion
+    if provider == LINEART_PROVIDER and pins is not None:
+        license_id, terms = _diffusion_terms(pins, image.model)
+    else:
+        license_id, terms = _TERMS.get(
+            provider, (f"{provider}-terms", "Output use is subject to the provider's terms.")
+        )
     return Provenance(
         source="generated",
         license=license_id,
@@ -271,7 +293,7 @@ def _generate_one(
             seed=marker_seed(video_id, scene.id, scene.sketch_attempt),
         )
     )
-    provenance = _provenance(image)
+    provenance = _provenance(image, channel)
 
     def store(status: SketchStatus, reason: str | None, mirror_safe: bool) -> SketchRecord:
         record = library.add_sketch(

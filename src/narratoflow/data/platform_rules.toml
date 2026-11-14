@@ -4,7 +4,7 @@
 # listed sources, then bump `version` and `checked`. A copy named
 # platform_rules.toml in the data directory overrides this packaged file.
 
-version = "2026-11-13.1"
+version = "2026-11-13.2"
 checked = 2026-11-13
 
 [loudness]
@@ -61,6 +61,10 @@ verify = "600 s is the in-app recording limit; uploads reportedly allow up to 60
 [licences.generated]
 "openai-terms" = { verdict = "pass" }
 "local-model-license" = { verdict = "warn", note = "check the local model's licence allows commercial use of outputs" }
+# ids of lineart-diffusion models and LoRAs; a composite is "<model> AND <lora>" (SPDX style)
+"Apache-2.0" = { verdict = "pass" }
+"MIT" = { verdict = "pass" }
+"OpenRAIL++-M" = { verdict = "warn", note = "open-weights with use-based restrictions; check them" }
 
 [licences.voice]
 "elevenlabs-terms" = { verdict = "warn", note = "commercial use needs a paid ElevenLabs plan" }

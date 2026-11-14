@@ -28,7 +28,7 @@ arabic = ["mishkal>=0.4.1", "camel-tools>=1.5"]
 tts-edge = ["edge-tts>=7.0,<8"]
 tts-local = ["piper-tts>=1.3"]
 align = ["ctc-forced-aligner>=1.0.2,<2", "unidecode>=1.3"]
-diffusion = ["torch>=2.3", "diffusers>=0.30", "transformers>=4.44", "controlnet-aux>=0.0.9"]
+diffusion = ["torch>=2.3", "diffusers>=0.30", "transformers>=4.44"]
 ui = ["gradio>=5.0"]
 all = ["narratoflow[arabic,tts-edge,tts-local,align,diffusion,ui]"]
 

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import sys
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from fakes.images import FakeImages
@@ -13,7 +14,12 @@ from fixtures import images as img
 from PIL import Image
 from pydantic import SecretStr
 
-from narratoflow.channels.config import ChannelConfig, VisionConfig, style_fingerprint
+from narratoflow.channels.config import (
+    ChannelConfig,
+    DiffusionStyle,
+    VisionConfig,
+    style_fingerprint,
+)
 from narratoflow.costs.prices import PriceTable
 from narratoflow.costs.tracker import SpendTracker, TrackedLLM
 from narratoflow.errors import (
@@ -44,6 +50,11 @@ from narratoflow.sketching.generate import (
     load_reference,
 )
 from narratoflow.visuals.bundled import BundledIcon, BundledIcons
+from narratoflow.visuals.diffusion import (
+    DiffusionSpec,
+    LineArtDiffusionProvider,
+    TextToImagePipeline,
+)
 from narratoflow.visuals.marker import marker_seed
 from narratoflow.visuals.marker import video_id as marker_video_id
 from sketching.support import (
@@ -1272,3 +1283,105 @@ def test_generate_interrupted_keeps_ledger(
     partial, so_far = info.value.partial
     ledger = partial.parts[0].spend
     assert ledger and sum(ledger.values()) == partial.parts[0].spent_usd == so_far.spent_usd
+
+
+def _lineart_channel(channel: ChannelConfig, **pins: Any) -> ChannelConfig:
+    diffusion = DiffusionStyle(
+        model_license="Apache-2.0",
+        model_source="https://huggingface.co/black-forest-labs/FLUX.1-schnell",
+        model_revision="741f7c3",
+        **pins,
+    )
+    style = channel.style.model_copy(
+        update={
+            "image_provider": "lineart-diffusion",
+            "image_model": "black-forest-labs/FLUX.1-schnell",
+            "diffusion": diffusion,
+        }
+    )
+    return channel.model_copy(update={"style": style})
+
+
+def _scroll_pipeline(spec: DiffusionSpec) -> TextToImagePipeline:
+    def draw(**_: object) -> Image.Image:
+        return Image.open(io.BytesIO(img.line_drawing_scroll()))
+
+    return draw
+
+
+def test_lineart_provenance_records_licences(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    lineart = _lineart_channel(
+        channel, lora="someone/lineart", lora_license="MIT", lora_source="https://hf.co/someone"
+    )
+    provider = LineArtDiffusionProvider(
+        DiffusionSpec.from_style(lineart.style), factory=_scroll_pipeline
+    )
+    out, result = generate_missing(
+        series([scene(1)]),
+        lineart,
+        settings,
+        images=provider,
+        vision=None,
+        library=library,
+        prices=PRICES,
+    )
+    assert (result.generated, result.spent_usd) == (1, Decimal(0))
+    [sc] = scenes_of(out)
+    [record] = library.find_reusable(1, sc.idea_key or "")
+    p = record.provenance
+    assert p.license == "Apache-2.0 AND MIT"
+    assert (p.provider, p.model) == ("lineart-diffusion", "black-forest-labs/FLUX.1-schnell")
+    assert p.usage_terms == (
+        "Model black-forest-labs/FLUX.1-schnell@741f7c3 (Apache-2.0, "
+        "https://huggingface.co/black-forest-labs/FLUX.1-schnell); "
+        "LoRA someone/lineart (MIT, https://hf.co/someone)"
+    )
+
+
+def test_lineart_provenance_without_lora_or_revision(
+    channel: ChannelConfig, settings: Settings, library: SketchLibrary
+) -> None:
+    lineart = _lineart_channel(channel)
+    assert lineart.style.diffusion is not None
+    unpinned = lineart.style.diffusion.model_copy(update={"model_revision": None})
+    lineart = lineart.model_copy(
+        update={"style": lineart.style.model_copy(update={"diffusion": unpinned})}
+    )
+    provider = LineArtDiffusionProvider(
+        DiffusionSpec.from_style(lineart.style), factory=_scroll_pipeline
+    )
+    out, _ = generate_missing(
+        series([scene(1)]),
+        lineart,
+        settings,
+        images=provider,
+        vision=None,
+        library=library,
+        prices=PRICES,
+    )
+    [sc] = scenes_of(out)
+    [record] = library.find_reusable(1, sc.idea_key or "")
+    assert record.provenance.license == "Apache-2.0"
+    assert record.provenance.usage_terms == (
+        "Model black-forest-labs/FLUX.1-schnell (Apache-2.0, "
+        "https://huggingface.co/black-forest-labs/FLUX.1-schnell)"
+    )
+
+
+def test_default_path_never_imports_diffusers(
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    for name in ("torch", "diffusers"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    _bundled(monkeypatch, tmp_path, img.scroll())
+    lineart = _lineart_channel(channel)  # the diffusion provider is configured but unused
+    s = series([scene(1, "eye|generic", match="bundled")])
+    _, result = generate_missing(s, lineart, settings, vision=None, library=library, prices=PRICES)
+    assert (result.bundled, result.generated) == (1, 0)
+    assert "torch" not in sys.modules and "diffusers" not in sys.modules

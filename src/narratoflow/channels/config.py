@@ -17,6 +17,39 @@ from narratoflow.models import AspectRatio, Language
 from narratoflow.text.spoken import Lexicon
 
 
+class DiffusionStyle(BaseModel):
+    """The pins of `lineart-diffusion`: model, optional LoRA, seed and sampler settings.
+
+    The model itself is `StyleConfig.image_model`. Licences and sources are mandatory
+    because they are copied into every generated sketch's provenance (publish checks
+    them). `model_license` and `lora_license` are ids from `[licences.generated]`.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    model_license: str = Field(min_length=1)
+    model_source: str = Field(min_length=1)
+    model_revision: str | None = None
+    lora: str | None = None
+    lora_weight_name: str | None = None
+    lora_revision: str | None = None
+    lora_license: str | None = None
+    lora_source: str | None = None
+    lora_scale: float = Field(1.0, gt=0, le=2)
+    seed: int = Field(0, ge=0, lt=2**32)
+    steps: int = Field(4, ge=1, le=100)
+    guidance_scale: float = Field(0.0, ge=0, le=20)
+    size: Literal[1024] = 1024
+    device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+
+    @model_validator(mode="after")
+    def _lora_has_licence_and_source(self) -> DiffusionStyle:
+        if self.lora:
+            for field in ("lora_license", "lora_source"):
+                if not (getattr(self, field) or "").strip():
+                    raise ValueError(f"lora needs {field}")
+        return self
+
+
 class StyleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     reference_sketch: Path
@@ -25,6 +58,14 @@ class StyleConfig(BaseModel):
     image_model: str
     line_weight_px: float = Field(3.0, gt=0, le=20)
     ink: str = Field("#111111", pattern=r"^#[0-9a-fA-F]{6}$")
+    diffusion: DiffusionStyle | None = None
+    """Pins for `image_provider = "lineart-diffusion"`; required by it."""
+
+    @model_validator(mode="after")
+    def _lineart_needs_diffusion(self) -> StyleConfig:
+        if self.image_provider.strip().lower() == "lineart-diffusion" and self.diffusion is None:
+            raise ValueError("image_provider lineart-diffusion needs a [style.diffusion] table")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -194,7 +235,7 @@ def style_fingerprint(style: StyleConfig) -> str:
         raise ChannelConfigError(
             f"Cannot read reference sketch {style.reference_sketch}: {e}"
         ) from e
-    payload = {
+    payload: dict[str, Any] = {
         "instructions": style.instructions,
         "image_provider": style.image_provider,
         "image_model": style.image_model,
@@ -202,5 +243,7 @@ def style_fingerprint(style: StyleConfig) -> str:
         "ink": style.ink,
         "reference_sha256": reference_sha256,
     }
+    if style.diffusion is not None:
+        payload["diffusion"] = style.diffusion.model_dump(mode="json")
     blob = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]

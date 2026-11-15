@@ -57,15 +57,7 @@ class OllamaClient:
             payload["think"] = self.think
         return payload
 
-    def complete_structured[T: BaseModel](
-        self,
-        *,
-        system: str,
-        user: str,
-        output: type[T],
-        images: Sequence[bytes] = (),
-    ) -> StructuredResult[T]:
-        payload = self._payload(system, user, output, images)
+    def _post(self, payload: dict[str, Any]) -> Any:
         try:
             response = self.http.post(self.url, json=payload)
         except httpx.TimeoutException as e:
@@ -81,6 +73,18 @@ class OllamaClient:
             body: Any = response.json()
         except ValueError as e:
             raise ProviderError("Ollama response body is not valid JSON") from e
+        return body
+
+    def complete_structured[T: BaseModel](
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
+    ) -> StructuredResult[T]:
+        payload = self._payload(system, user, output, images)
+        body = self._post(payload)
         message = body.get("message") if isinstance(body, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):

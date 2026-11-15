@@ -201,3 +201,21 @@ def test_temperature_and_think_are_sent_only_when_set() -> None:
     assert "think" not in unset
     assert set_["options"] == {"temperature": 0.0}
     assert set_["think"] is False
+
+
+def test_default_payload_is_byte_identical_to_the_pre_option_payload() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _reply('{"key": "k", "weight": 1}')
+
+    _client(httpx.MockTransport(handler)).complete_structured(system="s", user="u", output=Idea)
+    expected = {
+        "model": "qwen2.5",
+        "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        "format": Idea.model_json_schema(),
+        "stream": False,
+    }
+    probe = httpx.Request("POST", "http://ollama.test/api/chat", json=expected)
+    assert seen[0].content == probe.content

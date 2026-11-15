@@ -66,7 +66,7 @@ the not-run rows of `2026-11-13-tashkeel-results.json`, which stays as the first
 - **mishkal** is `MishkalDiacritizer` (mishkal 0.4.1) with the skeleton guard.
 - **llm** is `LlmDiacritizer` on `OllamaClient`, provider ollama, model
   `hf.co/unsloth/GLM-4.7-Flash-GGUF:Q4_K_M`, temperature 0, thinking off, the production
-  `TASHKEEL_SYSTEM` prompt and a JSON-schema `format`. Cost: $0, no paid API (ruling R3, R4).
+  `TASHKEEL_SYSTEM` prompt and a JSON-schema `format`. Cost: $0, no paid API (#155).
   197 of 300 lines are rejected: 31 hit the 120 s client timeout (the server log shows HTTP 500
   after 2 min) and the rest failed the skeleton check or returned invalid output; each counts as all wrong. The 103 accepted
   lines were scored, but with so many rejections the row mostly says this local quantized model
@@ -113,8 +113,7 @@ non-Arabic characters before it could be compared fairly or shipped, and it need
 Caveat: the llm row used a local 4-bit model. A hosted model may score very differently, so the
 claim "Mishkal beats the LLM" holds for this local model only. If the default decision depends on
 the hosted `llm` row (it does, since `llm` is the current default and its production provider is
-hosted), a paid-provider row is needed. It is human-owned (no paid runs here), and is not filed by
-this PR.
+hosted), a paid-provider row is needed. It is human-owned (no paid runs here) and tracked as #188.
 
 ## Consequences
 

@@ -179,3 +179,25 @@ def test_no_images_leaves_messages_unchanged() -> None:
 
     _client(httpx.MockTransport(handler)).complete_structured(system="s", user="u", output=Idea)
     assert all("images" not in m for m in json.loads(seen[0].content)["messages"])
+
+
+def test_temperature_and_think_are_sent_only_when_set() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _reply('{"key": "k", "weight": 1}')
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    plain = OllamaClient(base_url="http://ollama.test", model="m", http=http)
+    tuned = OllamaClient(
+        base_url="http://ollama.test", model="m", http=http, temperature=0.0, think=False
+    )
+    plain.complete_structured(system="s", user="u", output=Idea)
+    tuned.complete_structured(system="s", user="u", output=Idea)
+
+    unset, set_ = (json.loads(r.content) for r in seen)
+    assert "options" not in unset
+    assert "think" not in unset
+    assert set_["options"] == {"temperature": 0.0}
+    assert set_["think"] is False

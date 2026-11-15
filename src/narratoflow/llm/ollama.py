@@ -20,7 +20,17 @@ class OllamaClient:
 
     name: str = "ollama"
 
-    def __init__(self, base_url: str, model: str, http: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        http: httpx.Client | None = None,
+        *,
+        temperature: float | None = None,
+        think: bool | None = None,
+    ) -> None:
+        self.temperature = temperature
+        self.think = think
         self.url = f"{base_url.rstrip('/')}/api/chat"
         self.model = model
         self.http = http if http is not None else httpx.Client(timeout=DEFAULT_TIMEOUT_S)
@@ -37,7 +47,7 @@ class OllamaClient:
         user_message: dict[str, Any] = {"role": "user", "content": user}
         if images:
             user_message["images"] = [base64.b64encode(i).decode("ascii") for i in images]
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -46,6 +56,10 @@ class OllamaClient:
             "format": output.model_json_schema(),
             "stream": False,
         }
+        if self.temperature is not None:
+            payload["options"] = {"temperature": self.temperature}
+        if self.think is not None:
+            payload["think"] = self.think
         try:
             response = self.http.post(self.url, json=payload)
         except httpx.TimeoutException as e:

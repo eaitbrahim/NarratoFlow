@@ -1,0 +1,46 @@
+[
+  {
+    "engine": "identity",
+    "lines": 300,
+    "rejected_lines": 0,
+    "der": 82.77387162621909,
+    "der_no_case": 83.59943411479385,
+    "wer": 99.48964274992494,
+    "wer_no_case": 98.75412788952266,
+    "seconds": 0.036075209034606814,
+    "not_run": null
+  },
+  {
+    "engine": "mishkal",
+    "lines": 300,
+    "rejected_lines": 1,
+    "der": 25.44794738035836,
+    "der_no_case": 18.830840743734843,
+    "wer": 65.02551786250376,
+    "wer_no_case": 38.78715100570399,
+    "seconds": 6.475409041973762,
+    "not_run": null
+  },
+  {
+    "engine": "llm (ollama hf.co/unsloth/GLM-4.7-Flash-GGUF:Q4_K_M)",
+    "lines": 300,
+    "rejected_lines": 197,
+    "der": 74.75618053980494,
+    "der_no_case": 74.48969280517382,
+    "wer": 78.73011107775443,
+    "wer_no_case": 76.65866106274392,
+    "seconds": 8475.494774791994,
+    "not_run": null
+  },
+  {
+    "engine": "catt",
+    "lines": 300,
+    "rejected_lines": 98,
+    "der": 35.45399561502987,
+    "der_no_case": 35.276879547291834,
+    "wer": 36.49054338036626,
+    "wer_no_case": 35.72500750525368,
+    "seconds": 23.60835257207509,
+    "not_run": null
+  }
+]

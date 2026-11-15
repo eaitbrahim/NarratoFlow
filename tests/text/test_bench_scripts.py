@@ -38,25 +38,72 @@ def _gold_dir(tmp_path: Path) -> tuple[Path, Path]:
     return gold, path
 
 
-def test_bench_script_llm_and_catt_not_run(tmp_path: Path) -> None:
+def test_bench_script_runs_the_llm_row_and_names_provider_and_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bench = _script("bench_tashkeel")
     gold, manifest = _gold_dir(tmp_path)
+    monkeypatch.setattr(bench, "build_engine", lambda name, args=None: lambda text: text)
     out = tmp_path / "results.json"
     code = bench.main(
-        [
-            "--gold", str(gold),
-            "--manifest", str(manifest),
-            "--engines", "identity,llm,catt",
-            "--out", str(out),
-        ]
+        ["--gold", str(gold), "--manifest", str(manifest), "--engines", "llm", "--out", str(out),
+         "--llm-model", "m:Q4"]
     )  # fmt: skip
     assert code == 0
-    rows = {row["engine"]: row for row in json.loads(out.read_text(encoding="utf-8"))}
-    assert list(rows) == ["identity", "llm", "catt"]
-    assert rows["identity"]["not_run"] is None
-    assert rows["identity"]["lines"] == 3
-    assert "paid" in rows["llm"]["not_run"]
-    assert "onnxruntime-gpu" in rows["catt"]["not_run"]
+    (row,) = json.loads(out.read_text(encoding="utf-8"))
+    assert row["engine"] == "llm (ollama m:Q4)"
+    assert row["not_run"] is None
+    assert row["lines"] == 3
+
+
+def test_bench_script_llm_flags_have_documented_defaults() -> None:
+    bench = _script("bench_tashkeel")
+    args = bench.parse_args([])
+    assert args.llm_url == "http://localhost:11434"
+    assert args.llm_model == "hf.co/unsloth/GLM-4.7-Flash-GGUF:Q4_K_M"
+    assert bench.parse_args(["--llm-url", "http://h:1", "--llm-model", "x"]).llm_url == "http://h:1"
+
+
+def test_build_engine_llm_diacritizes_through_the_client() -> None:
+    bench = _script("bench_tashkeel")
+
+    class FakeLlm:
+        name = "fake"
+
+        def complete_structured(self, **kw: Any) -> Any:
+            return SimpleNamespace(value=SimpleNamespace(text=kw["user"] + "!"))
+
+    diacritize = bench.build_engine("llm", bench.parse_args([]), llm=FakeLlm())
+    assert diacritize("abc") == "abc!"
+
+
+def test_build_engine_llm_uses_ollama_at_temperature_zero_without_thinking() -> None:
+    bench = _script("bench_tashkeel")
+    diacritize = bench.build_engine("llm", bench.parse_args(["--llm-model", "m"]))
+    client = diacritize.__self__._llm
+    assert (client.model, client.temperature, client.think) == ("m", 0.0, False)
+
+
+def test_build_engine_catt_without_the_package_names_the_docker_command() -> None:
+    bench = _script("bench_tashkeel")
+    with pytest.raises(SystemExit, match="docker run"):
+        bench.build_engine("catt", bench.parse_args([]), import_module=_missing)
+
+
+def _missing(name: str) -> Any:
+    raise ModuleNotFoundError(name)
+
+
+def test_build_engine_catt_diacritizes_with_the_package_api() -> None:
+    bench = _script("bench_tashkeel")
+
+    class Tagger:
+        def do_tashkeel_batch(self, texts: list[str], batch_size: int, verbose: bool) -> list[str]:
+            return [t + "?" for t in texts]
+
+    module = SimpleNamespace(CATTEncoderOnly=lambda: Tagger())
+    diacritize = bench.build_engine("catt", bench.parse_args([]), import_module=lambda n: module)
+    assert diacritize("a") == "a?"
 
 
 def test_bench_script_prints_markdown(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

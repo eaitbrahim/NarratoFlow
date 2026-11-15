@@ -6,7 +6,7 @@ Engines: identity (free floor), mishkal (CPU, needs `uv run --with mishkal==0.4.
 container; see docs/adr/0005-diacritizer-benchmark.md for the exact `docker run`).
 
     uv run --with mishkal==0.4.1 python scripts/bench_tashkeel.py \
-        --engines identity,mishkal,llm --out docs/benchmarks/2026-11-14-tashkeel-results.json
+        --engines identity,mishkal,llm --out .cache/bench/tashkeel-results.json
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from narratoflow.errors import ProviderError
 from narratoflow.llm.base import LLMClient
 from narratoflow.llm.ollama import OllamaClient
 from narratoflow.text.tashkeel import bench
@@ -59,7 +60,14 @@ def _catt_engine(import_module: Callable[[str], ModuleType]) -> Callable[[str], 
     except ImportError as e:
         raise SystemExit(CATT_HELP) from e
     tagger = catt.CATTEncoderOnly()
-    return lambda text: str(tagger.do_tashkeel_batch([text], batch_size=1, verbose=False)[0])
+
+    def diacritize(text: str) -> str:
+        try:
+            return str(tagger.do_tashkeel_batch([text], batch_size=1, verbose=False)[0])
+        except Exception as e:  # any CATT or onnxruntime failure rejects the line
+            raise ProviderError(f"catt failed on one line: {e}") from e
+
+    return diacritize
 
 
 def build_engine(
@@ -95,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest = bench.load_manifest(args.manifest)
     text = (args.gold / "test.txt").read_bytes().decode("utf-8")
     gold = bench.select_gold(text, manifest)
-    results = [bench.run_engine(engine_label(n, args), build_engine(n, args), gold) for n in names]
+    engines = [(engine_label(n, args), build_engine(n, args)) for n in names]  # fail before work
+    results = [bench.run_engine(label, engine, gold) for label, engine in engines]
     print(bench.results_markdown(results))
     if args.out is not None:
         args.out.write_text(json.dumps([asdict(r) for r in results], indent=2) + "\n", "utf-8")

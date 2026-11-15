@@ -16,7 +16,11 @@ DEFAULT_TIMEOUT_S = 120.0
 
 
 class OllamaClient:
-    """Free local provider: POST /api/chat with a JSON schema in `format`."""
+    """Free local provider: POST /api/chat with a JSON schema in `format`.
+
+    `think` needs Ollama 0.9 or later when set to an explicit value. Some 0.9.x servers answer
+    HTTP 400 to `think` on a model that does not think. `None` omits the field.
+    """
 
     name: str = "ollama"
 

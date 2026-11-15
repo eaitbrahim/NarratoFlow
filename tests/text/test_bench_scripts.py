@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from narratoflow.text.tashkeel import bench as B
+from narratoflow.text.tashkeel.verify import strip_diacritics
 
 ROOT = Path(__file__).parents[2]
 BA, FATHA = chr(0x0628), chr(0x064E)
@@ -202,3 +203,43 @@ def test_fetch_script_make_manifest_refuses_a_modified_cache(
     code = fetch.main(["--out", str(tmp_path), "--make-manifest", str(tmp_path / "m.toml")])
     assert code == 1
     assert not (tmp_path / "m.toml").exists()
+
+
+def test_bench_script_builds_every_engine_before_running_any(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing catt must stop the run before the slow engines score a single line."""
+    bench = _script("bench_tashkeel")
+    gold, manifest = _gold_dir(tmp_path)
+    ran: list[str] = []
+
+    def build(name: str, args: Any = None) -> Any:
+        if name == "catt":
+            raise SystemExit("catt missing")
+
+        def diacritize(text: str) -> str:
+            ran.append(text)
+            return text
+
+        return diacritize
+
+    monkeypatch.setattr(bench, "build_engine", build)
+    with pytest.raises(SystemExit, match="catt missing"):
+        bench.main(["--gold", str(gold), "--manifest", str(manifest), "--engines", "identity,catt"])
+    assert ran == []
+
+
+def test_catt_engine_failure_on_one_line_rejects_that_line_only() -> None:
+    bench = _script("bench_tashkeel")
+    bad = strip_diacritics(LINES[1])
+
+    class Tagger:
+        def do_tashkeel_batch(self, texts: list[str], batch_size: int, verbose: bool) -> list[str]:
+            if texts[0] == bad:
+                raise RuntimeError("onnxruntime failed")
+            return texts
+
+    module = SimpleNamespace(CATTEncoderOnly=lambda: Tagger())
+    diacritize = bench.build_engine("catt", bench.parse_args([]), import_module=lambda n: module)
+    row = B.run_engine("catt", diacritize, LINES)
+    assert (row.lines, row.rejected_lines) == (3, 1)

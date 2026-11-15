@@ -36,14 +36,9 @@ class OllamaClient:
         self.http = http if http is not None else httpx.Client(timeout=DEFAULT_TIMEOUT_S)
         self.timeout_s = self.http.timeout.read or DEFAULT_TIMEOUT_S
 
-    def complete_structured[T: BaseModel](
-        self,
-        *,
-        system: str,
-        user: str,
-        output: type[T],
-        images: Sequence[bytes] = (),
-    ) -> StructuredResult[T]:
+    def _payload[T: BaseModel](
+        self, system: str, user: str, output: type[T], images: Sequence[bytes]
+    ) -> dict[str, Any]:
         user_message: dict[str, Any] = {"role": "user", "content": user}
         if images:
             user_message["images"] = [base64.b64encode(i).decode("ascii") for i in images]
@@ -60,6 +55,17 @@ class OllamaClient:
             payload["options"] = {"temperature": self.temperature}
         if self.think is not None:
             payload["think"] = self.think
+        return payload
+
+    def complete_structured[T: BaseModel](
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
+    ) -> StructuredResult[T]:
+        payload = self._payload(system, user, output, images)
         try:
             response = self.http.post(self.url, json=payload)
         except httpx.TimeoutException as e:

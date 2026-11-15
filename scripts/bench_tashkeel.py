@@ -48,6 +48,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _llm_engine(args: argparse.Namespace, llm: LLMClient | None) -> Callable[[str], str]:
+    client = llm or OllamaClient(args.llm_url, args.llm_model, temperature=0.0, think=False)
+    return LlmDiacritizer(client).diacritize
+
+
+def _catt_engine(import_module: Callable[[str], ModuleType]) -> Callable[[str], str]:
+    try:
+        catt: Any = import_module("catt_tashkeel")
+    except ImportError as e:
+        raise SystemExit(CATT_HELP) from e
+    tagger = catt.CATTEncoderOnly()
+    return lambda text: str(tagger.do_tashkeel_batch([text], batch_size=1, verbose=False)[0])
+
+
 def build_engine(
     name: str,
     args: argparse.Namespace | None = None,
@@ -59,15 +73,9 @@ def build_engine(
     if name == "identity":
         return lambda text: text
     if name == "llm":
-        client = llm or OllamaClient(args.llm_url, args.llm_model, temperature=0.0, think=False)
-        return LlmDiacritizer(client).diacritize
+        return _llm_engine(args, llm)
     if name == "catt":
-        try:
-            catt: Any = import_module("catt_tashkeel")
-        except ImportError as e:
-            raise SystemExit(CATT_HELP) from e
-        tagger = catt.CATTEncoderOnly()
-        return lambda text: str(tagger.do_tashkeel_batch([text], batch_size=1, verbose=False)[0])
+        return _catt_engine(import_module)
     return MishkalDiacritizer().diacritize
 
 

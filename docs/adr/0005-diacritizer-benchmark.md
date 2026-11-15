@@ -1,6 +1,6 @@
 # ADR 0005: Diacritizer benchmark
 
-**Status:** Accepted (provisional), 2026-11-13
+**Status:** Accepted (provisional), 2026-11-13; llm and catt rows added 2026-11-14
 
 ## Context
 
@@ -48,39 +48,72 @@ Definitions follow Fadel et al.'s `diacritization_stat.py` (`src/narratoflow/tex
 
 ## Results
 
-Run on a macOS arm64 laptop, CPU only, 2026-11-13. Rows are copied from
-`docs/benchmarks/2026-11-13-tashkeel-results.json` (numbers only); the runtime cell of the two not-run rows also names the follow-up issue.
+Rows are copied from `docs/benchmarks/2026-11-14-tashkeel-results.json` (numbers only; it replaces
+the not-run rows of `2026-11-13-tashkeel-results.json`, which stays as the first run). Hosts, all
+2026-11-14, on one Apple M4 Max with 64 GB:
+
+- identity, mishkal, llm: macOS arm64, CPU for the first two; llm on local Ollama (Metal GPU).
+- catt: a linux/arm64 Docker container on the same Mac, CPU only (onnxruntime-gpu falls back to CPU).
 
 | engine | lines | rejected | DER | DER (no case ending) | WER | WER (no case ending) | runtime |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | identity | 300 | 0 | 82.77 | 83.60 | 99.49 | 98.75 | 0.0 s |
-| mishkal | 300 | 1 | 25.45 | 18.83 | 65.03 | 38.79 | 6.2 s |
-| llm | not run | not run | not run | not run | not run | not run | - (#155) |
-| catt | not run | not run | not run | not run | not run | not run | - (#156) |
+| mishkal | 300 | 1 | 25.45 | 18.83 | 65.03 | 38.79 | 6.5 s |
+| llm (ollama GLM-4.7-Flash Q4_K_M) | 300 | 197 | 74.76 | 74.49 | 78.73 | 76.66 | 8475.5 s |
+| catt | 300 | 98 | 35.45 | 35.28 | 36.49 | 35.73 | 23.6 s |
 
 - **identity** returns its input: the floor, since most gold letters carry a mark.
 - **mishkal** is `MishkalDiacritizer` (mishkal 0.4.1) with the skeleton guard.
-- **llm**: not run (paid). No paid model call is made in this work (ruling R3). Follow-up: #155.
-- **catt**: not run. `catt-tashkeel` 1.0.2 (Apache-2.0) requires `onnxruntime-gpu>=1.22.0`, which has
-  no macOS arm64 wheel, so it cannot be installed on the benchmark machine. Its ONNX weights are a
-  72 to 86 MB download, and its training data may overlap Tashkeela, so its score on this gold set
-  may be contaminated. Follow-up: #156.
+- **llm** is `LlmDiacritizer` on `OllamaClient`, provider ollama, model
+  `hf.co/unsloth/GLM-4.7-Flash-GGUF:Q4_K_M`, temperature 0, thinking off, the production
+  `TASHKEEL_SYSTEM` prompt and a JSON-schema `format`. Cost: $0, no paid API (#155).
+  197 of 300 lines are rejected: 31 hit the 120 s client timeout (the server log shows HTTP 500
+  after 2 min) and the rest failed the skeleton check or returned invalid output; each counts as all wrong. The 103 accepted
+  lines were scored, but with so many rejections the row mostly says this local quantized model
+  cannot return the skeleton intact on long lines. It is not evidence about hosted models.
+- **catt** is `catt-tashkeel` 1.0.2 (Apache-2.0), `CATTEncoderOnly`, batch size 1, ONNX weights
+  (72.1 MB download; the onnxruntime-gpu wheel is about 300 MB). 98 lines are rejected, the same
+  count as the gold lines that contain digits or Latin characters: CATT drops characters outside
+  the Arabic alphabet from its output (a probe of one sentence with digits and Latin text came
+  back with both gone), so the skeleton guard rejects them. Its DER and WER are therefore a
+  production-like floor, not its quality on pure Arabic text.
+- **Possible contamination:** CATT's training data may overlap Tashkeela, so its score on this
+  gold set may be inflated.
 
 Commands used:
 
 ```bash
 uv run python scripts/fetch_gold_tashkeel.py
 uv run python scripts/fetch_gold_tashkeel.py --make-manifest docs/benchmarks/tashkeel-gold.toml
-uv run --with mishkal==0.4.1 python scripts/bench_tashkeel.py --gold .cache/bench/tashkeel \
-  --manifest docs/benchmarks/tashkeel-gold.toml --engines identity,mishkal,llm,catt \
-  --out docs/benchmarks/2026-11-13-tashkeel-results.json
+# identity, mishkal, llm (Mac; Ollama serves the model at http://localhost:11434):
+uv run --with mishkal==0.4.1 python scripts/bench_tashkeel.py --engines identity,mishkal,llm \
+  --llm-url http://localhost:11434 \
+  --llm-model hf.co/unsloth/GLM-4.7-Flash-GGUF:Q4_K_M --out <rows-mac.json>
+# catt (linux/arm64 container on the same Mac; UV_PROJECT_ENVIRONMENT keeps the Mac .venv untouched):
+docker run --rm --platform linux/arm64 -v "$PWD":/w -w /w -e UV_PROJECT_ENVIRONMENT=/tmp/venv \
+  ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
+  uv run --with catt-tashkeel==1.0.2 python scripts/bench_tashkeel.py --engines catt \
+  --out /w/.cache/rows-catt.json
 ```
+
+The two outputs were merged into `docs/benchmarks/2026-11-14-tashkeel-results.json`.
+catt is not a project dependency: the universal `uv.lock` cannot resolve onnxruntime-gpu on macOS
+arm64, so an extra would break `uv lock`. Reproducing the catt row needs Docker or Linux.
 
 ## Decision
 
-The default stays `llm`. No row can show it worse, because it was not run. Mishkal is the measured
-free and offline option, at the DER and WER above. Revisit when #155 (the LLM row) lands, and when
-#156 (CATT) does.
+Revisited 2026-11-14 (#155, #156). The code default `ChannelConfig.diacritizer = "llm"` is **not
+changed here**. Recommendation, on this evidence: stop defaulting to `llm` and default to
+`mishkal`, with `llm` as an opt-in. On this gold set Mishkal has the lowest DER (25.45), is free,
+offline, and needs 6.5 s per 300 lines, and the local LLM was 197 of 300 rejected at 8,475 s.
+CATT's WER (36.49) is lower than Mishkal's (65.03) and its DER (35.45) is higher, but 98 of its 300
+lines are rejected only because it drops digits and Latin text, so it needs an adapter that keeps
+non-Arabic characters before it could be compared fairly or shipped, and it needs onnxruntime.
+
+Caveat: the llm row used a local 4-bit model. A hosted model may score very differently, so the
+claim "Mishkal beats the LLM" holds for this local model only. If the default decision depends on
+the hosted `llm` row (it does, since `llm` is the current default and its production provider is
+hosted), a paid-provider row is needed. It is human-owned (no paid runs here) and tracked as #188.
 
 ## Consequences
 

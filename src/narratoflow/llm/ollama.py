@@ -20,24 +20,29 @@ class OllamaClient:
 
     name: str = "ollama"
 
-    def __init__(self, base_url: str, model: str, http: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        http: httpx.Client | None = None,
+        *,
+        temperature: float | None = None,
+        think: bool | None = None,
+    ) -> None:
+        self.temperature = temperature
+        self.think = think
         self.url = f"{base_url.rstrip('/')}/api/chat"
         self.model = model
         self.http = http if http is not None else httpx.Client(timeout=DEFAULT_TIMEOUT_S)
         self.timeout_s = self.http.timeout.read or DEFAULT_TIMEOUT_S
 
-    def complete_structured[T: BaseModel](
-        self,
-        *,
-        system: str,
-        user: str,
-        output: type[T],
-        images: Sequence[bytes] = (),
-    ) -> StructuredResult[T]:
+    def _payload[T: BaseModel](
+        self, system: str, user: str, output: type[T], images: Sequence[bytes]
+    ) -> dict[str, Any]:
         user_message: dict[str, Any] = {"role": "user", "content": user}
         if images:
             user_message["images"] = [base64.b64encode(i).decode("ascii") for i in images]
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -46,6 +51,13 @@ class OllamaClient:
             "format": output.model_json_schema(),
             "stream": False,
         }
+        if self.temperature is not None:
+            payload["options"] = {"temperature": self.temperature}
+        if self.think is not None:
+            payload["think"] = self.think
+        return payload
+
+    def _post(self, payload: dict[str, Any]) -> Any:
         try:
             response = self.http.post(self.url, json=payload)
         except httpx.TimeoutException as e:
@@ -61,6 +73,18 @@ class OllamaClient:
             body: Any = response.json()
         except ValueError as e:
             raise ProviderError("Ollama response body is not valid JSON") from e
+        return body
+
+    def complete_structured[T: BaseModel](
+        self,
+        *,
+        system: str,
+        user: str,
+        output: type[T],
+        images: Sequence[bytes] = (),
+    ) -> StructuredResult[T]:
+        payload = self._payload(system, user, output, images)
+        body = self._post(payload)
         message = body.get("message") if isinstance(body, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):

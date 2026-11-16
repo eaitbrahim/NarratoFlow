@@ -140,7 +140,7 @@ def test_layout_bled_rects_are_disjoint_and_inside(scale: Fraction) -> None:
     for z in layout.zones:
         assert src_frame.contains(z.src_bled) and dst_frame.contains(z.dst_bled)
         assert (z.dst.w, z.dst.h) == (z.src.w, z.src.h)  # 1:1 at every scale
-        assert z.bleed == max(1, round(8 * scale))
+        assert z.bleed == round(8 * scale)
     for a, b in itertools.combinations(layout.zones, 2):
         assert not a.src_bled.intersects(b.src_bled)
         assert not a.dst_bled.intersects(b.dst_bled)
@@ -250,6 +250,7 @@ def test_first_ink_reports_the_first_dark_frame() -> None:
     rec = "frame:{0} pts:{0} pts_time:0\nlavfi.signalstats.YMIN={1}\n"
     assert _first_ink(rec.format(0, 235) + rec.format(1, 194) + rec.format(2, 16), 3) == (1, 194)
     assert _first_ink(rec.format(0, 195), 1) is None  # 195 is not ink
+    assert _first_ink(rec.format(0, 255), 1) is None  # 255 is a valid luma
 
 
 def test_check_ink_passes_a_rendered_part_and_flags_a_planted_mark(

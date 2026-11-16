@@ -73,7 +73,7 @@ def landscape_size(scale: Fraction) -> tuple[int, int]:
 def panorama_layout(scale: Fraction) -> PanoramaLayout:
     """Where the stage, top bar and captions zones go in the wide frame, bled, at 1:1."""
     canvas = Canvas(scale)
-    bleed = max(1, round(BLEED_PX * scale))
+    bleed = round(BLEED_PX * scale)
 
     def zone(name: str, src: Rect, dst: Rect) -> Zone:
         return Zone(

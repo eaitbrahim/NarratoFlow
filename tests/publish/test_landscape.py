@@ -1,7 +1,9 @@
-"""pillarbox_export: a 1920x1080 copy of an exported 9:16 part, white bars, same frames."""
+"""The 16:9 producers: the panorama re-composition (and the pillarbox until #194)."""
 
 from __future__ import annotations
 
+import itertools
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -11,8 +13,17 @@ from fixtures.parts import add_sketch, make_series, narr, render, write_timeline
 from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.errors import RenderError
 from narratoflow.library.repository import SketchLibrary
-from narratoflow.publish.landscape import LANDSCAPE_SIZE, landscape_name, pillarbox_export
+from narratoflow.publish.landscape import (
+    CANVAS_SCALES,
+    LANDSCAPE_BOTTOM,
+    LANDSCAPE_SIZE,
+    landscape_name,
+    landscape_size,
+    panorama_layout,
+    pillarbox_export,
+)
 from narratoflow.render.ffmpeg import RenderTools, run_tool
+from narratoflow.render.layout import CAPTIONS, STAGE, TOP_BAR, Canvas, Rect
 from narratoflow.settings import Settings
 
 
@@ -95,3 +106,43 @@ def test_pillarbox_wrong_frame_count_is_refused_and_removed(
             duration_ms=part.report.duration_ms,
         )
     assert list(out.parent.iterdir()) == []
+
+
+def test_layout_scale_1_matches_the_design_table() -> None:
+    layout = panorama_layout(Fraction(1))
+    got = {z.name: (z.src, z.dst) for z in layout.zones}
+    assert got == {
+        "stage": (STAGE, Rect(48, 115, 828, 850)),
+        "top_bar": (TOP_BAR, Rect(912, 115, 960, 200)),
+        "captions": (CAPTIONS, Rect(978, 450, 828, 180)),
+    }
+    assert all((z.dst.w, z.dst.h) == (z.src.w, z.src.h) for z in layout.zones)
+
+
+@pytest.mark.parametrize("scale", CANVAS_SCALES)
+def test_layout_bled_rects_are_disjoint_and_inside(scale: Fraction) -> None:
+    layout = panorama_layout(scale)
+    canvas = Canvas(scale)
+    assert layout.source == (canvas.width, canvas.height)
+    src_frame = Rect(0, 0, canvas.width, canvas.height)
+    dst_frame = Rect(0, 0, *landscape_size(scale))
+    for z in layout.zones:
+        assert src_frame.contains(z.src_bled) and dst_frame.contains(z.dst_bled)
+        assert (z.dst.w, z.dst.h) == (z.src.w, z.src.h)  # 1:1 at every scale
+        assert z.bleed == max(1, round(8 * scale))
+    for a, b in itertools.combinations(layout.zones, 2):
+        assert not a.src_bled.intersects(b.src_bled)
+        assert not a.dst_bled.intersects(b.dst_bled)
+
+
+def test_layout_keeps_the_bottom_and_side_margins_clear() -> None:
+    for z in panorama_layout(Fraction(1)).zones:  # unbled zones
+        assert not z.dst.intersects(LANDSCAPE_BOTTOM)
+        assert z.dst.x >= 48 and 1920 - z.dst.right >= 48
+
+
+def test_landscape_size_follows_the_canvas_scale() -> None:
+    assert landscape_size(Fraction(1)) == (1920, 1080) == LANDSCAPE_SIZE
+    assert landscape_size(Fraction(1, 6)) == (320, 180)
+    with pytest.raises(ValueError, match="scale"):
+        landscape_size(Fraction(1, 4))

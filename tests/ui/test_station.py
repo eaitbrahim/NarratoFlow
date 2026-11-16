@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import shutil
 import wave
@@ -12,6 +13,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from fakes.images import FakeImages
 from fakes.voice import FakeVoice
@@ -23,6 +25,7 @@ from fixtures.parts import (
     add_sketch,
     make_series,
     narr,
+    verse,
     write_timelines,
 )
 from fixtures.publish import write_rules
@@ -30,6 +33,7 @@ from pydantic import SecretStr
 from visuals.lineart_samples import sample_png
 
 from narratoflow.audio.build import build_audio
+from narratoflow.audio.recitation import display_words
 from narratoflow.audio.timeline import AssetUse, PartTimeline, VoiceUsed
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint
 from narratoflow.costs.prices import PriceTable
@@ -51,10 +55,12 @@ from narratoflow.models import (
     VisualSource,
 )
 from narratoflow.money import format_usd
-from narratoflow.publish.landscape import landscape_name
+from narratoflow.publish.checks import CheckId, Severity
+from narratoflow.publish.landscape import landscape_name, landscape_size, panorama_export
+from narratoflow.publish.report import PublishReport
 from narratoflow.publish.rules import Rules, load_rules
 from narratoflow.render.build import build_render
-from narratoflow.render.ffmpeg import RenderTools, probe
+from narratoflow.render.ffmpeg import RenderTools, probe, run_tool
 from narratoflow.render.layout import Canvas
 from narratoflow.settings import Settings
 from narratoflow.sketching.generate import QUARANTINED_FLAG
@@ -1085,19 +1091,13 @@ def _tiny_rules(tmp_path: Path) -> Rules:
     return load_rules(write_rules(tmp_path, **changes))
 
 
-@pytest.fixture
-def publishable(
-    channel: ChannelConfig,
+def _publishable(
+    series: Series,
     channel_file: Path,
     library: SketchLibrary,
     tmp_path: Path,
     render_tools: RenderTools,
 ) -> tuple[StationPaths, dict[str, Any]]:
-    """A one-part series with mastered timelines, ready to render and publish."""
-    sid = add_sketch(library, provenance=GENERATED_PROVENANCE)
-    series = make_series(
-        [narr("s1", "alpha beta gamma", sketch=sid, title="One"), narr("s2", "delta")]
-    )
     work = tmp_path / "work"
     work.mkdir()
     paths = StationPaths(work / "series.json", channel_file, work / "audio", work / "export")
@@ -1115,6 +1115,28 @@ def publishable(
     return paths, kit
 
 
+@pytest.fixture
+def publishable(
+    channel_file: Path, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> tuple[StationPaths, dict[str, Any]]:
+    """A one-part series with mastered timelines, ready to render and publish."""
+    sid = add_sketch(library, provenance=GENERATED_PROVENANCE)
+    series = make_series(
+        [narr("s1", "alpha beta gamma", sketch=sid, title="One"), narr("s2", "delta")]
+    )
+    return _publishable(series, channel_file, library, tmp_path, render_tools)
+
+
+@pytest.fixture
+def verse_publishable(
+    channel_file: Path, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> tuple[StationPaths, dict[str, Any]]:
+    """A one-part series opening on a verse scene."""
+    sid = add_sketch(library, provenance=GENERATED_PROVENANCE)
+    series = make_series([verse("v1"), narr("s1", "alpha beta gamma", sketch=sid, title="One")])
+    return _publishable(series, channel_file, library, tmp_path, render_tools)
+
+
 def test_export_portrait_and_landscape(publishable: tuple[StationPaths, dict[str, Any]]) -> None:
     paths, kit = publishable
     portrait = export(paths, AspectRatio.PORTRAIT, **kit)
@@ -1122,8 +1144,62 @@ def test_export_portrait_and_landscape(publishable: tuple[StationPaths, dict[str
     landscape = export(paths, AspectRatio.LANDSCAPE, **kit)
     assert landscape == [paths.export_dir / landscape_name(1)]
     found = probe(kit["tools"], landscape[0])
-    assert (found.width, found.height) == (1920, 1080)
+    assert (found.width, found.height) == landscape_size(TINY.scale)
+    raw = run_tool(
+        kit["tools"].ffmpeg,
+        ["-v", "error", "-i", str(landscape[0]), "-vf", "select=eq(n\\,9),format=gray",
+         "-frames:v", "1", "-f", "rawvideo", "-"],
+    )  # fmt: skip  # frame 9 = 300 ms, mid-draw of s1
+    w, h = landscape_size(TINY.scale)
+    left = np.frombuffer(raw, dtype=np.uint8).reshape(h, w)[:, : w // 4]
+    assert left.min() < 128  # the stage is there, not a bar of paper
     assert (paths.export_dir / "part-01.mp4").is_file()  # the 9:16 file is kept
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_landscape_export_leaves_the_portrait_file_and_render_report_unchanged(
+    publishable: tuple[StationPaths, dict[str, Any]],
+) -> None:
+    paths, kit = publishable
+    export(paths, AspectRatio.PORTRAIT, **kit)
+    watched = (paths.export_dir / "part-01.mp4", paths.render_dir / "part-01.render.json")
+    before = {p: _sha(p) for p in watched}
+    assert export(paths, AspectRatio.LANDSCAPE, **kit) == [paths.export_dir / landscape_name(1)]
+    assert {p: _sha(p) for p in watched} == before
+
+
+def test_landscape_export_of_an_altered_verse_part_writes_nothing(
+    verse_publishable: tuple[StationPaths, dict[str, Any]],
+) -> None:
+    paths, kit = verse_publishable
+    export(paths, AspectRatio.PORTRAIT, **kit)  # renders; the result is not asserted
+    ass = paths.render_dir / "part-01.ass"
+    word = display_words(CORPUS.ayah(31, 33).uthmani)[1]
+    text = ass.read_text(encoding="utf-8")
+    assert word in text
+    ass.write_text(text.replace(word, "الناس", 1), encoding="utf-8")
+    paths.export_dir.mkdir(parents=True, exist_ok=True)
+    (paths.export_dir / landscape_name(1)).write_bytes(b"old")
+    assert export(paths, AspectRatio.LANDSCAPE, **kit) == []
+    assert not (paths.export_dir / landscape_name(1)).exists()
+    report = PublishReport.load(paths.render_dir / "part-01.publish.json")
+    fails = [
+        c for c in report.checks if c.check is CheckId.VERSE_TEXT and c.severity is Severity.FAIL
+    ]
+    assert fails and all("subtitles in part-01.ass differ" in c.reason for c in fails)
+
+
+def test_panorama_export_has_no_bypass_argument() -> None:
+    assert list(inspect.signature(panorama_export).parameters) == [
+        "tools",
+        "src",
+        "out",
+        "frames",
+        "duration_ms",
+    ]
 
 
 def test_export_of_a_failing_part_produces_neither_file(

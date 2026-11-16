@@ -247,7 +247,8 @@ def test_export_buttons_call_both_ratios(
     assert files == [str(tmp_path / "part-01-PORTRAIT.mp4")] and "part-01-PORTRAIT.mp4" in status
     files, status, _ = click(gr, "Export 16:9")
     assert ratios == [AspectRatio.PORTRAIT, AspectRatio.LANDSCAPE]
-    assert files == [] and "nothing" in status and app_module.PILLARBOX_NOTE in status
+    assert files == [] and "nothing" in status and app_module.LANDSCAPE_NOTE in status
+    assert [n for n in dir(app_module) if n.endswith("_NOTE")] == ["LANDSCAPE_NOTE"]
 
 
 def test_callback_errors_become_gr_error(paths: StationPaths, settings: Settings) -> None:

@@ -32,7 +32,7 @@ TEXT_CARD = "Text card"
 REBUILD = "Rebuild scene"
 EXPORT_PORTRAIT = "Export 9:16"
 EXPORT_LANDSCAPE = "Export 16:9"
-PILLARBOX_NOTE = "16:9 is a pillarboxed copy of the 9:16 video"
+LANDSCAPE_NOTE = "16:9 is the checked 9:16 video re-arranged side by side"
 
 
 def _estimate_text(cost: Decimal) -> str:
@@ -242,7 +242,7 @@ def build_app(paths: StationPaths, settings: Settings, gr: Any) -> Any:
                 bind(_on_export, AspectRatio.PORTRAIT, ""), [], [exports, status, confirm]
             )
             gr.Button(EXPORT_LANDSCAPE).click(
-                bind(_on_export, AspectRatio.LANDSCAPE, PILLARBOX_NOTE),
+                bind(_on_export, AspectRatio.LANDSCAPE, LANDSCAPE_NOTE),
                 [],
                 [exports, status, confirm],
             )

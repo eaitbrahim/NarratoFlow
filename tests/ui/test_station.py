@@ -1189,7 +1189,7 @@ def test_landscape_export_of_an_altered_verse_part_writes_nothing(
     fails = [
         c for c in report.checks if c.check is CheckId.VERSE_TEXT and c.severity is Severity.FAIL
     ]
-    assert fails and all("differ" in c.reason for c in fails)
+    assert fails and all("subtitles in part-01.ass differ" in c.reason for c in fails)
 
 
 def test_panorama_export_has_no_bypass_argument() -> None:

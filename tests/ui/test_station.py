@@ -58,6 +58,7 @@ from narratoflow.models import (
     VisualSource,
 )
 from narratoflow.money import format_usd
+from narratoflow.publish import build as publish_build
 from narratoflow.publish.checks import CheckId, Severity
 from narratoflow.publish.landscape import landscape_name, landscape_size, panorama_export
 from narratoflow.publish.report import PublishReport
@@ -876,7 +877,7 @@ def test_a_save_during_a_paid_rebuild_is_refused_and_the_spend_is_kept(world: Wo
     kit = world.rebuild_kit()
     kit["images"] = spy
     report = rebuild_scene(world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), **kit)
-    assert spy.lock_seen and len(spy.refusals) == 1 and "paid action" in spy.refusals[0]
+    assert spy.lock_seen and len(spy.refusals) == 1 and "another station action" in spy.refusals[0]
     assert report.spent_usd == IMAGE_PRICE and report.sha256 == world.sha()
     assert _scenes(world.series())["p1-a"].narration.caption_text is None
     assert _scenes(world.series())["p1-b"].sketch_id is not None
@@ -890,7 +891,7 @@ def test_a_save_during_a_paid_regenerate_is_refused(world: World) -> None:
     done = regenerate_visual(
         world.paths, "p1-b", confirm=True, expected_sha256=world.sha(), images=spy, **kit
     )
-    assert spy.lock_seen and "paid action" in spy.refusals[0]
+    assert spy.lock_seen and "another station action" in spy.refusals[0]
     assert done.sha256 == world.sha() and not _lock(world).exists()
 
 
@@ -959,7 +960,7 @@ def test_every_series_writer_refuses_while_the_lock_is_held(world: World) -> Non
         ),
     ]
     for attempt in refusals:
-        with pytest.raises(PlanningError, match=r"paid action.*series\.json\.lock"):
+        with pytest.raises(PlanningError, match=r"another station action.*series\.json\.lock"):
             attempt()
     assert lock.read_text() == "someone else's run"  # a refusal never removes another's lock
     assert world.sha() == sha and world.images.requests == []
@@ -1296,6 +1297,33 @@ def test_failed_panorama_of_one_part_leaves_no_stale_copy_of_another(
     assert _sha(paths.export_dir / "part-02.mp4") != before  # the 9:16 file is the new cut
     assert not (paths.export_dir / landscape_name(2)).exists()
     assert not (paths.export_dir / landscape_name(1)).exists()
+    assert not lock_path(paths).exists()
+
+
+def test_a_publish_that_fails_on_a_later_part_leaves_no_stale_landscape_copy(
+    two_part_publishable: tuple[StationPaths, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, kit = two_part_publishable
+    first = paths.export_dir / "part-01.mp4"
+    export(paths, AspectRatio.LANDSCAPE, **kit)
+    assert (paths.export_dir / landscape_name(1)).is_file()
+    before = _sha(first)
+    series = Series.load(paths.series)
+    series.parts[0].scenes[0].title = "One, edited"
+    series.save(paths.series)
+    copy_video = publish_build._Run.copy_video
+
+    def fail_on_part_two(run: Any, n: int, video: Path, facts: Any) -> Path:
+        if n == 2:
+            raise PublishError("part 2: cannot copy the export")
+        return copy_video(run, n, video, facts)
+
+    monkeypatch.setattr(publish_build._Run, "copy_video", fail_on_part_two)
+    with pytest.raises(PublishError, match="part 2"):
+        export(paths, AspectRatio.LANDSCAPE, **kit)
+    assert _sha(first) != before  # part 1's 9:16 file is the new cut
+    assert not (paths.export_dir / landscape_name(1)).exists()  # so no old 16:9 copy survives
+    assert not (paths.export_dir / landscape_name(2)).exists()
     assert not lock_path(paths).exists()
 
 

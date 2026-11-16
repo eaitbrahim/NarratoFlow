@@ -187,7 +187,8 @@ def lock_path(paths: StationPaths) -> Path:
 
 def _locked_message(paths: StationPaths) -> str:
     return (
-        f"a paid action is running on {paths.series.name}; wait for it to finish "
+        f"another station action (rebuild, regenerate or export) is running on "
+        f"{paths.series.name}; wait for it to finish "
         f"(if none is, delete {lock_path(paths)})"
     )
 
@@ -724,6 +725,8 @@ def export(
         series = _load(paths)
         channel = load_channel(paths.channel)
         tools = tools if tools is not None else find_render_tools(settings)
+        for part in series.parts:  # before anything is written: a later failure keeps no stale copy
+            _remove(paths.export_dir / landscape_name(part.index))
         rendered = build_render(
             series,
             channel,
@@ -752,8 +755,6 @@ def export(
             now=now,
         )
         exported = {p.index: p.export_path for p in published.parts}
-        for index in exported:  # the 16:9 copies derive from 9:16 files that just changed
-            _remove(paths.export_dir / landscape_name(index))
         if ratio is AspectRatio.PORTRAIT:
             return [path for path in exported.values() if path is not None]
         reports = {b.index: b.report for b in rendered.parts}
@@ -761,7 +762,7 @@ def export(
         for index, path in exported.items():
             target = paths.export_dir / landscape_name(index)
             if path is None:
-                continue  # a failing part keeps no older copy: removed above
+                continue  # a failing part keeps no older copy: removed before the build
             report = reports[index]
             out.append(
                 panorama_export(

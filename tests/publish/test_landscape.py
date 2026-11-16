@@ -484,8 +484,10 @@ def test_source_changed_during_export_is_refused(
     shutil.copy(part.video_path, src)
     real = landscape._check_ink
 
-    def touch_after_guard(*args: object, **kwargs: object) -> None:
-        real(*args, **kwargs)  # type: ignore[arg-type]
+    def touch_after_guard(
+        tools: RenderTools, path: Path, layout: landscape.PanoramaLayout, *, frames: int
+    ) -> None:
+        real(tools, path, layout, frames=frames)
         os.utime(src, ns=(1, 1))
 
     monkeypatch.setattr(landscape, "_check_ink", touch_after_guard)
@@ -495,3 +497,31 @@ def test_source_changed_during_export_is_refused(
             render_tools, src, out, frames=part.report.frames, duration_ms=part.report.duration_ms
         )
     _refused(out)
+
+
+def test_ink_error_names_the_frame_and_luma_found(
+    render_tools: RenderTools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "x.mp4"
+    run_tool(
+        render_tools.ffmpeg,
+        ["-v", "error", "-f", "lavfi", "-i", "color=white:s=180x320:d=0.1:r=30", "-y", str(src)],
+    )
+    monkeypatch.setattr(landscape, "_first_ink", lambda text, frames: (7, 42))
+    with pytest.raises(RenderError, match=r"at frame 7 \(luma 42 < 195\)"):
+        _check_ink(render_tools, src, panorama_layout(Fraction(1, 6)), frames=3)
+
+
+def test_panorama_creates_missing_target_directories(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    out = tmp_path / "a" / "b" / landscape_name(1)
+    panorama_export(
+        render_tools,
+        part.video_path,
+        out,
+        frames=part.report.frames,
+        duration_ms=part.report.duration_ms,
+    )
+    assert out.is_file()

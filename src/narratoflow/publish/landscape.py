@@ -107,31 +107,31 @@ def _ink_filter(layout: PanoramaLayout) -> str:
     )
 
 
+def _unreadable(reason: str) -> RenderError:
+    return RenderError(f"ink guard output is unreadable ({reason})")
+
+
+def _record_luma(head: str, value: str, n: int) -> int:
+    """The darkest luma of frame `n` from its two lines, or `RenderError`."""
+    framed, valued = _FRAME_LINE.match(head), _YMIN_LINE.fullmatch(value)
+    if framed is None or int(framed.group(1)) != n:
+        raise _unreadable(f"expected a record for frame {n}, got {head!r}")
+    if valued is None or int(valued.group(1)) > 255:
+        raise _unreadable(f"frame {n} has no luma value, got {value!r}")
+    return int(valued.group(1))
+
+
 def _first_ink(text: str, frames: int) -> tuple[int, int] | None:
     """The first `(frame, darkest luma)` below `INK_LUMA_MAX`, or None.
 
     The whole text is read and must hold exactly `frames` records numbered `0..frames-1`;
     anything else is `RenderError`, so a short or garbled file is never a pass.
     """
-
-    def unreadable(reason: str) -> RenderError:
-        return RenderError(f"ink guard output is unreadable ({reason})")
-
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) != 2 * frames:
-        raise unreadable(f"{len(lines)} lines for {frames} frames")
-    first: tuple[int, int] | None = None
-    for n in range(frames):
-        head, value = lines[2 * n], lines[2 * n + 1]
-        framed, valued = _FRAME_LINE.match(head), _YMIN_LINE.fullmatch(value)
-        if framed is None or int(framed.group(1)) != n:
-            raise unreadable(f"expected a record for frame {n}, got {head!r}")
-        if valued is None or int(valued.group(1)) > 255:
-            raise unreadable(f"frame {n} has no luma value, got {value!r}")
-        luma = int(valued.group(1))
-        if first is None and luma < INK_LUMA_MAX:
-            first = (n, luma)
-    return first
+        raise _unreadable(f"{len(lines)} lines for {frames} frames")
+    lumas = [_record_luma(lines[2 * n], lines[2 * n + 1], n) for n in range(frames)]
+    return next(((n, v) for n, v in enumerate(lumas) if v < INK_LUMA_MAX), None)
 
 
 def _check_ink(tools: RenderTools, src: Path, layout: PanoramaLayout, *, frames: int) -> None:
@@ -236,9 +236,9 @@ def panorama_export(
             raise RenderError(f"cannot write {out}: {exc}") from exc
     except BaseException:
         with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
+            tmp.unlink()
         with contextlib.suppress(OSError):
-            out.unlink(missing_ok=True)
+            out.unlink()
         raise
     return out
 
@@ -283,8 +283,8 @@ def pillarbox_export(
             raise RenderError(f"cannot write {out}: {exc}") from exc
     except BaseException:
         with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
+            tmp.unlink()
         with contextlib.suppress(OSError):
-            out.unlink(missing_ok=True)
+            out.unlink()
         raise
     return out

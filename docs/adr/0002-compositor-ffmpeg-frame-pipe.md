@@ -48,6 +48,14 @@ Frames are drawn in Python and piped to ffmpeg; no scene-graph or browser render
   (`docs/benchmarks/2026-11-13-render-cpu.md`) rendered one 180 s part (5400 frames, 1080x1920,
   30 fps) in 84.5 s with the default workers and 181.8 s with one worker, on one 16-core arm
   machine with ffmpeg-full 9.0.2 (single runs, no variance known), under the 600 s NFR.
+  Re-measured on 2026-11-15 on the same machine class: 27.3 s with the default workers and
+  52.4 s with one worker, next to the 84.5 s and 181.8 s of 2026-11-12 (the earlier figures did
+  not reproduce and the reason is not known).
+- No per-scene segment cache: every render of a part redraws all its scenes. Measured split
+  (2026-11-15, default workers): 13.5-14.3 s drawing, 9.2-9.8 s final pass, 3.9 s verification.
+  A cache would save at most about 11-12 s per one-scene rebuild: measured and not built (#164,
+  closed as not planned). Reopen if the drawing phase exceeds about 30 s at default
+  workers on the owner's real hardware, or if parts become much longer than 180 s.
 
 ## Alternatives considered
 
@@ -56,3 +64,6 @@ Frames are drawn in Python and piped to ffmpeg; no scene-graph or browser render
   stack; the per-frame NumPy pipeline already gives full control of the reveal and of Arabic
   shaping through libass. Not used, and no code for it exists.
 - **Writing PNG frames to disk, then encoding:** needs far more disk and I/O than a pipe.
+- **Per-scene segment cache (plan 11 D30):** rejected on the measurement above. It would add a
+  second cache key, a prune and delete path inside the frame-exact core, and keep about 75 MB of
+  lossless segments per 180 s part, for a best-case saving of about 11-12 s of a 27 s render.

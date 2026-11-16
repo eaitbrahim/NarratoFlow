@@ -26,7 +26,7 @@
 
 ## 2. Vision (corrected)
 
-**NarratoFlow** turns a written script into **whiteboard animation videos**: a hand draws each sketch while a narrator reads, with captions burned in. It targets **TikTok and YouTube Shorts (9:16)** first; a 16:9 file is a pillarboxed copy of the 9:16 video (6.5).
+**NarratoFlow** turns a written script into **whiteboard animation videos**: a hand draws each sketch while a narrator reads, with captions burned in. It targets **TikTok and YouTube Shorts (9:16)** first; a 16:9 file is the 9:16 video re-arranged side by side (sketch left, text right) (6.5).
 
 - **The code is open source.** The core is Apache-2.0 (`pyproject.toml`). Models are "open-weights" where they are used, never "FOSS": SDXL is OpenRAIL++-M and FLUX.1-schnell is Apache-2.0, but some model weights carry use-based or non-commercial terms. The SRD licence matrix lists every one.
 - **Free by default, paid by choice.** Bundled icons, uploads, text cards, Piper, Mishkal and local diffusion cost nothing. Paid providers (an LLM, OpenAI images, ElevenLabs) are optional and capped per part by `ChannelConfig.spending_limit_usd` and `SpendTracker`; nothing spends past the cap or without an estimate.
@@ -40,7 +40,7 @@
 | :--- | :--- | :--- |
 | Voice SaaS (ElevenLabs) | `edge` (free Microsoft service) and Piper (local); ElevenLabs itself as an optional paid primary | edge has no explicit commercial licence (publish warns); Piper voices carry their own licences; voice cloning engines with non-commercial weights are not offered |
 | Image SaaS (Ideogram, Midjourney) | Bundled icons, uploads (XDoG line art), OpenAI images (paid), local line-art diffusion (FLUX.1-schnell, Apache-2.0) | SDXL is open-weights with use-based terms; FLUX.1-dev is non-commercial and fails publish |
-| Canva, VideoScribe | NumPy/Pillow frames piped to ffmpeg with a hand sprite and centerline strokes | 9:16 native; 16:9 is pillarboxed |
+| Canva, VideoScribe | NumPy/Pillow frames piped to ffmpeg with a hand sprite and centerline strokes | 9:16 native; 16:9 re-composed from it |
 | Commercial Arabic diacritizers | An LLM (default), Mishkal (free, offline, measured), behind a skeleton guard | Mishkal DER 25.45, WER 65.03 on the gold set (ADR 0005); other engines not yet measured |
 | Auto-captions | Provider word spans, else forced alignment, libass for shaping | Alignment precision is not claimed; the `align` extra is not commercial-safe |
 
@@ -82,7 +82,7 @@ Each metric is tied to an artifact that measures it today. Where none exists the
 - **No real-time** generation or live video.
 - **No cloud SaaS.** NarratoFlow runs on the creator's machine; there is no hosted service, account or multi-user store.
 - **No voice cloning** (REVIEW C3): the cloning engines' weights are non-commercial, so none is built.
-- **No native 16:9 layout in v1.** The 16:9 file is a pillarboxed copy of the 9:16 video; a native panorama layout is follow-up #163.
+- **No separately rendered 16:9 in v1.** The 16:9 file is re-composed from the checked 9:16 video (ADR 0006).
 - **No viewer-retention analytics.**
 
 ---
@@ -120,7 +120,7 @@ What the product does, at the level of behaviour. How is in the SRD.
 ### 6.5 Layout and rendering
 - Output is 1080x1920 at 30 fps, H.264 and AAC, one MP4 per part, with a camera (pan and zoom) and platform safe zones.
 - A part whose inputs did not change is not re-rendered.
-- 16:9 is a pillarboxed copy of the 9:16 export, made from the review station (section 7).
+- A 16:9 file is the 9:16 video re-arranged side by side (sketch left, text right), made from the review station (section 7).
 
 ### 6.6 Publishing
 - `publish` checks each part against the platform rules (duration, size, codecs, loudness, licences, AI-content label, content policy, verse integrity) and writes a report. A FAIL blocks the part; a WARN is recorded.
@@ -152,7 +152,7 @@ The pipeline is a set of commands over one file, `series.json` (SRD 1). Each mil
 | **M4 Review Station** | A local Gradio page that edits `series.json` and re-runs only what an edit needs | `ui` | M4 – Review Station |
 
 ### Review station (shipped in #165)
-`narratoflow ui` opens a local page over `series.json`. It holds no state of its own and refuses a stale page. Per scene the creator can hear the clip, edit the vocalized and caption text, set the minimum duration and draw fraction, upload an image, regenerate the sketch, switch to a text card and rebuild the scene. Rebuilding a scene re-runs only that scene's sketch, voice (the cache serves the other scenes) and the render of its part; other parts are untouched. Paid actions show an estimate and need a confirm. A per-scene render cache inside a part was measured and not built (#164). Export 9:16 checks and exports every part like `publish`; Export 16:9 writes the pillarboxed copy.
+`narratoflow ui` opens a local page over `series.json`. It holds no state of its own and refuses a stale page. Per scene the creator can hear the clip, edit the vocalized and caption text, set the minimum duration and draw fraction, upload an image, regenerate the sketch, switch to a text card and rebuild the scene. Rebuilding a scene re-runs only that scene's sketch, voice (the cache serves the other scenes) and the render of its part; other parts are untouched. Paid actions show an estimate and need a confirm. A per-scene render cache inside a part was measured and not built (#164). Export 9:16 checks and exports every part like `publish`; Export 16:9 writes the 9:16 video re-arranged side by side (ADR 0006).
 
 ### Workflow
 1. Write the script and a channel file (voice, style, spending cap, reciter).

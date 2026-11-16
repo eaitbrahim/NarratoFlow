@@ -27,6 +27,7 @@ Frames are drawn in Python and piped to ffmpeg; no scene-graph or browser render
   success. `verify_mp4` then checks size, frame count and duration before a part is accepted.
 - Output is 9:16 only. A channel that lists the landscape output gets `LANDSCAPE_WARNING`
   ("16:9 is not rendered in v1") in the part's report (`render/build.py`).
+  The 16:9 export is re-composed from the 9:16 video by the review station (ADR 0006).
 - Manim CE was not used.
 
 ## Consequences

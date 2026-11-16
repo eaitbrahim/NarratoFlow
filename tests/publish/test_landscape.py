@@ -22,7 +22,6 @@ from narratoflow.publish.landscape import (
     CANVAS_SCALES,
     LANDSCAPE_BOTTOM,
     LANDSCAPE_SIZE,
-    _check_ink,
     _compose_graph,
     _first_ink,
     landscape_name,
@@ -140,7 +139,10 @@ def test_layout_bled_rects_are_disjoint_and_inside(scale: Fraction) -> None:
     for z in layout.zones:
         assert src_frame.contains(z.src_bled) and dst_frame.contains(z.dst_bled)
         assert (z.dst.w, z.dst.h) == (z.src.w, z.src.h)  # 1:1 at every scale
-        assert z.bleed == round(8 * scale)
+        assert (
+            z.bleed
+            == {Fraction(1): 8, Fraction(1, 2): 4, Fraction(1, 3): 3, Fraction(1, 6): 1}[scale]
+        )
     for a, b in itertools.combinations(layout.zones, 2):
         assert not a.src_bled.intersects(b.src_bled)
         assert not a.dst_bled.intersects(b.dst_bled)
@@ -228,6 +230,16 @@ def _marked(tools: RenderTools, video: Path, tmp_path: Path) -> Path:
     return _reencode(tools, video, tmp_path / "src" / "marked.mp4", vf)
 
 
+def _white_clip(tools: RenderTools, path: Path, vf: str = "null") -> Path:
+    """A 3-frame all-white clip at the 1/6 canvas size, with `vf` applied."""
+    run_tool(
+        tools.ffmpeg,
+        ["-v", "error", "-f", "lavfi", "-i", "color=white:s=180x320:d=0.1:r=30",
+         "-vf", vf, "-y", str(path)],
+    )  # fmt: skip
+    return path
+
+
 @pytest.mark.parametrize(
     ("text", "frames"),
     [
@@ -251,25 +263,6 @@ def test_first_ink_reports_the_first_dark_frame() -> None:
     assert _first_ink(rec.format(0, 235) + rec.format(1, 194) + rec.format(2, 16), 3) == (1, 194)
     assert _first_ink(rec.format(0, 195), 1) is None  # 195 is not ink
     assert _first_ink(rec.format(0, 255), 1) is None  # 255 is a valid luma
-
-
-def test_check_ink_passes_a_rendered_part_and_flags_a_planted_mark(
-    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
-) -> None:
-    part = _sketch_part(channel, library, tmp_path, render_tools)
-    layout = panorama_layout(Fraction(1, 6))
-    _check_ink(render_tools, part.video_path, layout, frames=part.report.frames)  # no raise
-    marked = _marked(render_tools, part.video_path, tmp_path)
-    with pytest.raises(RenderError, match=r"at frame \d+ \(luma \d+ < 195\)"):
-        _check_ink(render_tools, marked, layout, frames=part.report.frames)
-
-
-def test_ink_guard_that_cannot_run_is_an_error(render_tools: RenderTools, tmp_path: Path) -> None:
-    broken = dataclasses.replace(render_tools, ffmpeg=tmp_path / "no-ffmpeg")
-    src = tmp_path / "x.mp4"
-    src.write_bytes(b"")
-    with pytest.raises(RenderError, match="cannot run"):
-        _check_ink(broken, src, panorama_layout(Fraction(1, 6)), frames=1)
 
 
 def _crop(a: np.ndarray, r: Rect) -> np.ndarray:
@@ -465,7 +458,7 @@ def test_source_without_audio_is_refused(
         ],
     )
     out = _old_target(tmp_path)
-    with pytest.raises(RenderError):
+    with pytest.raises(RenderError, match="matches no streams"):
         panorama_export(
             render_tools, mute, out, frames=part.report.frames, duration_ms=part.report.duration_ms
         )
@@ -501,16 +494,23 @@ def test_source_changed_during_export_is_refused(
 
 
 def test_ink_error_names_the_frame_and_luma_found(
-    render_tools: RenderTools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    render_tools: RenderTools, tmp_path: Path
 ) -> None:
-    src = tmp_path / "x.mp4"
-    run_tool(
-        render_tools.ffmpeg,
-        ["-v", "error", "-f", "lavfi", "-i", "color=white:s=180x320:d=0.1:r=30", "-y", str(src)],
-    )
-    monkeypatch.setattr(landscape, "_first_ink", lambda text, frames: (7, 42))
-    with pytest.raises(RenderError, match=r"at frame 7 \(luma 42 < 195\)"):
-        _check_ink(render_tools, src, panorama_layout(Fraction(1, 6)), frames=3)
+    vf = f"drawbox=x={MARK.x}:y={MARK.y}:w={MARK.w}:h={MARK.h}:color=black:t=fill"
+    src = _white_clip(render_tools, tmp_path / "x.mp4", vf)
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match=r"at frame 0 \(luma \d+ < 195\)"):
+        panorama_export(render_tools, src, out, frames=3, duration_ms=100)
+    _refused(out)
+
+
+def test_ink_guard_that_cannot_run_is_an_error(render_tools: RenderTools, tmp_path: Path) -> None:
+    src = _white_clip(render_tools, tmp_path / "x.mp4")
+    broken = dataclasses.replace(render_tools, ffmpeg=tmp_path / "no-ffmpeg")
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match="cannot run"):
+        panorama_export(broken, src, out, frames=3, duration_ms=100)
+    _refused(out)
 
 
 def test_panorama_creates_missing_target_directories(

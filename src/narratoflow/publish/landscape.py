@@ -283,8 +283,8 @@ def pillarbox_export(
             raise RenderError(f"cannot write {out}: {exc}") from exc
     except BaseException:
         with contextlib.suppress(OSError):
-            tmp.unlink()
+            tmp.unlink(missing_ok=True)
         with contextlib.suppress(OSError):
-            out.unlink()
+            out.unlink(missing_ok=True)
         raise
     return out

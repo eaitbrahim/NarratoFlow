@@ -1,0 +1,80 @@
+name: Install bundles
+# Reusable: build the macOS, Linux and Windows install bundles for `ref`, then install each one
+# on its own system and check the result. Called by release-prepare.yml and release.yml.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build.
+        required: true
+        type: string
+    outputs:
+      version:
+        description: The project version that was built.
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+      - id: version
+        run: echo "version=$(uv version --short)" >> "$GITHUB_OUTPUT"
+      - run: packaging/make_bundles.sh dist/bundles
+      - uses: actions/upload-artifact@v4
+        with:
+          name: install-bundles
+          path: dist/bundles/
+          if-no-files-found: error
+
+  install:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, bundle: linux }
+          - { os: macos-latest, bundle: macos }
+          - { os: windows-latest, bundle: windows }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: install-bundles
+      - name: Install (macOS)
+        if: matrix.bundle == 'macos'
+        run: |
+          unzip -q "narratoflow-$VERSION-macos.zip"
+          sh "narratoflow-$VERSION-macos/install.sh"
+      - name: Install (Linux)
+        if: matrix.bundle == 'linux'
+        run: |
+          tar -xzf "narratoflow-$VERSION-linux.tar.gz"
+          sh "narratoflow-$VERSION-linux/install.sh"
+      - name: Install (Windows)
+        if: matrix.bundle == 'windows'
+        shell: pwsh
+        run: |
+          Expand-Archive "narratoflow-$env:VERSION-windows.zip" -DestinationPath .
+          powershell -ExecutionPolicy Bypass -File ".\narratoflow-$env:VERSION-windows\install.ps1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: The installed command reports the built version
+        shell: bash
+        run: |
+          # uv installs commands into ~/.local/bin; later steps do not inherit the installer's PATH.
+          got=$("${XDG_BIN_HOME:-$HOME/.local/bin}/narratoflow" --version)
+          test "$got" = "narratoflow $VERSION" || { echo "got '$got'"; exit 1; }

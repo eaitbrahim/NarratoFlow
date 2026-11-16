@@ -1,3 +1,6 @@
 """NarratoFlow: open-source whiteboard animation video engine."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+# One source of truth: `[project].version` in pyproject.toml, bumped by the release workflow.
+__version__ = version("narratoflow")

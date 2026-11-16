@@ -6,6 +6,14 @@ Open-source pipeline that turns Classical Arabic (الفصحى) or English text 
 
 Stroke data format: [`docs/strokes-schema.md`](docs/strokes-schema.md).
 
+## Install a release
+
+Each [GitHub Release](../../releases) has a download for macOS (Apple Silicon), Linux and
+Windows. The bundled installer sets up everything: every extra, Python 3.12, ffmpeg with libass
+and the CAMeL dialect model. The downloads are not signed, so follow
+[`packaging/INSTALL.md`](packaging/INSTALL.md), which shows how to allow them on each system.
+`narratoflow --version` prints the installed version.
+
 ## Quick start
 
 ```bash
@@ -356,6 +364,24 @@ it has one.
 - Paid actions (regenerate, a rebuild that needs new voice or a new sketch) show the estimate and need the confirm box.
 - **Export 9:16** checks and exports every part like `narratoflow publish`. **Export 16:9** writes `part-NN.16x9.mp4` next to it: the 9:16 video re-arranged side by side (sketch left, text right), made from the checked 9:16 file (ADR 0006).
 
+## Releasing
+
+The version lives only in `pyproject.toml` (`narratoflow --version` reads it from the installed
+package).
+
+1. Actions > **Prepare release** > Run workflow, and pick `patch`, `minor` or `major`.
+   The workflow bumps the version on a `release/vX.Y.Z` branch, builds the three install bundles,
+   installs each one on a fresh macOS, Linux and Windows runner, and then opens a
+   "Release vX.Y.Z" pull request. If a step fails, the branch is deleted and nothing is opened.
+2. Review and merge the pull request. **Release** then rebuilds and re-tests the bundles from
+   the merge commit, tags `vX.Y.Z`, and publishes the GitHub Release with the bundles attached.
+
+One-time setup: either enable Settings > Actions > General > "Allow GitHub Actions to create and
+approve pull requests", or add a `RELEASE_TOKEN` secret (a fine-grained token with contents,
+pull requests and actions write access on this repository). With the default token, the
+workflow starts CI on the release pull request itself. With `RELEASE_TOKEN`, CI starts as it
+does for any other pull request.
+
 ## Layout
 
 ```
@@ -375,6 +401,7 @@ src/narratoflow/
   captions/          ASS subtitles (libass shapes Arabic natively)
   ui/                Gradio review station
 assets/              fonts, sfx, icons, hand sprites; every pack listed in assets/LICENSES.md
+packaging/           release install bundles: installers, INSTALL.md, make_bundles.sh
 tests/
 ```
 

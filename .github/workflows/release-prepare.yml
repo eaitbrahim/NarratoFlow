@@ -1,0 +1,105 @@
+name: Prepare release
+# Run by hand (Actions > Prepare release > Run workflow). Bumps the version on a release/vX.Y.Z
+# branch, builds and test-installs the bundles on macOS, Linux and Windows, then opens a
+# "Release vX.Y.Z" pull request. Merging that pull request publishes the release (release.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to bump.
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+concurrency:
+  group: release-prepare
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      branch: ${{ steps.bump.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+      - id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          uv version --bump "$BUMP" --no-sync
+          version=$(uv version --short)
+          branch="release/v$version"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::tag v$version already exists"; exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "::error::branch $branch already exists; merge or delete it first"; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Release v$version"
+          git push origin "$branch"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+  bundles:
+    needs: bump
+    uses: ./.github/workflows/bundles.yml
+    with:
+      ref: ${{ needs.bump.outputs.branch }}
+
+  pull-request:
+    needs: [bump, bundles]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Open the release pull request and run CI on it
+        env:
+          # A personal access token in RELEASE_TOKEN lets CI start by itself on the pull request;
+          # with the default token, CI is started explicitly below.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.bump.outputs.version }}
+          BRANCH: ${{ needs.bump.outputs.branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr create --base main --head "$BRANCH" --title "Release v$VERSION" --body "$(cat <<BODY
+          Bumps the version to **$VERSION**.
+
+          The macOS, Linux and Windows install bundles were built from this branch and installed
+          on each system in [this run]($RUN_URL).
+
+          Merging this pull request tags \`v$VERSION\` and publishes the GitHub Release with the
+          three bundles (release.yml). To cancel, close it and delete the branch.
+          BODY
+          )"
+          if [ "$HAS_RELEASE_TOKEN" != true ]; then
+            gh workflow run ci.yml --ref "$BRANCH"  # events from the default token start no workflows
+          fi
+
+  clean-up:
+    needs: [bump, bundles, pull-request]
+    if: failure() && needs.bump.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete the release branch of the failed run
+        env:
+          BRANCH: ${{ needs.bump.outputs.branch }}
+        run: git push origin --delete "$BRANCH"

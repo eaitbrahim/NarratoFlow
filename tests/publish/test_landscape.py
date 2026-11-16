@@ -2,27 +2,33 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import pytest
-from fixtures.parts import add_sketch, make_series, narr, render, write_timelines
+from fixtures.parts import add_sketch, make_series, narr, render, verse, write_timelines
 
 from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.errors import RenderError
 from narratoflow.library.repository import SketchLibrary
+from narratoflow.models import Scene
 from narratoflow.publish.landscape import (
     CANVAS_SCALES,
     LANDSCAPE_BOTTOM,
     LANDSCAPE_SIZE,
+    _check_ink,
+    _first_ink,
     landscape_name,
     landscape_size,
     panorama_layout,
     pillarbox_export,
 )
-from narratoflow.render.ffmpeg import RenderTools, run_tool
+from narratoflow.render.build import PartVideo
+from narratoflow.render.encoder import X264_ARGS
+from narratoflow.render.ffmpeg import RenderTools, probe, run_tool
 from narratoflow.render.layout import CAPTIONS, STAGE, TOP_BAR, Canvas, Rect
 from narratoflow.settings import Settings
 
@@ -146,3 +152,115 @@ def test_landscape_size_follows_the_canvas_scale() -> None:
     assert landscape_size(Fraction(1, 6)) == (320, 180)
     with pytest.raises(ValueError, match="scale"):
         landscape_size(Fraction(1, 4))
+
+
+# --- the ink guard and panorama_export -------------------------------------------------
+
+MARK = Rect(165, 100, 3, 3)
+"""At scale 1/6: right of the stage and below the top bar, outside every bled zone."""
+
+
+def _part(
+    channel: ChannelConfig,
+    library: SketchLibrary,
+    tmp_path: Path,
+    tools: RenderTools,
+    scenes: list[Scene],
+) -> PartVideo:
+    series = make_series(scenes)
+    write_timelines(series, tmp_path / "audio", library)
+    built = render(
+        series, channel, Settings(data_dir=tmp_path / "data"), tmp_path, tools, library=library
+    )
+    [part] = built.parts
+    return part
+
+
+def _sketch_part(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, tools: RenderTools
+) -> PartVideo:
+    sid = add_sketch(library)
+    return _part(
+        channel,
+        library,
+        tmp_path,
+        tools,
+        [narr("s1", "alpha beta", sketch=sid), narr("s2", "gamma")],
+    )
+
+
+def _verse_part(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, tools: RenderTools
+) -> PartVideo:
+    return _part(channel, library, tmp_path, tools, [verse("v1"), narr("s1", "alpha")])
+
+
+def _frames(tools: RenderTools, video: Path, pix: str = "rgb24") -> np.ndarray:
+    found = probe(tools, video)
+    assert found.width and found.height
+    raw = run_tool(
+        tools.ffmpeg,
+        ["-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", pix, "-"],
+    )
+    shape = (-1, found.height, found.width) + ((3,) if pix == "rgb24" else ())
+    return np.frombuffer(raw, dtype=np.uint8).reshape(shape)
+
+
+def _reencode(tools: RenderTools, src: Path, dst: Path, vf: str) -> Path:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    run_tool(
+        tools.ffmpeg,
+        ["-v", "error", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0", "-vf", vf,
+         *X264_ARGS, "-c:a", "copy", str(dst)],
+    )  # fmt: skip
+    return dst
+
+
+def _marked(tools: RenderTools, video: Path, tmp_path: Path) -> Path:
+    layout = panorama_layout(Fraction(1, 6))
+    assert not any(z.src_bled.intersects(MARK) for z in layout.zones)
+    vf = f"drawbox=x={MARK.x}:y={MARK.y}:w={MARK.w}:h={MARK.h}:color=black:t=fill"
+    return _reencode(tools, video, tmp_path / "src" / "marked.mp4", vf)
+
+
+@pytest.mark.parametrize(
+    ("text", "frames"),
+    [
+        ("", 2),  # nothing written
+        ("frame:0 pts:0 pts_time:0\nlavfi.signalstats.YMIN=235\n", 2),  # a frame missing
+        ("frame:0 pts:0 pts_time:0\nlavfi.signalstats.YMIN=abc\n", 1),  # not an int
+        ("frame:0 pts:0 pts_time:0\nlavfi.signalstats.YMIN=300\n", 1),  # out of range
+        ("frame:0 pts:0 pts_time:0\n", 1),  # no value
+        ("frame:1 pts:0 pts_time:0\nlavfi.signalstats.YMIN=235\n", 1),  # wrong numbering
+        ("lavfi.signalstats.YMIN=235\n", 1),  # value before frame
+        ("garbage\n", 1),
+    ],
+)
+def test_first_ink_rejects_unreadable_output(text: str, frames: int) -> None:
+    with pytest.raises(RenderError, match="unreadable"):
+        _first_ink(text, frames)
+
+
+def test_first_ink_reports_the_first_dark_frame() -> None:
+    rec = "frame:{0} pts:{0} pts_time:0\nlavfi.signalstats.YMIN={1}\n"
+    assert _first_ink(rec.format(0, 235) + rec.format(1, 194) + rec.format(2, 16), 3) == (1, 194)
+    assert _first_ink(rec.format(0, 195), 1) is None  # 195 is not ink
+
+
+def test_check_ink_passes_a_rendered_part_and_flags_a_planted_mark(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    layout = panorama_layout(Fraction(1, 6))
+    _check_ink(render_tools, part.video_path, layout, frames=part.report.frames)  # no raise
+    marked = _marked(render_tools, part.video_path, tmp_path)
+    with pytest.raises(RenderError, match=r"at frame \d+ \(luma \d+ < 195\)"):
+        _check_ink(render_tools, marked, layout, frames=part.report.frames)
+
+
+def test_ink_guard_that_cannot_run_is_an_error(render_tools: RenderTools, tmp_path: Path) -> None:
+    broken = dataclasses.replace(render_tools, ffmpeg=tmp_path / "no-ffmpeg")
+    src = tmp_path / "x.mp4"
+    src.write_bytes(b"")
+    with pytest.raises(RenderError, match="cannot run"):
+        _check_ink(broken, src, panorama_layout(Fraction(1, 6)), frames=1)

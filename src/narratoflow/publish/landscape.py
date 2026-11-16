@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
@@ -86,6 +87,72 @@ def panorama_layout(scale: Fraction) -> PanoramaLayout:
             zone("captions", canvas.captions, CAPTIONS_16X9),
         ),
     )
+
+
+_FRAME_LINE = re.compile(r"frame:(\d+)\s")
+_YMIN_LINE = re.compile(r"lavfi\.signalstats\.YMIN=(\d+)")
+
+
+def _ink_filter(layout: PanoramaLayout) -> str:
+    """Mask the bled source zones white, then write each frame's darkest luma to `ink.txt`."""
+    masks = [
+        f"drawbox=x={r.x}:y={r.y}:w={r.w}:h={r.h}:color=white:t=fill"
+        for r in (z.src_bled for z in layout.zones)
+    ]
+    return ",".join(
+        [*masks, "signalstats", "metadata=mode=print:key=lavfi.signalstats.YMIN:file=ink.txt"]
+    )
+
+
+def _first_ink(text: str, frames: int) -> tuple[int, int] | None:
+    """The first `(frame, darkest luma)` below `INK_LUMA_MAX`, or None.
+
+    The whole text is read and must hold exactly `frames` records numbered `0..frames-1`;
+    anything else is `RenderError`, so a short or garbled file is never a pass.
+    """
+
+    def unreadable(reason: str) -> RenderError:
+        return RenderError(f"ink guard output is unreadable ({reason})")
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) != 2 * frames:
+        raise unreadable(f"{len(lines)} lines for {frames} frames")
+    first: tuple[int, int] | None = None
+    for n in range(frames):
+        head, value = lines[2 * n], lines[2 * n + 1]
+        framed, valued = _FRAME_LINE.match(head), _YMIN_LINE.fullmatch(value)
+        if framed is None or int(framed.group(1)) != n:
+            raise unreadable(f"expected a record for frame {n}, got {head!r}")
+        if valued is None or int(valued.group(1)) > 255:
+            raise unreadable(f"frame {n} has no luma value, got {value!r}")
+        luma = int(valued.group(1))
+        if first is None and luma < INK_LUMA_MAX:
+            first = (n, luma)
+    return first
+
+
+def _check_ink(tools: RenderTools, src: Path, layout: PanoramaLayout, *, frames: int) -> None:
+    """`RenderError` if any frame of `src` has ink outside the bled zones, or the guard fails."""
+    with tempfile.TemporaryDirectory(prefix="narratoflow-ink-") as name:
+        work = Path(name)
+        args = [
+            "-hide_banner", "-nostdin", "-v", "error", "-xerror",
+            "-i", str(src.absolute()),
+            "-map", "0:v:0", "-vf", _ink_filter(layout),
+            "-f", "null", "-",
+        ]  # fmt: skip
+        run_tool(tools.ffmpeg, args, cwd=work, timeout_s=FINAL_TIMEOUT_S)
+        try:
+            text = (work / "ink.txt").read_text(encoding="ascii")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RenderError(f"ink guard wrote no readable output for {src.name}: {exc}") from exc
+    hit = _first_ink(text, frames)
+    if hit is not None:
+        raise RenderError(
+            f"{src.name}: ink outside the 16:9 zones at frame {hit[0]} "
+            f"(luma {hit[1]} < {INK_LUMA_MAX}); "
+            "the 9:16 layout lets text or drawing leave its zone"
+        )
 
 
 def landscape_name(index: int) -> str:

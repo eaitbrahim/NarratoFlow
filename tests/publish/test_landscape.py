@@ -7,7 +7,6 @@ import itertools
 import json
 import os
 import shutil
-import tempfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -480,18 +479,13 @@ def test_read_only_target_directory_is_refused_and_writes_nothing(
         target.chmod(0o755)
 
 
-def test_unwritable_target_directory_leaves_no_older_copy(
-    render_tools: RenderTools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_temp_file_name_too_long_leaves_no_older_copy(
+    render_tools: RenderTools, tmp_path: Path
 ) -> None:
     src = _white_clip(render_tools, tmp_path / "x.mp4")
-    out = _old_target(tmp_path)
-
-    def no_temp_file(*_args: object, **_kwargs: object) -> tuple[int, str]:
-        raise PermissionError("read-only target directory")
-
-    # No real condition: where mkstemp fails the directory is also too read-only to unlink
-    # the older copy, so only a fake can reach the cleanup after the temp file fails.
-    monkeypatch.setattr(tempfile, "mkstemp", no_temp_file)
+    out = tmp_path / "export" / f"{'a' * 245}.mp4"  # fits, but `.<stem>.<random>.mp4` does not
+    out.parent.mkdir()
+    out.write_bytes(b"old")
     with pytest.raises(RenderError, match="cannot write"):
         panorama_export(render_tools, src, out, frames=3, duration_ms=100)
     _refused(out)

@@ -1314,7 +1314,7 @@ def test_a_publish_that_fails_on_a_later_part_leaves_no_stale_landscape_copy(
     second = paths.export_dir / "part-02.mp4"
     second.unlink()
     second.mkdir()  # a directory where the file goes: part 2's copy cannot replace it
-    with pytest.raises(PublishError, match="part 2"):
+    with pytest.raises(PublishError, match="part 2: cannot copy"):
         export(paths, ratio, **kit)
     assert _sha(first) != before  # part 1's 9:16 file is the new cut
     assert not (paths.export_dir / landscape_name(1)).exists()  # so no old 16:9 copy survives

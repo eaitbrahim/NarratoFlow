@@ -283,8 +283,12 @@ class _Run:
         """Part `n`'s 16:9 derivative: only the station makes it, so a rewrite here stales it."""
         return self.export_dir / landscape_name(n)
 
+    def owned_files(self, n: int) -> list[Path]:
+        """Every file in `export_dir` that a publish of part `n` owns and may remove."""
+        return [*self.export_files(n), self.landscape_copy(n)]
+
     def remove_exports(self, n: int) -> None:
-        self._remove(n, [*self.export_files(n), self.landscape_copy(n)])
+        self._remove(n, self.owned_files(n))
 
     def _remove(self, n: int, paths: Sequence[Path]) -> None:
         for path in paths:
@@ -384,10 +388,7 @@ class _Run:
             _write_text(md_path, exported.to_markdown())
         except PublishError as exc:
             self.save(report(False, _short_error(exc, video)), n)
-            for path in [
-                *self.export_files(n),
-                self.landscape_copy(n),
-            ]:  # best effort: the error above is what counts
+            for path in self.owned_files(n):  # best effort: the error above is what counts
                 with contextlib.suppress(OSError):
                     path.unlink(missing_ok=True)
             raise

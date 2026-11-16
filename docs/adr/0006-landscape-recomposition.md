@@ -34,7 +34,7 @@ size, so no text is re-typeset and every existing libass zone test still proves 
 +------------------------------------------------------------------------------+ 1080
 ```
 
-- An 8 px bleed (`max(1, round(8 * scale))`) travels with each zone.
+- An 8 px bleed (`round(8 * scale)`; the smallest allowed scale, 1/6, already gives 1 px) travels with each zone.
 - `LANDSCAPE_BOTTOM` (0, 972, 1920, 108) stays clear for the player controls, with a 48 px edge
   margin.
 - The output size is 1920x1080 times the source canvas scale (320x180 at 1/6).

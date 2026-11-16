@@ -187,7 +187,8 @@ def lock_path(paths: StationPaths) -> Path:
 
 def _locked_message(paths: StationPaths) -> str:
     return (
-        f"a paid action is running on {paths.series.name}; wait for it to finish "
+        f"another station action (rebuild, regenerate or export) is running on "
+        f"{paths.series.name}; wait for it to finish "
         f"(if none is, delete {lock_path(paths)})"
     )
 
@@ -719,53 +720,53 @@ def export(
     the exported files of `ratio`: `part-NN.mp4`, or for 16:9 the `part-NN.16x9.mp4`
     side-by-side re-compositions (ADR 0006). A part that FAILs its check is exported in
     neither ratio."""
-    settings = settings if settings is not None else get_settings()
-    series = _load(paths)
-    channel = load_channel(paths.channel)
-    tools = tools if tools is not None else find_render_tools(settings)
-    rendered = build_render(
-        series,
-        channel,
-        settings,
-        audio_dir=paths.audio_dir,
-        out_dir=paths.render_dir,
-        workers=workers,
-        canvas=canvas,
-        tools=tools,
-        library=library,
-        corpus=corpus,
-    )
-    published = build_publish(
-        series,
-        channel,
-        settings,
-        render_dir=paths.render_dir,
-        audio_dir=paths.audio_dir,
-        export_dir=paths.export_dir,
-        tools=tools,
-        library=library,
-        corpus=corpus,
-        reciters=reciters,
-        rules=rules,
-        prices=prices,
-        now=now,
-    )
-    exported = {p.index: p.export_path for p in published.parts}
-    if ratio is AspectRatio.PORTRAIT:
-        for index in exported:  # the 16:9 copies derive from 9:16 files that just changed
-            _remove(paths.export_dir / landscape_name(index))
-        return [path for path in exported.values() if path is not None]
-    reports = {b.index: b.report for b in rendered.parts}
-    out: list[Path] = []
-    for index, path in exported.items():
-        target = paths.export_dir / landscape_name(index)
-        if path is None:
-            _remove(target)  # a failing part keeps no older copy
-            continue
-        report = reports[index]
-        out.append(
-            panorama_export(
-                tools, path, target, frames=report.frames, duration_ms=report.duration_ms
-            )
+    with _paid_run(paths):  # one export at a time; refuses while another action runs
+        settings = settings if settings is not None else get_settings()
+        series = _load(paths)
+        channel = load_channel(paths.channel)
+        tools = tools if tools is not None else find_render_tools(settings)
+        for part in series.parts:  # before anything is written: a later failure keeps no stale copy
+            _remove(paths.export_dir / landscape_name(part.index))
+        rendered = build_render(
+            series,
+            channel,
+            settings,
+            audio_dir=paths.audio_dir,
+            out_dir=paths.render_dir,
+            workers=workers,
+            canvas=canvas,
+            tools=tools,
+            library=library,
+            corpus=corpus,
         )
-    return out
+        published = build_publish(
+            series,
+            channel,
+            settings,
+            render_dir=paths.render_dir,
+            audio_dir=paths.audio_dir,
+            export_dir=paths.export_dir,
+            tools=tools,
+            library=library,
+            corpus=corpus,
+            reciters=reciters,
+            rules=rules,
+            prices=prices,
+            now=now,
+        )
+        exported = {p.index: p.export_path for p in published.parts}
+        if ratio is AspectRatio.PORTRAIT:
+            return [path for path in exported.values() if path is not None]
+        reports = {b.index: b.report for b in rendered.parts}
+        out: list[Path] = []
+        for index, path in exported.items():
+            target = paths.export_dir / landscape_name(index)
+            if path is None:
+                continue  # a failing part keeps no older copy: removed before the build
+            report = reports[index]
+            out.append(
+                panorama_export(
+                    tools, path, target, frames=report.frames, duration_ms=report.duration_ms
+                )
+            )
+        return out

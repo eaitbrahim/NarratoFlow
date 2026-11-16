@@ -45,7 +45,7 @@ as recorded.
 
 Measured on 2026-11-15 (Apple M4 Max, 16 cores, ffmpeg-full 9.0.2) for the 180 s part, 18
 scenes, 5400 frames at 1080x1920. Method: the unmodified `bench_render.run` was timed by
-wrapping module attributes (`build._run_jobs`, `build.encode_part`, `verify_mp4`), with one
+wrapping module attributes (`build._run_jobs`, `build.encode_part`, `verify_mp4`, `encoder.run_tool`), with one
 middle scene drawn alone as a probe whose time is subtracted from the wall figure.
 
 | phase | default workers (two runs) | 1 worker |

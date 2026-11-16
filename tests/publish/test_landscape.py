@@ -20,9 +20,11 @@ from narratoflow.publish.landscape import (
     LANDSCAPE_BOTTOM,
     LANDSCAPE_SIZE,
     _check_ink,
+    _compose_graph,
     _first_ink,
     landscape_name,
     landscape_size,
+    panorama_export,
     panorama_layout,
     pillarbox_export,
 )
@@ -264,3 +266,94 @@ def test_ink_guard_that_cannot_run_is_an_error(render_tools: RenderTools, tmp_pa
     src.write_bytes(b"")
     with pytest.raises(RenderError, match="cannot run"):
         _check_ink(broken, src, panorama_layout(Fraction(1, 6)), frames=1)
+
+
+def _crop(a: np.ndarray, r: Rect) -> np.ndarray:
+    return (
+        a[..., r.y : r.bottom, r.x : r.right] if a.ndim == 2 else a[r.y : r.bottom, r.x : r.right]
+    )
+
+
+def _box(mask: np.ndarray) -> tuple[int, int, int, int]:
+    ys, xs = np.nonzero(mask)
+    return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+
+
+def _ink_mass(gray: np.ndarray) -> float:
+    """Darkness below the crop's own paper (its median), in black-pixel equivalents."""
+    paper = int(np.median(gray))
+    return float(np.clip(paper - gray.astype(np.int16), 0, None).sum()) / max(paper, 1)
+
+
+def _export(tools: RenderTools, part: PartVideo, tmp_path: Path) -> Path:
+    return panorama_export(
+        tools,
+        part.video_path,
+        tmp_path / "export" / landscape_name(1),
+        frames=part.report.frames,
+        duration_ms=part.report.duration_ms,
+    )
+
+
+def test_compose_graph_at_scale_1_is_the_design_graph() -> None:
+    assert _compose_graph(panorama_layout(Fraction(1))) == (
+        "[0:v]format=yuv444p,split=3[s][t][c];"
+        "[s]crop=844:866:52:382:exact=1,pad=1920:1080:40:107:color=white[p0];"
+        "[t]crop=976:216:52:162:exact=1[t1];[p0][t1]overlay=904:107:format=yuv444[p1];"
+        "[c]crop=844:196:52:1252:exact=1[c1];[p1][c1]overlay=970:442:format=yuv444[p2];"
+        "[p2]format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709"
+        ":colorspace=bt709:range=tv[v]"
+    )
+
+
+def test_panorama_has_landscape_size_and_frames(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    out = tmp_path / "export" / landscape_name(1)
+    got = _export(render_tools, part, tmp_path)
+    found = probe(render_tools, out)
+    assert got == out
+    assert (found.width, found.height) == landscape_size(Fraction(1, 6))
+    assert found.frames == part.report.frames
+    assert sorted(p.name for p in out.parent.iterdir()) == [out.name]
+
+
+def test_panorama_carries_stage_and_captions_on_paper(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    out = _export(render_tools, part, tmp_path)
+    k = 9  # 300 ms: mid-draw of s1 (0-600 ms)
+    src = _frames(render_tools, part.video_path)[k].astype(np.int16)
+    dst = _frames(render_tools, out)[k].astype(np.int16)
+    zones = {z.name: z for z in panorama_layout(Fraction(1, 6)).zones}
+    for name in ("stage", "captions"):
+        z = zones[name]
+        assert np.abs(_crop(dst, z.dst) - _crop(src, z.src)).mean() < 4
+    assert _crop(src, zones["stage"].src).min() < 128  # the frame really is mid-draw
+    outside = np.ones(dst.shape[:2], dtype=bool)
+    for z in zones.values():
+        r = z.dst_bled
+        outside[r.y : r.bottom, r.x : r.right] = False
+    assert dst[outside].mean() > 250
+
+
+def test_verse_ink_is_carried_whole(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _verse_part(channel, library, tmp_path, render_tools)
+    out = _export(render_tools, part, tmp_path)
+    stage = next(z for z in panorama_layout(Fraction(1, 6)).zones if z.name == "stage")
+    src = _frames(render_tools, part.video_path, "gray")
+    dst = _frames(render_tools, out, "gray")
+    counts = [(_crop(f, stage.src) < 128).sum() for f in src[:30]]  # the verse slot
+    k = int(np.argmax(counts))  # the fully lit page
+    s_ink = _crop(src[k], stage.src) < 128
+    d_ink = _crop(dst[k], stage.dst) < 128
+    assert s_ink.sum() > 0
+    assert np.abs(np.array(_box(d_ink)) - np.array(_box(s_ink))).max() <= 2
+    # Ink pixel count, weighted by coverage: the second x264 pass softens 1/6-scale glyph
+    # edges, so a hard threshold flips edge pixels (about 8 %) while the ink mass holds.
+    s_mass = _ink_mass(_crop(src[k], stage.src))
+    assert abs(_ink_mass(_crop(dst[k], stage.dst)) - s_mass) <= 0.02 * s_mass

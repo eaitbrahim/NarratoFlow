@@ -1,8 +1,11 @@
-"""The 16:9 export: a pillarboxed copy of an exported 9:16 part (D31).
+"""The 16:9 export, made from an exported 9:16 part.
 
-The compositor draws 9:16 only (ADR 0002), so a 16:9 file is the same video centred on
-white bars, re-encoded with the project's H.264 settings and the audio copied. A native
-panorama layout is a separate project; only this producer would change.
+`panorama_export` re-composes the part for the wide frame (#163): the stage, top bar and
+captions zones are cropped whole at 1:1 with a bleed and placed side by side in a frame
+1920x1080 times the source canvas scale, in one ffmpeg pass with the project's H.264 settings
+and the audio copied. An ink guard refuses a source with ink outside those zones, so verse
+pixels are always the certified 9:16 burn. `pillarbox_export` (D31) is the station's producer
+until #194 switches it.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from pathlib import Path
 
 from narratoflow.errors import RenderError
 from narratoflow.render.encoder import FINAL_TIMEOUT_S, X264_ARGS, verify_mp4
-from narratoflow.render.ffmpeg import RenderTools, run_tool
+from narratoflow.render.ffmpeg import RenderTools, probe, run_tool
 from narratoflow.render.layout import Canvas, Rect
 
 LANDSCAPE_SIZE = (1920, 1080)
@@ -153,6 +156,91 @@ def _check_ink(tools: RenderTools, src: Path, layout: PanoramaLayout, *, frames:
             f"(luma {hit[1]} < {INK_LUMA_MAX}); "
             "the 9:16 layout lets text or drawing leave its zone"
         )
+
+
+def _compose_graph(layout: PanoramaLayout) -> str:
+    """One filtergraph: crop the three bled zones and place them on white at their spots."""
+    s, t, c = (z.src_bled for z in layout.zones)
+    sd, td, cd = (z.dst_bled for z in layout.zones)
+    w, h = layout.size
+
+    def crop(r: Rect) -> str:
+        return f"crop={r.w}:{r.h}:{r.x}:{r.y}:exact=1"
+
+    return (
+        "[0:v]format=yuv444p,split=3[s][t][c];"
+        f"[s]{crop(s)},pad={w}:{h}:{sd.x}:{sd.y}:color=white[p0];"
+        f"[t]{crop(t)}[t1];[p0][t1]overlay={td.x}:{td.y}:format=yuv444[p1];"
+        f"[c]{crop(c)}[c1];[p1][c1]overlay={cd.x}:{cd.y}:format=yuv444[p2];"
+        "[p2]format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709"
+        ":colorspace=bt709:range=tv[v]"
+    )
+
+
+def _source_scale(src: Path, width: int | None, height: int | None) -> Fraction:
+    for scale in CANVAS_SCALES:
+        canvas = Canvas(scale)
+        if (canvas.width, canvas.height) == (width, height):
+            return scale
+    raise RenderError(f"{src.name}: size {width}x{height} is not a 9:16 canvas size")
+
+
+def _identity(path: Path) -> tuple[int, int, int, int]:
+    try:
+        st = path.stat()
+    except OSError as exc:
+        raise RenderError(f"cannot read {path}: {exc}") from exc
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def panorama_export(
+    tools: RenderTools, src: Path, out: Path, *, frames: int, duration_ms: int
+) -> Path:
+    """Write the side-by-side 16:9 copy of `src` to `out`; `RenderError` on any failure.
+
+    The ink guard runs before the encode. The video goes to a temp file beside `out` and
+    is renamed into place only after `verify_mp4` accepts it and `src` is seen unchanged.
+    On failure the temp file and any older `out` are removed.
+    """
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.stem}.", suffix=".mp4")
+        os.close(fd)
+    except OSError as exc:
+        raise RenderError(f"cannot write {out}: {exc}") from exc
+    tmp = Path(name)
+    try:
+        before = _identity(src)
+        found = probe(tools, src)
+        layout = panorama_layout(_source_scale(src, found.width, found.height))
+        if found.frames != frames:
+            raise RenderError(f"{src.name}: frames is {found.frames}, expected {frames}")
+        _check_ink(tools, src, layout, frames=frames)
+        args = [
+            "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-y",
+            "-i", str(src.absolute()),
+            "-filter_complex", _compose_graph(layout),
+            "-map", "[v]", "-map", "0:a:0",
+            *X264_ARGS, "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(tmp),
+        ]  # fmt: skip
+        run_tool(tools.ffmpeg, args, timeout_s=FINAL_TIMEOUT_S)
+        verify_mp4(tools, tmp, size=layout.size, frames=frames, duration_ms=duration_ms)
+        if _identity(src) != before:
+            raise RenderError(f"{src.name} changed during the 16:9 export")
+        try:
+            tmp.chmod(0o644)
+            os.replace(tmp, out)
+        except OSError as exc:
+            raise RenderError(f"cannot write {out}: {exc}") from exc
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            out.unlink(missing_ok=True)
+        raise
+    return out
 
 
 def landscape_name(index: int) -> str:

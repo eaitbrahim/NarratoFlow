@@ -45,6 +45,7 @@ from narratoflow.errors import (
     PlanningError,
     ProviderError,
     PublishError,
+    RenderError,
 )
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.library.schemas import SketchOrigin, SketchStatus
@@ -1161,6 +1162,19 @@ def verse_publishable(
     )
 
 
+@pytest.fixture
+def two_part_publishable(
+    channel_file: Path, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> tuple[StationPaths, dict[str, Any]]:
+    """A two-part series with mastered timelines, ready to render and publish."""
+    sid = add_sketch(library, provenance=GENERATED_PROVENANCE)
+    series = make_series(
+        [narr("a1", "alpha beta gamma", sketch=sid, title="One"), narr("a2", "delta")],
+        [narr("b1", "epsilon zeta", sketch=sid, title="Two"), narr("b2", "eta")],
+    )
+    return _publishable(series, channel_file, library, tmp_path, render_tools)
+
+
 def test_export_portrait_and_landscape(publishable: tuple[StationPaths, dict[str, Any]]) -> None:
     paths, kit = publishable
     portrait = export(paths, AspectRatio.PORTRAIT, **kit)
@@ -1233,8 +1247,7 @@ def test_export_of_a_failing_part_produces_neither_file(
     assert export(paths, AspectRatio.LANDSCAPE, **kit) == [paths.export_dir / landscape_name(1)]
     undisclosed = Series.load(paths.series).model_copy(update={"ai_disclosure": False})
     undisclosed.save(paths.series)
-    assert export(paths, AspectRatio.PORTRAIT, **kit) == []
-    assert export(paths, AspectRatio.LANDSCAPE, **kit) == []
+    assert export(paths, AspectRatio.LANDSCAPE, **kit) == []  # no 9:16 export in between
     assert not (paths.export_dir / landscape_name(1)).exists()  # the older copy is removed
     assert not (paths.export_dir / "part-01.mp4").exists()
 
@@ -1261,3 +1274,38 @@ def test_portrait_export_of_a_failing_part_removes_the_landscape_copy(
 
 def test_series_sha256_is_the_files_sha256(world: World) -> None:
     assert world.sha() == hashlib.sha256(world.paths.series.read_bytes()).hexdigest()
+
+
+def test_failed_panorama_of_one_part_leaves_no_stale_copy_of_another(
+    two_part_publishable: tuple[StationPaths, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, kit = two_part_publishable
+    both = [paths.export_dir / landscape_name(1), paths.export_dir / landscape_name(2)]
+    assert export(paths, AspectRatio.LANDSCAPE, **kit) == both  # one file per passing part
+    before = _sha(paths.export_dir / "part-02.mp4")
+    series = Series.load(paths.series)
+    series.parts[1].scenes[0].title = "Two, edited"
+    series.save(paths.series)
+
+    def refuse(*_args: object, **_kwargs: object) -> Path:
+        raise RenderError("ink outside the zones")
+
+    monkeypatch.setattr(station, "panorama_export", refuse)
+    with pytest.raises(RenderError, match="ink outside"):
+        export(paths, AspectRatio.LANDSCAPE, **kit)
+    assert _sha(paths.export_dir / "part-02.mp4") != before  # the 9:16 file is the new cut
+    assert not (paths.export_dir / landscape_name(2)).exists()
+    assert not (paths.export_dir / landscape_name(1)).exists()
+    assert not lock_path(paths).exists()
+
+
+@pytest.mark.parametrize("ratio", [AspectRatio.PORTRAIT, AspectRatio.LANDSCAPE])
+def test_export_refuses_while_another_action_holds_the_lock(
+    publishable: tuple[StationPaths, dict[str, Any]], ratio: AspectRatio
+) -> None:
+    paths, kit = publishable
+    lock_path(paths).write_text("")
+    with pytest.raises(PlanningError, match="wait for it to finish"):
+        export(paths, ratio, **kit)
+    assert not paths.export_dir.exists()  # it started nothing
+    assert lock_path(paths).exists()  # and left the other run's lock alone

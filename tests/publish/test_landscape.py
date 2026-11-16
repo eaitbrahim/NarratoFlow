@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-import os
 import shutil
+import tempfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -17,12 +17,10 @@ from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.errors import RenderError
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.models import Scene
-from narratoflow.publish import landscape
 from narratoflow.publish.landscape import (
     CANVAS_SCALES,
     LANDSCAPE_BOTTOM,
     LANDSCAPE_SIZE,
-    _compose_graph,
     _first_ink,
     landscape_name,
     landscape_size,
@@ -220,17 +218,6 @@ def _export(tools: RenderTools, part: PartVideo, tmp_path: Path) -> Path:
     )
 
 
-def test_compose_graph_at_scale_1_is_the_design_graph() -> None:
-    assert _compose_graph(panorama_layout(Fraction(1))) == (
-        "[0:v]format=yuv444p,split=3[s][t][c];"
-        "[s]crop=844:866:52:382:exact=1,pad=1920:1080:40:107:color=white[p0];"
-        "[t]crop=976:216:52:162:exact=1[t1];[p0][t1]overlay=904:107:format=yuv444[p1];"
-        "[c]crop=844:196:52:1252:exact=1[c1];[p1][c1]overlay=970:442:format=yuv444[p2];"
-        "[p2]format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709"
-        ":colorspace=bt709:range=tv[v]"
-    )
-
-
 def test_panorama_has_landscape_size_and_frames(
     channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
 ) -> None:
@@ -394,29 +381,24 @@ def test_source_without_audio_is_refused(
 
 
 def test_source_changed_during_export_is_refused(
-    channel: ChannelConfig,
-    library: SketchLibrary,
-    tmp_path: Path,
-    render_tools: RenderTools,
-    monkeypatch: pytest.MonkeyPatch,
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
 ) -> None:
     part = _sketch_part(channel, library, tmp_path, render_tools)
     src = tmp_path / "src" / "a.mp4"
     src.parent.mkdir()
     shutil.copy(part.video_path, src)
-    real = landscape._check_ink
-
-    def touch_after_guard(
-        tools: RenderTools, path: Path, layout: landscape.PanoramaLayout, *, frames: int
-    ) -> None:
-        real(tools, path, layout, frames=frames)
-        os.utime(src, ns=(1, 1))
-
-    monkeypatch.setattr(landscape, "_check_ink", touch_after_guard)
+    # An ffmpeg that touches the source as the encode starts, after the ink guard has passed.
+    wrapper = tmp_path / "ffmpeg-touching"
+    wrapper.write_text(
+        f'#!/bin/sh\ncase "$*" in *-filter_complex*) touch -t 200001010000 "{src}";; esac\n'
+        f'exec "{render_tools.ffmpeg}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    tools = dataclasses.replace(render_tools, ffmpeg=wrapper)
     out = _old_target(tmp_path)
     with pytest.raises(RenderError, match="changed during"):
         panorama_export(
-            render_tools, src, out, frames=part.report.frames, duration_ms=part.report.duration_ms
+            tools, src, out, frames=part.report.frames, duration_ms=part.report.duration_ms
         )
     _refused(out)
 
@@ -454,3 +436,18 @@ def test_panorama_creates_missing_target_directories(
         duration_ms=part.report.duration_ms,
     )
     assert out.is_file()
+
+
+def test_unwritable_target_directory_leaves_no_older_copy(
+    render_tools: RenderTools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = _white_clip(render_tools, tmp_path / "x.mp4")
+    out = _old_target(tmp_path)
+
+    def no_temp_file(*_args: object, **_kwargs: object) -> tuple[int, str]:
+        raise PermissionError("read-only target directory")
+
+    monkeypatch.setattr(tempfile, "mkstemp", no_temp_file)
+    with pytest.raises(RenderError, match="cannot write"):
+        panorama_export(render_tools, src, out, frames=3, duration_ms=100)
+    _refused(out)

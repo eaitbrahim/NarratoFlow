@@ -200,14 +200,15 @@ def panorama_export(
     is renamed into place only after `verify_mp4` accepts it and `src` is seen unchanged.
     On failure the temp file and any older `out` are removed.
     """
+    tmp: Path | None = None
     try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.stem}.", suffix=".mp4")
-        os.close(fd)
-    except OSError as exc:
-        raise RenderError(f"cannot write {out}: {exc}") from exc
-    tmp = Path(name)
-    try:
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.stem}.", suffix=".mp4")
+            os.close(fd)
+        except OSError as exc:
+            raise RenderError(f"cannot write {out}: {exc}") from exc
+        tmp = Path(name)
         before = _identity(src)
         found = probe(tools, src)
         layout = panorama_layout(_source_scale(src, found.width, found.height))
@@ -233,8 +234,9 @@ def panorama_export(
         except OSError as exc:
             raise RenderError(f"cannot write {out}: {exc}") from exc
     except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
         with contextlib.suppress(OSError):
             out.unlink()
         raise

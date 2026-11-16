@@ -16,6 +16,7 @@ from narratoflow.audio.timeline import (
     AssetUse,
     AyahTiming,
     PartTimeline,
+    RecitationUsed,
     SceneTiming,
     TimelineWord,
     TimingSource,
@@ -195,6 +196,7 @@ def write_timelines(
     master: bool = False,
     voice: VoiceUsed | None = None,
     assets: list[AssetUse] | None = None,
+    recitations: list[RecitationUsed] | None = None,
 ) -> list[PartTimeline]:
     """The timelines (and FLACs) audio build would write for `series`, made directly.
 
@@ -216,7 +218,7 @@ def write_timelines(
             scenes=scenes,
             sfx=[],
             voice=voice,
-            recitations=[],
+            recitations=list(recitations or []),
             assets=list(assets or []),
             spent_usd=Decimal(0),
             cost_estimated=False,
@@ -270,6 +272,21 @@ def reciter() -> Reciter:
         license_url="https://creativecommons.org/licenses/by/4.0/",
         source="https://audio.example.org/r/",
         checked=date(2026, 11, 11),
+    )
+
+
+def recitation_of(r: Reciter, ayat: list[str]) -> RecitationUsed:
+    """The timeline's record that `r` recited `ayat`, with the terms the reciter lists."""
+    return RecitationUsed(
+        reciter_id=r.id,
+        name=r.name,
+        riwaya=r.riwaya,
+        license=r.license,
+        license_url=r.license_url,
+        source=r.source,
+        segments_source=r.segments_source,
+        checked=r.checked,
+        ayat=ayat,
     )
 
 

@@ -25,6 +25,8 @@ from fixtures.parts import (
     add_sketch,
     make_series,
     narr,
+    recitation_of,
+    reciter,
     verse,
     write_timelines,
 )
@@ -34,7 +36,7 @@ from visuals.lineart_samples import sample_png
 
 from narratoflow.audio.build import build_audio
 from narratoflow.audio.recitation import display_words
-from narratoflow.audio.timeline import AssetUse, PartTimeline, VoiceUsed
+from narratoflow.audio.timeline import AssetUse, PartTimeline, RecitationUsed, VoiceUsed
 from narratoflow.channels.config import ChannelConfig, load_channel, style_fingerprint
 from narratoflow.costs.prices import PriceTable
 from narratoflow.errors import (
@@ -59,6 +61,7 @@ from narratoflow.publish.checks import CheckId, Severity
 from narratoflow.publish.landscape import landscape_name, landscape_size, panorama_export
 from narratoflow.publish.report import PublishReport
 from narratoflow.publish.rules import Rules, load_rules
+from narratoflow.quran.reciters import ReciterIndex
 from narratoflow.render.build import build_render
 from narratoflow.render.ffmpeg import RenderTools, probe, run_tool
 from narratoflow.render.layout import Canvas
@@ -1097,12 +1100,23 @@ def _publishable(
     library: SketchLibrary,
     tmp_path: Path,
     render_tools: RenderTools,
+    *,
+    recitations: list[RecitationUsed] | None = None,
+    reciters: ReciterIndex | None = None,
 ) -> tuple[StationPaths, dict[str, Any]]:
     work = tmp_path / "work"
     work.mkdir()
     paths = StationPaths(work / "series.json", channel_file, work / "audio", work / "export")
     series.save(paths.series)
-    write_timelines(series, paths.audio_dir, library, master=True, voice=EDGE, assets=[MARKER])
+    write_timelines(
+        series,
+        paths.audio_dir,
+        library,
+        master=True,
+        voice=EDGE,
+        assets=[MARKER],
+        recitations=recitations,
+    )
     kit: dict[str, Any] = {
         "settings": Settings(data_dir=tmp_path / "data"),
         "tools": render_tools,
@@ -1112,6 +1126,8 @@ def _publishable(
         "corpus": CORPUS,
         "rules": _tiny_rules(tmp_path),
     }
+    if reciters is not None:
+        kit["reciters"] = reciters
     return paths, kit
 
 
@@ -1131,10 +1147,18 @@ def publishable(
 def verse_publishable(
     channel_file: Path, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
 ) -> tuple[StationPaths, dict[str, Any]]:
-    """A one-part series opening on a verse scene."""
+    """A one-part series opening on a verse scene, recited by a listed reciter."""
     sid = add_sketch(library, provenance=GENERATED_PROVENANCE)
     series = make_series([verse("v1"), narr("s1", "alpha beta gamma", sketch=sid, title="One")])
-    return _publishable(series, channel_file, library, tmp_path, render_tools)
+    return _publishable(
+        series,
+        channel_file,
+        library,
+        tmp_path,
+        render_tools,
+        recitations=[recitation_of(reciter(), ["31:33"])],
+        reciters=ReciterIndex([reciter()]),
+    )
 
 
 def test_export_portrait_and_landscape(publishable: tuple[StationPaths, dict[str, Any]]) -> None:
@@ -1175,7 +1199,8 @@ def test_landscape_export_of_an_altered_verse_part_writes_nothing(
     verse_publishable: tuple[StationPaths, dict[str, Any]],
 ) -> None:
     paths, kit = verse_publishable
-    export(paths, AspectRatio.PORTRAIT, **kit)  # renders; the result is not asserted
+    assert export(paths, AspectRatio.PORTRAIT, **kit) == [paths.export_dir / "part-01.mp4"]
+    assert export(paths, AspectRatio.LANDSCAPE, **kit) == [paths.export_dir / landscape_name(1)]
     ass = paths.render_dir / "part-01.ass"
     word = display_words(CORPUS.ayah(31, 33).uthmani)[1]
     text = ass.read_text(encoding="utf-8")
@@ -1186,10 +1211,9 @@ def test_landscape_export_of_an_altered_verse_part_writes_nothing(
     assert export(paths, AspectRatio.LANDSCAPE, **kit) == []
     assert not (paths.export_dir / landscape_name(1)).exists()
     report = PublishReport.load(paths.render_dir / "part-01.publish.json")
-    fails = [
-        c for c in report.checks if c.check is CheckId.VERSE_TEXT and c.severity is Severity.FAIL
-    ]
-    assert fails and all("subtitles in part-01.ass differ" in c.reason for c in fails)
+    fails = [c for c in report.checks if c.severity is Severity.FAIL]
+    assert fails and all(c.check is CheckId.VERSE_TEXT for c in fails)
+    assert all("subtitles in part-01.ass differ" in c.reason for c in fails)
 
 
 def test_panorama_export_has_no_bypass_argument() -> None:

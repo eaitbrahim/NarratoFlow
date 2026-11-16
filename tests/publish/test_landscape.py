@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import os
+import shutil
 from fractions import Fraction
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from narratoflow.channels.config import ChannelConfig, load_channel
 from narratoflow.errors import RenderError
 from narratoflow.library.repository import SketchLibrary
 from narratoflow.models import Scene
+from narratoflow.publish import landscape
 from narratoflow.publish.landscape import (
     CANVAS_SCALES,
     LANDSCAPE_BOTTOM,
@@ -357,3 +360,138 @@ def test_verse_ink_is_carried_whole(
     # edges, so a hard threshold flips edge pixels (about 8 %) while the ink mass holds.
     s_mass = _ink_mass(_crop(src[k], stage.src))
     assert abs(_ink_mass(_crop(dst[k], stage.dst)) - s_mass) <= 0.02 * s_mass
+
+
+def _old_target(tmp_path: Path) -> Path:
+    out = tmp_path / "export" / landscape_name(1)
+    out.parent.mkdir(parents=True)
+    out.write_bytes(b"old")
+    return out
+
+
+def _refused(out: Path) -> None:
+    assert not out.exists() and list(out.parent.iterdir()) == []
+
+
+def test_marked_source_is_refused_and_leaves_nothing(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    marked = _marked(render_tools, part.video_path, tmp_path)
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match=r"frame \d+"):
+        panorama_export(
+            render_tools,
+            marked,
+            out,
+            frames=part.report.frames,
+            duration_ms=part.report.duration_ms,
+        )
+    _refused(out)
+
+
+def test_non_canvas_source_is_refused(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    odd = _reencode(render_tools, part.video_path, tmp_path / "src" / "odd.mp4", "scale=200:356")
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match="not a 9:16 canvas size"):
+        panorama_export(
+            render_tools, odd, out, frames=part.report.frames, duration_ms=part.report.duration_ms
+        )
+    _refused(out)
+
+
+def test_missing_source_is_refused(render_tools: RenderTools, tmp_path: Path) -> None:
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match=r"missing\.mp4"):
+        panorama_export(render_tools, tmp_path / "missing.mp4", out, frames=60, duration_ms=2000)
+    _refused(out)
+
+
+def test_wrong_frame_count_is_refused(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match=r"frames is \d+, expected"):
+        panorama_export(
+            render_tools,
+            part.video_path,
+            out,
+            frames=part.report.frames + 5,
+            duration_ms=part.report.duration_ms,
+        )
+    _refused(out)
+
+
+def test_wrong_duration_is_refused_by_verify(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match="video_ms"):
+        panorama_export(
+            render_tools,
+            part.video_path,
+            out,
+            frames=part.report.frames,
+            duration_ms=part.report.duration_ms + 500,
+        )
+    _refused(out)
+
+
+def test_source_without_audio_is_refused(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    mute = tmp_path / "src" / "mute.mp4"
+    mute.parent.mkdir()
+    run_tool(
+        render_tools.ffmpeg,
+        [
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(part.video_path),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            str(mute),
+        ],
+    )
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError):
+        panorama_export(
+            render_tools, mute, out, frames=part.report.frames, duration_ms=part.report.duration_ms
+        )
+    _refused(out)
+
+
+def test_source_changed_during_export_is_refused(
+    channel: ChannelConfig,
+    library: SketchLibrary,
+    tmp_path: Path,
+    render_tools: RenderTools,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    src = tmp_path / "src" / "a.mp4"
+    src.parent.mkdir()
+    shutil.copy(part.video_path, src)
+    real = landscape._check_ink
+
+    def touch_after_guard(*args: object, **kwargs: object) -> None:
+        real(*args, **kwargs)  # type: ignore[arg-type]
+        os.utime(src, ns=(1, 1))
+
+    monkeypatch.setattr(landscape, "_check_ink", touch_after_guard)
+    out = _old_target(tmp_path)
+    with pytest.raises(RenderError, match="changed during"):
+        panorama_export(
+            render_tools, src, out, frames=part.report.frames, duration_ms=part.report.duration_ms
+        )
+    _refused(out)

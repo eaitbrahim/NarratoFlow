@@ -779,6 +779,27 @@ def test_cli_publish_exports_and_leaves_series_bytes(
     assert path.read_bytes() == before
 
 
+def test_cli_publish_removes_an_older_landscape_copy(
+    one_part: Series,
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    render_tools: RenderTools,
+) -> None:
+    from narratoflow.publish.landscape import landscape_name
+
+    stale = tmp_path / "export" / landscape_name(1)
+    stale.parent.mkdir()
+    stale.write_bytes(b"older 16:9 cut")
+    other = tmp_path / "export" / landscape_name(9)  # a part this run does not rewrite
+    other.write_bytes(b"kept")
+    out, _, _ = _cli_publish(one_part, channel_file, tmp_path, monkeypatch, render_tools)
+    assert out.exit_code == 0, out.output
+    assert (tmp_path / "export" / "part-01.mp4").is_file()
+    assert not stale.exists()
+    assert other.read_bytes() == b"kept"
+
+
 def test_cli_publish_fail_blocks_exit_1(
     one_part: Series,
     channel_file: Path,

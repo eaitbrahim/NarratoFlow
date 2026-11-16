@@ -58,7 +58,6 @@ from narratoflow.models import (
     VisualSource,
 )
 from narratoflow.money import format_usd
-from narratoflow.publish import build as publish_build
 from narratoflow.publish.checks import CheckId, Severity
 from narratoflow.publish.landscape import landscape_name, landscape_size, panorama_export
 from narratoflow.publish.report import PublishReport
@@ -1300,8 +1299,9 @@ def test_failed_panorama_of_one_part_leaves_no_stale_copy_of_another(
     assert not lock_path(paths).exists()
 
 
+@pytest.mark.parametrize("ratio", [AspectRatio.LANDSCAPE, AspectRatio.PORTRAIT])
 def test_a_publish_that_fails_on_a_later_part_leaves_no_stale_landscape_copy(
-    two_part_publishable: tuple[StationPaths, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+    two_part_publishable: tuple[StationPaths, dict[str, Any]], ratio: AspectRatio
 ) -> None:
     paths, kit = two_part_publishable
     first = paths.export_dir / "part-01.mp4"
@@ -1311,16 +1311,11 @@ def test_a_publish_that_fails_on_a_later_part_leaves_no_stale_landscape_copy(
     series = Series.load(paths.series)
     series.parts[0].scenes[0].title = "One, edited"
     series.save(paths.series)
-    copy_video = publish_build._Run.copy_video
-
-    def fail_on_part_two(run: Any, n: int, video: Path, facts: Any) -> Path:
-        if n == 2:
-            raise PublishError("part 2: cannot copy the export")
-        return copy_video(run, n, video, facts)
-
-    monkeypatch.setattr(publish_build._Run, "copy_video", fail_on_part_two)
+    second = paths.export_dir / "part-02.mp4"
+    second.unlink()
+    second.mkdir()  # a directory where the file goes: part 2's copy cannot replace it
     with pytest.raises(PublishError, match="part 2"):
-        export(paths, AspectRatio.LANDSCAPE, **kit)
+        export(paths, ratio, **kit)
     assert _sha(first) != before  # part 1's 9:16 file is the new cut
     assert not (paths.export_dir / landscape_name(1)).exists()  # so no old 16:9 copy survives
     assert not (paths.export_dir / landscape_name(2)).exists()

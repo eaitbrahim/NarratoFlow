@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import socket
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -42,6 +42,7 @@ from narratoflow.models import Series
 from narratoflow.publish import build as build_module
 from narratoflow.publish.build import PublishResult, build_publish
 from narratoflow.publish.checks import CheckId, Severity
+from narratoflow.publish.landscape import landscape_name
 from narratoflow.publish.report import EARLIER_RUN, NOT_CHECKED, PublishReport, SeriesSummary
 from narratoflow.publish.rules import Rules, load_rules
 from narratoflow.publish.technical import MediaFacts, inspect_video
@@ -484,6 +485,40 @@ def test_export_copy_failure_raises(
     assert str(tmp_path) not in report.export_error
 
 
+def test_fail_removes_an_older_landscape_copy(
+    one_part: Series,
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    render_tools: RenderTools,
+) -> None:
+    stale = tmp_path / "export" / landscape_name(1)
+    stale.parent.mkdir()
+    stale.write_bytes(b"older 16:9 cut")
+    undisclosed = one_part.model_copy(update={"ai_disclosure": False})
+    result = _publish(undisclosed, channel, settings, tmp_path, render_tools, library)
+    assert result.blocked == [1]
+    assert not stale.exists()
+
+
+def test_copy_failure_removes_an_older_landscape_copy(
+    one_part: Series,
+    channel: ChannelConfig,
+    settings: Settings,
+    library: SketchLibrary,
+    tmp_path: Path,
+    render_tools: RenderTools,
+) -> None:
+    export = tmp_path / "export"
+    stale = export / landscape_name(1)
+    (export / "part-01.mp4").mkdir(parents=True)  # a directory where the copy goes
+    stale.write_bytes(b"older 16:9 cut")
+    with pytest.raises(PublishError, match=r"part 1: cannot copy part-01\.mp4"):
+        _publish(one_part, channel, settings, tmp_path, render_tools, library)
+    assert not stale.exists()
+
+
 def test_old_export_that_cannot_be_removed_is_error(
     one_part: Series,
     channel: ChannelConfig,
@@ -728,6 +763,7 @@ def _cli_publish(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tools: RenderTools,
+    extra_args: Sequence[str] = (),
 ) -> tuple[Any, Path, bytes]:
     from typer.testing import CliRunner
 
@@ -748,6 +784,7 @@ def _cli_publish(
             str(channel_file),
             "--render",
             str(tmp_path / "video"),
+            *extra_args,
         ],
     )
     return out, path, before
@@ -777,6 +814,42 @@ def test_cli_publish_exports_and_leaves_series_bytes(
     assert report.video_sha256 == hashlib.sha256((export / "part-01.mp4").read_bytes()).hexdigest()
     assert "part 1/1:" in out.output and "series summary:" in out.output
     assert path.read_bytes() == before
+
+
+def test_cli_publish_removes_an_older_landscape_copy(
+    one_part: Series,
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    render_tools: RenderTools,
+) -> None:
+    stale = tmp_path / "export" / landscape_name(1)
+    stale.parent.mkdir()
+    stale.write_bytes(b"older 16:9 cut")
+    out, _, _ = _cli_publish(one_part, channel_file, tmp_path, monkeypatch, render_tools)
+    assert out.exit_code == 0, out.output
+    assert (tmp_path / "export" / "part-01.mp4").is_file()
+    assert not stale.exists()
+
+
+def test_cli_publish_part_filter_keeps_another_parts_landscape_copy(
+    two_parts: Series,
+    channel_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    render_tools: RenderTools,
+) -> None:
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / landscape_name(1)).write_bytes(b"older 16:9 cut")
+    (export / landscape_name(2)).write_bytes(b"part 2 is not rewritten")
+    out, _, _ = _cli_publish(
+        two_parts, channel_file, tmp_path, monkeypatch, render_tools, extra_args=["--part", "1"]
+    )
+    assert out.exit_code == 0, out.output
+    assert (export / "part-01.mp4").is_file() and not (export / "part-02.mp4").exists()
+    assert not (export / landscape_name(1)).exists()
+    assert (export / landscape_name(2)).read_bytes() == b"part 2 is not rewritten"
 
 
 def test_cli_publish_fail_blocks_exit_1(

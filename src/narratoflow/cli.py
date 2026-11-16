@@ -743,6 +743,9 @@ def publish(
     """Check each rendered part against the platform rules and export the ones that pass.
 
     Free and offline. A FAIL blocks that part's export and cannot be overridden.
+
+    This command takes no series lock: running it while the station holds the series
+    (for example during a station export) can race with it.
     """
     channel = load_channel(channel_toml)
     series = Series.load(series_json)

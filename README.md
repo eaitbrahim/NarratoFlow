@@ -115,7 +115,8 @@ A part with no FAIL is copied to `export/` (default: next to `series.json`) as `
 `part-NN.disclosure.txt` and `part-NN.publish.md`, with `series.publish.md`. A FAIL blocks that
 part's export and cannot be overridden: there is no flag for it. Fix the cause and run `publish`
 again. `publish` exits 1 when any selected part is blocked, never spends money and never uses the
-network; it does not change `series.json`.
+network; it does not change `series.json`. It takes no series lock, so do not run it while the
+station is exporting the same series (the station's export holds that lock).
 
 `review` is optional and paid: it asks the channel's LLM to flag clear violations in each part's
 text, shows the estimated cost and asks before spending (`--yes` skips the question), and counts the

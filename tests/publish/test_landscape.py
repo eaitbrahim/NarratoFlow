@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import json
+import os
 import shutil
-import tempfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -231,6 +232,28 @@ def test_panorama_has_landscape_size_and_frames(
     assert sorted(p.name for p in out.parent.iterdir()) == [out.name]
 
 
+def test_panorama_is_tagged_bt709_tv_range(
+    channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
+) -> None:
+    part = _sketch_part(channel, library, tmp_path, render_tools)
+    out = _export(render_tools, part, tmp_path)
+    raw = run_tool(
+        render_tools.ffprobe,
+        [
+            "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=color_primaries,color_transfer,color_space,color_range",
+            "-of", "json", str(out),
+        ],
+    )  # fmt: skip
+    (stream,) = json.loads(raw)["streams"]
+    assert stream == {
+        "color_primaries": "bt709",
+        "color_transfer": "bt709",
+        "color_space": "bt709",
+        "color_range": "tv",
+    }
+
+
 def test_panorama_carries_stage_and_captions_on_paper(
     channel: ChannelConfig, library: SketchLibrary, tmp_path: Path, render_tools: RenderTools
 ) -> None:
@@ -438,16 +461,31 @@ def test_panorama_creates_missing_target_directories(
     assert out.is_file()
 
 
-def test_unwritable_target_directory_leaves_no_older_copy(
-    render_tools: RenderTools, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_read_only_target_directory_is_refused_and_writes_nothing(
+    render_tools: RenderTools, tmp_path: Path
 ) -> None:
     src = _white_clip(render_tools, tmp_path / "x.mp4")
-    out = _old_target(tmp_path)
+    target = tmp_path / "export"
+    target.mkdir()
+    target.chmod(0o555)  # a real read-only target directory
+    try:
+        with pytest.raises(RenderError, match="cannot write"):
+            panorama_export(
+                render_tools, src, target / landscape_name(1), frames=3, duration_ms=100
+            )
+        assert list(target.iterdir()) == []
+    finally:
+        target.chmod(0o755)
 
-    def no_temp_file(*_args: object, **_kwargs: object) -> tuple[int, str]:
-        raise PermissionError("read-only target directory")
 
-    monkeypatch.setattr(tempfile, "mkstemp", no_temp_file)
+def test_temp_file_name_too_long_leaves_no_older_copy(
+    render_tools: RenderTools, tmp_path: Path
+) -> None:
+    src = _white_clip(render_tools, tmp_path / "x.mp4")
+    out = tmp_path / "export" / f"{'a' * 245}.mp4"  # fits, but `.<stem>.<random>.mp4` does not
+    out.parent.mkdir()
+    out.write_bytes(b"old")
     with pytest.raises(RenderError, match="cannot write"):
         panorama_export(render_tools, src, out, frames=3, duration_ms=100)
     _refused(out)

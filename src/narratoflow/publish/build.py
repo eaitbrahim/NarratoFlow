@@ -56,6 +56,7 @@ from narratoflow.publish.checks import (
 from narratoflow.publish.consistency import render_current_checks, sketch_checks
 from narratoflow.publish.content import content_checks
 from narratoflow.publish.disclosure import disclosure_checks, disclosure_text, platform_labels
+from narratoflow.publish.landscape import landscape_name
 from narratoflow.publish.provenance import provenance_checks, script_checks
 from narratoflow.publish.report import PublishReport, build_report, build_summary
 from narratoflow.publish.rules import Rules, default_rules, rules_checks
@@ -278,8 +279,19 @@ class _Run:
             self.export_dir / f"{stem}.publish.md",
         ]
 
+    def landscape_copy(self, n: int) -> Path:
+        """Part `n`'s 16:9 derivative: only the station makes it, so a rewrite here stales it."""
+        return self.export_dir / landscape_name(n)
+
+    def owned_files(self, n: int) -> list[Path]:
+        """Every file in `export_dir` that a publish of part `n` owns and may remove."""
+        return [*self.export_files(n), self.landscape_copy(n)]
+
     def remove_exports(self, n: int) -> None:
-        for path in self.export_files(n):
+        self._remove(n, self.owned_files(n))
+
+    def _remove(self, n: int, paths: Sequence[Path]) -> None:
+        for path in paths:
             try:
                 path.unlink(missing_ok=True)
             except OSError as exc:
@@ -370,12 +382,13 @@ class _Run:
         exported = report(True)
         try:
             target = self.copy_video(n, video, facts)
+            self._remove(n, [self.landscape_copy(n)])  # never beside a newer 9:16 file
             _, disclosure_path, md_path = self.export_files(n)
             _write_text(disclosure_path, exported.disclosure_text)
             _write_text(md_path, exported.to_markdown())
         except PublishError as exc:
             self.save(report(False, _short_error(exc, video)), n)
-            for path in self.export_files(n):  # best effort: the error above is what counts
+            for path in self.owned_files(n):  # best effort: the error above is what counts
                 with contextlib.suppress(OSError):
                     path.unlink(missing_ok=True)
             raise

@@ -56,7 +56,7 @@ from narratoflow.pipeline.paths import (
     default_render_dir,
 )
 from narratoflow.publish.build import build_publish
-from narratoflow.publish.landscape import landscape_name, pillarbox_export
+from narratoflow.publish.landscape import landscape_name, panorama_export
 from narratoflow.publish.rules import Rules, default_rules
 from narratoflow.quran.corpus import QuranCorpus
 from narratoflow.quran.reciters import ReciterIndex
@@ -717,7 +717,8 @@ def export(
 ) -> list[Path]:
     """Render every part (unchanged ones are kept), check and export them, and return
     the exported files of `ratio`: `part-NN.mp4`, or for 16:9 the `part-NN.16x9.mp4`
-    pillarbox copies (D31). A part that FAILs its check is exported in neither ratio."""
+    side-by-side re-compositions (ADR 0006). A part that FAILs its check is exported in
+    neither ratio."""
     settings = settings if settings is not None else get_settings()
     series = _load(paths)
     channel = load_channel(paths.channel)
@@ -763,7 +764,7 @@ def export(
             continue
         report = reports[index]
         out.append(
-            pillarbox_export(
+            panorama_export(
                 tools, path, target, frames=report.frames, duration_ms=report.duration_ms
             )
         )

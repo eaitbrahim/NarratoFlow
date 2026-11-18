@@ -131,7 +131,8 @@ def default_pipeline_factory(spec: DiffusionSpec) -> TextToImagePipeline:
     except ImportError as err:
         raise ExtraMissingError(EXTRA_HINT) from err
     device = pick_device(torch, spec.device)
-    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    # bf16 halves the weights (FLUX.1-schnell: ~24 GB, not ~48 GB); cpu stays float32
+    dtype = torch.bfloat16 if device in ("cuda", "mps") else torch.float32
     try:
         pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
             spec.model, revision=spec.revision, torch_dtype=dtype

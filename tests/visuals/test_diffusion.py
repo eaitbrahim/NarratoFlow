@@ -142,10 +142,11 @@ def test_negative_prompt_only_when_pipeline_accepts_it(monkeypatch: pytest.Monke
     ("device", "cuda", "mps", "expected", "dtype"),
     [
         ("auto", True, True, "cuda", "bfloat16"),
-        ("auto", False, True, "mps", "float32"),
+        ("auto", False, True, "mps", "bfloat16"),
         ("auto", False, False, "cpu", "float32"),
         ("cpu", True, True, "cpu", "float32"),
         ("cuda", False, False, "cuda", "bfloat16"),
+        ("mps", False, False, "mps", "bfloat16"),
     ],
 )
 def test_device_choice(

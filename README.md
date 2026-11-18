@@ -293,7 +293,8 @@ and attempt draw the same image, and a regenerate draws a new one. This is prove
 injected pipeline; whether the real model is bit-identical on a GPU is not measured, see #160.
 
 VRAM. All figures come from model cards and the diffusers memory guide and are not measured; see
-#160.
+#160. On `cuda` and `mps` the model loads in bf16, on `cpu` in float32, so an Apple Silicon Mac
+with enough unified memory (64 GB is plenty) can run it with `device = "mps"`.
 
 | Model | Weights | VRAM | Status |
 |---|---|---|---|

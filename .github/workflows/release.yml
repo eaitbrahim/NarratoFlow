@@ -1,0 +1,65 @@
+name: Release
+# Runs when a "Release vX.Y.Z" pull request from release-prepare.yml is merged: builds the install
+# bundles from the merge commit, test-installs them, tags vX.Y.Z and publishes the GitHub Release.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ github.event.pull_request.merge_commit_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+      - name: The branch name matches the version
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          version=$(uv version --short)
+          test "$HEAD_REF" = "release/v$version" \
+            || { echo "::error::$HEAD_REF does not match version $version"; exit 1; }
+
+  bundles:
+    needs: check
+    uses: ./.github/workflows/bundles.yml
+    with:
+      ref: ${{ needs.check.outputs.sha }}
+
+  publish:
+    needs: [check, bundles]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: install-bundles
+          path: dist/bundles
+      - name: Tag and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.bundles.outputs.version }}
+          SHA: ${{ needs.check.outputs.sha }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          gh release create "v$VERSION" dist/bundles/* \
+            --target "$SHA" --title "NarratoFlow $VERSION" --generate-notes \
+            --notes "Download the file for your system and follow [INSTALL.md](https://github.com/$GITHUB_REPOSITORY/blob/v$VERSION/packaging/INSTALL.md). The downloads are not signed; INSTALL.md shows how to allow them on macOS and Windows."
+          git push origin --delete "$BRANCH" || true

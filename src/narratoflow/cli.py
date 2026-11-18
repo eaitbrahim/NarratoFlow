@@ -12,6 +12,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
+from narratoflow import __version__
 from narratoflow.audio.build import AudioBuildResult, AudioInterruptedError, build_audio
 from narratoflow.channels.config import load_channel, style_fingerprint
 from narratoflow.channels.keys import check_provider_keys, required_key_env_vars
@@ -86,8 +87,24 @@ _out = Console()
 _err = Console(stderr=True)
 
 
+def _print_version(value: bool) -> None:
+    if value:
+        _out.print(f"narratoflow {__version__}", highlight=False)
+        raise typer.Exit
+
+
 @app.callback()
-def _configure() -> None:
+def _configure(
+    _version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_print_version,
+            is_eager=True,
+            help="Print the version and exit.",
+        ),
+    ] = False,
+) -> None:
     setup_logging(get_settings().log_level)
 
 

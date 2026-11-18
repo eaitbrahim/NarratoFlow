@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import sys
+import tomllib
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -2023,3 +2024,15 @@ def test_check_dialect_directory_report_fails_before_loading(
     code = run_main(monkeypatch, "check-dialect", str(script), "--report", str(folder))
     assert code == 1
     assert "--report PATH" in capsys.readouterr().err
+
+
+def test_version_prints_the_project_version_without_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    monkeypatch.setenv("NARRATOFLOW_LOG_LEVEL", "not-a-level")  # settings are never read
+    result = runner.invoke(cli.app, ["--version"])
+    assert result.exit_code == 0, result.output
+    assert result.output == f"narratoflow {project['version']}\n"
